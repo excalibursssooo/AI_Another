@@ -3,7 +3,7 @@
 
 ## 项目简介
 
-本项目实现了一个可长期对话的 AI 联系人系统，支持：
+本项目实现了一个可长期对话的 AI 聊天系统，支持：
 
 1. 多角色管理（手动创建、AI 自动建角、删除、更新）
 2. 聊天流式回复（SSE）
@@ -170,3 +170,6 @@ npm run lint
 2. 会话数据：data/conversations.json
 3. 记忆结构化数据：PostgreSQL memory_item
 4. 记忆向量索引：Qdrant
+
+## 界面展示
+![UI](figures\UI.jpg)
