@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from difflib import SequenceMatcher
 import json
 import os
 from pathlib import Path
@@ -37,6 +38,27 @@ class MemoryBackendConfig:
         )
 
 
+@dataclass
+class RetrievalScoreWeights:
+    semantic: float = 0.35
+    importance: float = 0.22
+    freshness: float = 0.18
+    stability: float = 0.17
+    conflict: float = 0.08
+
+    def normalized(self) -> "RetrievalScoreWeights":
+        total = self.semantic + self.importance + self.freshness + self.stability + self.conflict
+        if total <= 0:
+            return RetrievalScoreWeights()
+        return RetrievalScoreWeights(
+            semantic=self.semantic / total,
+            importance=self.importance / total,
+            freshness=self.freshness / total,
+            stability=self.stability / total,
+            conflict=self.conflict / total,
+        )
+
+
 class MemoryExtractor(Protocol):
     def extract(self, message: str) -> list[MemoryCandidate]:
         ...
@@ -56,7 +78,7 @@ class RuleMemoryExtractor:
             candidates.append(
                 MemoryCandidate(
                     subject="user",
-                    memory_type="preference",
+                    memory_type="relationship_tendency",
                     content=message,
                     confidence=0.72,
                     importance=0.6,
@@ -71,6 +93,17 @@ class RuleMemoryExtractor:
                     content=message,
                     confidence=0.75,
                     importance=0.8,
+                ),
+            )
+
+        if any(token in message for token in ["难过", "焦虑", "生气", "开心", "情绪", "崩溃", "压力"]):
+            candidates.append(
+                MemoryCandidate(
+                    subject="user",
+                    memory_type="emotional_tendency",
+                    content=message,
+                    confidence=0.68,
+                    importance=0.74,
                 ),
             )
 
@@ -250,6 +283,29 @@ class MemoryService:
         self.embedding_model = embedding_model
         self.extractor = extractor
         self.extraction_reason = extraction_reason
+        self._retrieval_weights = RetrievalScoreWeights()
+
+    def get_retrieval_weights(self) -> RetrievalScoreWeights:
+        return self._retrieval_weights
+
+    def update_retrieval_weights(
+        self,
+        *,
+        semantic: float,
+        importance: float,
+        freshness: float,
+        stability: float,
+        conflict: float,
+    ) -> RetrievalScoreWeights:
+        candidate = RetrievalScoreWeights(
+            semantic=max(0.0, semantic),
+            importance=max(0.0, importance),
+            freshness=max(0.0, freshness),
+            stability=max(0.0, stability),
+            conflict=max(0.0, conflict),
+        ).normalized()
+        self._retrieval_weights = candidate
+        return candidate
 
     @staticmethod
     def build_from_env() -> "MemoryService":
@@ -465,17 +521,97 @@ class MemoryService:
 
     def persist_candidates(self, user_id: str, agent_id: str, candidates: list[MemoryCandidate]) -> list[MemoryItem]:
         persisted: list[MemoryItem] = []
+        existing_items = [
+            item
+            for item in self.repository.list_by_user(user_id=user_id, agent_id=agent_id)
+            if item.status != "deleted"
+        ]
+
         for candidate in candidates:
+            normalized_subject = _normalize_subject(candidate.subject)
+            normalized_memory_type = _normalize_memory_type(candidate.memory_type)
+            normalized_content = _normalize_memory_content(candidate.content)
+            if not normalized_content:
+                continue
+
+            matched, matched_score = _find_best_related_memory(
+                existing_items=existing_items,
+                subject=normalized_subject,
+                memory_type=normalized_memory_type,
+                normalized_content=normalized_content,
+            )
+            if matched is not None and matched_score >= 0.88:
+                self.repository.touch(user_id=user_id, agent_id=agent_id, memory_ids=[matched.id])
+                continue
+
+            if matched is not None and matched_score >= 0.62 and _is_conflict_content(
+                old_text=matched.content,
+                new_text=candidate.content,
+            ):
+                updated = self.repository.replace(
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    memory_id=matched.id,
+                    content=candidate.content.strip(),
+                    confidence=candidate.confidence,
+                    importance=candidate.importance,
+                    status="active",
+                    conflict_state="resolved_conflict",
+                )
+                if updated is not None:
+                    self.vector_store.upsert(
+                        item_id=updated.id,
+                        vector=self.embedding_model.embed(updated.content),
+                        payload={
+                            "user_id": updated.user_id,
+                            "agent_id": updated.agent_id,
+                            "memory_type": updated.memory_type,
+                        },
+                    )
+                    existing_items = [updated if item.id == updated.id else item for item in existing_items]
+                continue
+
+            if matched is not None and matched_score >= 0.62:
+                merged_confidence = max(matched.confidence, candidate.confidence)
+                merged_importance = max(matched.importance, candidate.importance)
+                replacement_content = matched.content
+                if len(candidate.content.strip()) > len(matched.content.strip()):
+                    replacement_content = candidate.content.strip()
+
+                updated = self.repository.replace(
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    memory_id=matched.id,
+                    content=replacement_content,
+                    confidence=merged_confidence,
+                    importance=merged_importance,
+                    status="active",
+                    conflict_state="none",
+                )
+                if updated is not None:
+                    self.vector_store.upsert(
+                        item_id=updated.id,
+                        vector=self.embedding_model.embed(updated.content),
+                        payload={
+                            "user_id": updated.user_id,
+                            "agent_id": updated.agent_id,
+                            "memory_type": updated.memory_type,
+                        },
+                    )
+                    existing_items = [updated if item.id == updated.id else item for item in existing_items]
+                continue
+
             item = MemoryItem(
                 id=str(uuid4()),
                 user_id=user_id,
                 agent_id=agent_id,
-                subject=_normalize_subject(candidate.subject),
-                memory_type=candidate.memory_type,
-                content=candidate.content,
+                subject=normalized_subject,
+                memory_type=normalized_memory_type,
+                content=candidate.content.strip(),
                 confidence=candidate.confidence,
                 importance=candidate.importance,
                 status="active",
+                conflict_state="none",
                 created_at=datetime.now(UTC),
             )
             saved = self.repository.add(item)
@@ -489,6 +625,7 @@ class MemoryService:
                 },
             )
             persisted.append(saved)
+            existing_items.append(saved)
         return persisted
 
     def retrieve_relevant(
@@ -498,6 +635,33 @@ class MemoryService:
         query_text: str | None = None,
         limit: int = 5,
     ) -> list[MemoryItem]:
+        scored_entries = self.debug_retrieval_scores(
+            user_id=user_id,
+            agent_id=agent_id,
+            query_text=query_text,
+            limit=limit,
+        )
+        selected = [entry["memory"] for entry in scored_entries if isinstance(entry.get("memory"), MemoryItem)]
+        if not selected:
+            return []
+
+        user_ids = [item.id for item in selected if item.user_id == user_id]
+        shared_profile_ids = [item.id for item in selected if item.user_id == AGENT_PROFILE_MEMORY_USER_ID]
+        self.repository.touch(user_id=user_id, agent_id=agent_id, memory_ids=user_ids)
+        self.repository.touch(
+            user_id=AGENT_PROFILE_MEMORY_USER_ID,
+            agent_id=agent_id,
+            memory_ids=shared_profile_ids,
+        )
+        return selected
+
+    def debug_retrieval_scores(
+        self,
+        user_id: str,
+        agent_id: str,
+        query_text: str | None = None,
+        limit: int = 5,
+    ) -> list[dict[str, object]]:
         items = [item for item in self.repository.list_by_user(user_id, agent_id) if item.status == "active"]
         shared_items_all = [
             item
@@ -533,21 +697,56 @@ class MemoryService:
             ids=shared_ids,
         )
 
-        semantic_id_set = {item.id for item in semantic_items}
+        semantic_score_map = _build_semantic_score_map(semantic_ids + shared_ids)
+        semantic_id_set = set(semantic_score_map.keys())
         remaining_items = [item for item in items if item.id not in semantic_id_set]
-        ranked_shared = sorted(
-            shared_items,
-            key=lambda item: (item.importance, item.confidence, item.created_at.timestamp()),
+        now = datetime.now(UTC)
+
+        unique_candidates: dict[str, MemoryItem] = {}
+        for item in semantic_items + shared_items + remaining_items:
+            unique_candidates[item.id] = item
+
+        ranked_all = sorted(
+            unique_candidates.values(),
+            key=lambda item: (
+                _composite_retrieval_score(
+                    item=item,
+                    now=now,
+                    semantic_score=semantic_score_map.get(item.id, 0.0),
+                    weights=self._retrieval_weights,
+                ),
+                item.created_at.timestamp(),
+            ),
             reverse=True,
         )
 
-        ranked_remaining = sorted(
-            remaining_items,
-            key=lambda item: (item.importance, item.confidence, item.created_at.timestamp()),
-            reverse=True,
-        )
-        combined = semantic_items + ranked_shared + ranked_remaining
-        return combined[:limit]
+        scored: list[dict[str, object]] = []
+        for rank, item in enumerate(ranked_all[:limit], start=1):
+            semantic_score = semantic_score_map.get(item.id, 0.0)
+            freshness_score = _freshness_score(item, now)
+            stability_score = _stability_score(item)
+            conflict_factor = _conflict_factor(item)
+            importance_score = max(0.0, min(1.0, item.importance))
+            final_score = _composite_retrieval_score(
+                item=item,
+                now=now,
+                semantic_score=semantic_score,
+                weights=self._retrieval_weights,
+            )
+            scored.append(
+                {
+                    "rank": rank,
+                    "memory": item,
+                    "semantic_score": semantic_score,
+                    "importance_score": importance_score,
+                    "freshness_score": freshness_score,
+                    "stability_score": stability_score,
+                    "conflict_factor": conflict_factor,
+                    "final_score": final_score,
+                },
+            )
+
+        return scored
 
     def list_memories(self, user_id: str, agent_id: str, status: str = "all") -> list[MemoryItem]:
         items = self.repository.list_by_user(user_id, agent_id)
@@ -563,6 +762,60 @@ class MemoryService:
 
     def delete_memory(self, user_id: str, agent_id: str, memory_id: str) -> MemoryItem | None:
         return self.repository.set_status(user_id=user_id, agent_id=agent_id, memory_id=memory_id, status="deleted")
+
+    def compact_similar_memories(self, user_id: str, agent_id: str) -> dict[str, object]:
+        items = [item for item in self.repository.list_by_user(user_id, agent_id) if item.status == "active"]
+        if len(items) <= 1:
+            return {
+                "total": len(items),
+                "deleted_count": 0,
+                "deleted_ids": [],
+            }
+
+        groups: dict[tuple[str, str], list[MemoryItem]] = {}
+        for item in items:
+            key = (item.subject, item.memory_type)
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(item)
+
+        deleted_ids: list[str] = []
+        now = datetime.now(UTC)
+
+        for group_items in groups.values():
+            if len(group_items) <= 1:
+                continue
+
+            ordered = sorted(
+                group_items,
+                key=lambda item: (_metabolism_score(item, now), item.created_at.timestamp()),
+                reverse=True,
+            )
+            kept: list[MemoryItem] = []
+            for item in ordered:
+                normalized_content = _normalize_memory_content(item.content)
+                is_duplicate = any(
+                    _content_similarity(normalized_content, _normalize_memory_content(existing.content)) >= 0.88
+                    for existing in kept
+                )
+                if is_duplicate:
+                    updated = self.repository.set_status(
+                        user_id=user_id,
+                        agent_id=agent_id,
+                        memory_id=item.id,
+                        status="deleted",
+                    )
+                    if updated is not None:
+                        deleted_ids.append(item.id)
+                    continue
+
+                kept.append(item)
+
+        return {
+            "total": len(items),
+            "deleted_count": len(deleted_ids),
+            "deleted_ids": deleted_ids,
+        }
 
 
 def _extract_message_text(raw_message: object) -> str:
@@ -697,7 +950,7 @@ def _build_memory_system_prompt() -> str:
         "若无长期价值信息，返回空数组[]。"
         "只输出JSON数组，每项格式: "
         "{\"subject\":\"user|agent\","
-        "\"memory_type\":\"profile|preference|relationship|goal|emotional_pattern\","
+        "\"memory_type\":\"profile|preference|relationship|goal|relationship_tendency|emotional_tendency\","
         "\"content\":\"...\",\"confidence\":0-1,\"importance\":0-1}。"
         "其中subject=agent表示agent自己的长期设定或行为偏好，subject=user表示用户相关长期信息。"
         "最多返回8条。"
@@ -709,6 +962,29 @@ def _normalize_subject(subject: str) -> str:
     if value in {"agent", "assistant", "self", "我", "角色"}:
         return "agent"
     return "user"
+
+
+def _normalize_memory_type(memory_type: str) -> str:
+    value = memory_type.strip().lower()
+    mapping = {
+        "emotion": "emotional_tendency",
+        "emotional_pattern": "emotional_tendency",
+        "emotion_pattern": "emotional_tendency",
+        "relationship": "relationship_tendency",
+    }
+    if value in mapping:
+        return mapping[value]
+
+    allowed = {
+        "profile",
+        "preference",
+        "goal",
+        "relationship_tendency",
+        "emotional_tendency",
+    }
+    if value in allowed:
+        return value
+    return "profile"
 
 
 def _build_agent_profile_seed_message(profile: AgentProfile) -> str:
@@ -805,3 +1081,134 @@ def _get_env(key: str, default: str) -> str:
                 return env_value.strip().strip('"').strip("'")
 
     return default
+
+
+def _metabolism_score(item: MemoryItem, now: datetime) -> float:
+    base_score = 0.6 * item.importance + 0.4 * item.confidence
+    reference_time = item.last_accessed_at or item.created_at
+    normalized_reference = _normalize_utc_datetime(reference_time)
+    stale_hours = max((now - normalized_reference).total_seconds() / 3600.0, 0.0)
+
+    # Half-life decay keeps old but still-relevant memories from dominating forever.
+    half_life_hours = 72.0
+    decay = 0.5 ** (stale_hours / half_life_hours)
+    access_boost = min(0.25, 0.03 * float(item.access_count))
+    return base_score * decay + access_boost
+
+
+def _stability_score(item: MemoryItem) -> float:
+    access_term = min(1.0, float(item.access_count) / 8.0)
+    confidence_term = max(0.0, min(1.0, item.confidence))
+    return 0.6 * access_term + 0.4 * confidence_term
+
+
+def _freshness_score(item: MemoryItem, now: datetime) -> float:
+    reference_time = item.last_accessed_at or item.created_at
+    normalized_reference = _normalize_utc_datetime(reference_time)
+    stale_hours = max((now - normalized_reference).total_seconds() / 3600.0, 0.0)
+    half_life_hours = 72.0
+    return 0.5 ** (stale_hours / half_life_hours)
+
+
+def _conflict_factor(item: MemoryItem) -> float:
+    if item.conflict_state == "resolved_conflict":
+        return 0.6
+    if item.conflict_state == "conflicted":
+        return 0.45
+    return 1.0
+
+
+def _composite_retrieval_score(
+    item: MemoryItem,
+    now: datetime,
+    semantic_score: float,
+    *,
+    weights: RetrievalScoreWeights,
+) -> float:
+    importance_term = max(0.0, min(1.0, item.importance))
+    freshness_term = _freshness_score(item, now)
+    stability_term = _stability_score(item)
+    conflict_term = _conflict_factor(item)
+    return (
+        weights.semantic * semantic_score
+        + weights.importance * importance_term
+        + weights.freshness * freshness_term
+        + weights.stability * stability_term
+        + weights.conflict * conflict_term
+    )
+
+
+def _normalize_utc_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _normalize_memory_content(content: str) -> str:
+    return " ".join(content.strip().lower().split())
+
+
+def _build_semantic_score_map(ordered_ids: list[str]) -> dict[str, float]:
+    if not ordered_ids:
+        return {}
+    score_map: dict[str, float] = {}
+    denominator = float(len(ordered_ids) + 1)
+    for index, memory_id in enumerate(ordered_ids):
+        if memory_id in score_map:
+            continue
+        score_map[memory_id] = max(0.0, 1.0 - (float(index) / denominator))
+    return score_map
+
+
+def _find_best_related_memory(
+    existing_items: list[MemoryItem],
+    subject: str,
+    memory_type: str,
+    normalized_content: str,
+) -> tuple[MemoryItem | None, float]:
+    best_item: MemoryItem | None = None
+    best_score = 0.0
+
+    for item in existing_items:
+        if item.subject != subject:
+            continue
+        if item.memory_type != memory_type:
+            continue
+        if item.status == "deleted":
+            continue
+
+        existing_content = _normalize_memory_content(item.content)
+        score = _content_similarity(normalized_content, existing_content)
+        if score > best_score:
+            best_score = score
+            best_item = item
+
+    return best_item, best_score
+
+
+def _content_similarity(a: str, b: str) -> float:
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    if len(shorter) >= 6 and shorter in longer:
+        return 0.93
+
+    return float(SequenceMatcher(None, a, b).ratio())
+
+
+def _is_conflict_content(old_text: str, new_text: str) -> bool:
+    old_norm = _normalize_memory_content(old_text)
+    new_norm = _normalize_memory_content(new_text)
+    if not old_norm or not new_norm:
+        return False
+
+    negative_tokens = ["不喜欢", "不是", "不会", "不要", "拒绝", "反感", "讨厌", "never", "dislike", "dont"]
+    old_negative = any(token in old_norm for token in negative_tokens)
+    new_negative = any(token in new_norm for token in negative_tokens)
+    if old_negative == new_negative:
+        return False
+
+    return _content_similarity(old_norm, new_norm) >= 0.55

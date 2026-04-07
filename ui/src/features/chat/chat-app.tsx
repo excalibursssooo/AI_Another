@@ -3,23 +3,17 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  activateMemory,
   createAgent,
   createAgentByAi,
-  deleteAgent as deleteAgentRequest,
+  getAgentLiveState,
   listConversationTurns,
-  deleteMemory,
-  freezeMemory,
   listAgents,
-  listMemories,
   streamChat,
 } from "@/lib/api/companion";
-import { AgentResponseDto, MemoryResponseDto } from "@/lib/api/types";
+import { AgentLiveStateDto, AgentResponseDto } from "@/lib/api/types";
 import { reportFrontendError, reportWebVital, sendHeartbeat } from "@/lib/api/telemetry";
-import { seedAgents, seedMemories, seedMessages } from "@/lib/mock/seed";
-import { AiAgent, ChatMessage, MemoryRecord, MemoryStatus } from "@/features/chat/types";
-
-type PanelTab = "memories" | "agents";
+import { seedAgents, seedMessages } from "@/lib/mock/seed";
+import { AiAgent, ChatMessage } from "@/features/chat/types";
 const USE_MOCK = process.env.NEXT_PUBLIC_USE_MOCK !== "false";
 const USER_ID = process.env.NEXT_PUBLIC_DEMO_USER_ID?.trim() || "u001";
 const APP_MODE = USE_MOCK ? "mock" : "live";
@@ -43,6 +37,36 @@ function uid(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+function formatAgo(iso: string): string {
+  const ts = new Date(iso).getTime();
+  if (Number.isNaN(ts)) {
+    return "刚刚";
+  }
+  const seconds = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (seconds < 60) {
+    return `${seconds}秒前`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes}分钟前`;
+  }
+  const hours = Math.floor(minutes / 60);
+  return `${hours}小时前`;
+}
+
+function moodText(label: string): string {
+  const map: Record<string, string> = {
+    calm: "平静",
+    happy: "愉悦",
+    sad: "低落",
+    anxious: "焦虑",
+    angry: "激动",
+    focused: "专注",
+    neutral: "稳定",
+  };
+  return map[label] ?? label;
+}
+
 function mapAgentFromApi(item: AgentResponseDto, index: number): AiAgent {
   return {
     id: item.id,
@@ -54,19 +78,6 @@ function mapAgentFromApi(item: AgentResponseDto, index: number): AiAgent {
     status: item.status,
     tagline: item.persona.slice(0, 28),
     avatarColor: AGENT_COLORS[index % AGENT_COLORS.length],
-  };
-}
-
-function mapMemoryFromApi(item: MemoryResponseDto): MemoryRecord {
-  return {
-    id: item.id,
-    agentId: item.agent_id,
-    memoryType: item.memory_type as MemoryRecord["memoryType"],
-    content: item.content,
-    confidence: item.confidence,
-    importance: item.importance,
-    status: item.status,
-    createdAt: item.created_at,
   };
 }
 
@@ -82,10 +93,14 @@ export function ChatApp() {
   const [agents, setAgents] = useState<AiAgent[]>(seedAgents);
   const [selectedAgentId, setSelectedAgentId] = useState<string>(seedAgents[0].id);
   const [messagesByAgent, setMessagesByAgent] = useState<Record<string, ChatMessage[]>>(seedMessages);
-  const [memories, setMemories] = useState<MemoryRecord[]>(seedMemories);
   const [input, setInput] = useState<string>("");
-  const [activeTab, setActiveTab] = useState<PanelTab>("memories");
   const [isSending, setIsSending] = useState<boolean>(false);
+  const [showAddFriendMenu, setShowAddFriendMenu] = useState<boolean>(false);
+  const [showCustomCreateForm, setShowCustomCreateForm] = useState<boolean>(false);
+  const [liveStateByAgent, setLiveStateByAgent] = useState<Record<string, AgentLiveStateDto>>({});
+  const [displayHeartbeatBpm, setDisplayHeartbeatBpm] = useState<number>(72);
+  const [displayStressLevel, setDisplayStressLevel] = useState<number>(0.2);
+  const [displayMoodIndex, setDisplayMoodIndex] = useState<number>(35);
   const [notice, setNotice] = useState<string>(USE_MOCK ? "当前为 Mock 模式" : "正在连接后端...");
 
   const [draftName, setDraftName] = useState<string>("");
@@ -94,23 +109,6 @@ export function ChatApp() {
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionIdRef = useRef<string>(uid("session"));
-
-  const loadMemories = useCallback(async (agentId: string) => {
-    if (USE_MOCK) {
-      return;
-    }
-
-    try {
-      const rows = await listMemories(USER_ID, agentId, "all");
-      const mapped = rows.map(mapMemoryFromApi);
-      setMemories((prev) => {
-        const others = prev.filter((item) => item.agentId !== agentId);
-        return [...others, ...mapped];
-      });
-    } catch (error) {
-      setNotice(`记忆加载失败: ${(error as Error).message}`);
-    }
-  }, []);
 
   const loadConversation = useCallback(async (agentId: string, agentName: string) => {
     if (USE_MOCK) {
@@ -193,10 +191,6 @@ export function ChatApp() {
   useEffect(() => {
     void loadAgents();
   }, [loadAgents]);
-
-  useEffect(() => {
-    void loadMemories(selectedAgentId);
-  }, [selectedAgentId, loadMemories]);
 
   useEffect(() => {
     if (USE_MOCK) {
@@ -298,37 +292,85 @@ export function ChatApp() {
     () => agents.find((item) => item.id === selectedAgentId) ?? agents[0],
     [agents, selectedAgentId],
   );
+  const selectedLiveState = selectedAgent ? liveStateByAgent[selectedAgent.id] : undefined;
 
   const visibleMessages = messagesByAgent[selectedAgentId] ?? [];
-  const visibleMemories = memories.filter((item) => item.agentId === selectedAgentId && item.status !== "deleted");
 
-  const setMemoryStatus = async (id: string, status: MemoryStatus) => {
-    const memory = memories.find((item) => item.id === id);
-    if (!memory) {
+  useEffect(() => {
+    if (!selectedAgent) {
       return;
     }
 
     if (USE_MOCK) {
-      setMemories((prev) => prev.map((item) => (item.id === id ? { ...item, status } : item)));
+      setLiveStateByAgent((prev) => ({
+        ...prev,
+        [selectedAgent.id]: {
+          agent_id: selectedAgent.id,
+          agent_name: selectedAgent.name,
+          mood_label: "calm",
+          mood_intensity: 0.35,
+          mood_index: 35,
+          heartbeat_bpm: 72,
+          heartbeat_interval_ms: Math.floor(60_000 / 72),
+          stress_level: 0.2,
+          trend: "steady",
+          risk_level: "low",
+          updated_at: new Date().toISOString(),
+        },
+      }));
       return;
     }
 
-    try {
-      if (status === "deleted") {
-        await deleteMemory(id, { user_id: USER_ID, agent_id: memory.agentId });
-      } else if (status === "frozen") {
-        await freezeMemory(id, { user_id: USER_ID, agent_id: memory.agentId });
-      } else {
-        await activateMemory(id, { user_id: USER_ID, agent_id: memory.agentId });
+    let disposed = false;
+    const load = async () => {
+      try {
+        const state = await getAgentLiveState(USER_ID, selectedAgent.id);
+        if (disposed) {
+          return;
+        }
+        setLiveStateByAgent((prev) => ({
+          ...prev,
+          [selectedAgent.id]: state,
+        }));
+      } catch {
+        // Keep previous state if polling fails.
       }
-      await loadMemories(memory.agentId);
-    } catch (error) {
-      setNotice(`记忆操作失败: ${(error as Error).message}`);
-    }
-  };
+    };
 
-  const createAgentHandle = async (event: FormEvent) => {
-    event.preventDefault();
+    void load();
+    const timer = setInterval(() => {
+      void load();
+    }, 4_000);
+
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+    };
+  }, [selectedAgent]);
+
+  useEffect(() => {
+    const baseHeartbeat = selectedLiveState?.heartbeat_bpm ?? 72;
+    const baseStress = selectedLiveState?.stress_level ?? 0.2;
+    const baseMood = selectedLiveState?.mood_index ?? 35;
+    setDisplayHeartbeatBpm(baseHeartbeat);
+    setDisplayStressLevel(baseStress);
+    setDisplayMoodIndex(baseMood);
+
+    const timer = setInterval(() => {
+      const t = Date.now() / 1000;
+      const heartbeatJitter = 2.6 * Math.sin(t * 2.2) + 1.3 * Math.sin(t * 3.7);
+      const stressJitter = 0.035 * Math.sin(t * 1.8);
+      const moodJitter = 1.9 * Math.sin(t * 1.2);
+
+      setDisplayHeartbeatBpm(Math.max(55, Math.min(130, Math.round(baseHeartbeat + heartbeatJitter))));
+      setDisplayStressLevel(Math.max(0, Math.min(1, baseStress + stressJitter)));
+      setDisplayMoodIndex(Math.max(0, Math.min(100, Math.round(baseMood + moodJitter))));
+    }, 900);
+
+    return () => clearInterval(timer);
+  }, [selectedLiveState?.heartbeat_bpm, selectedLiveState?.stress_level, selectedLiveState?.mood_index]);
+
+  const createAgentHandle = async () => {
     const name = draftName.trim();
     if (!name) {
       return;
@@ -349,6 +391,8 @@ export function ChatApp() {
         setDraftName("");
         setDraftPersona("");
         setDraftStyle("");
+        setShowCustomCreateForm(false);
+        setShowAddFriendMenu(false);
         setNotice("角色创建成功");
         return;
       } catch (error) {
@@ -385,6 +429,8 @@ export function ChatApp() {
     setDraftName("");
     setDraftPersona("");
     setDraftStyle("");
+    setShowCustomCreateForm(false);
+    setShowAddFriendMenu(false);
   };
 
   const aiCreateAgentHandle = async () => {
@@ -394,6 +440,7 @@ export function ChatApp() {
         const mapped = mapAgentFromApi(created.agent, agents.length);
         setAgents((prev) => [mapped, ...prev]);
         setSelectedAgentId(mapped.id);
+        setShowAddFriendMenu(false);
         setNotice(`AI 建角成功（${created.model}）`);
         return;
       } catch (error) {
@@ -429,24 +476,7 @@ export function ChatApp() {
       ],
     }));
     setSelectedAgentId(generated.id);
-  };
-
-  const deleteAgentHandle = async (agentId: string) => {
-    if (agentId === "default") {
-      return;
-    }
-
-    if (!USE_MOCK) {
-      try {
-        await deleteAgentRequest(agentId);
-      } catch (error) {
-        setNotice(`删除角色失败: ${(error as Error).message}`);
-        return;
-      }
-    }
-
-    setAgents((prev) => prev.filter((item) => item.id !== agentId));
-    setSelectedAgentId((prev) => (prev === agentId ? "default" : prev));
+    setShowAddFriendMenu(false);
   };
 
   const sendMessage = async (event: FormEvent) => {
@@ -516,7 +546,7 @@ export function ChatApp() {
                 };
               });
             },
-            onDone: () => {
+            onDone: (event) => {
               setMessagesByAgent((prev) => {
                 const existing = prev[selectedAgentId] ?? [];
                 return {
@@ -526,10 +556,34 @@ export function ChatApp() {
                   ),
                 };
               });
+
+              setLiveStateByAgent((prev) => {
+                const previous = prev[selectedAgentId];
+                const nextIndex = Math.round(Math.max(0, Math.min(1, event.mood_intensity)) * 100);
+                const previousIndex = previous?.mood_index ?? nextIndex;
+                const trend: "up" | "down" | "steady" =
+                  nextIndex >= previousIndex + 6 ? "up" : nextIndex <= previousIndex - 6 ? "down" : "steady";
+
+                return {
+                  ...prev,
+                  [selectedAgentId]: {
+                    agent_id: event.agent_id,
+                    agent_name: event.agent_name,
+                    mood_label: event.emotion_label,
+                    mood_intensity: event.mood_intensity,
+                    mood_index: nextIndex,
+                    heartbeat_bpm: event.heartbeat_bpm,
+                    heartbeat_interval_ms: Math.floor(60_000 / Math.max(1, event.heartbeat_bpm)),
+                    stress_level: Math.max(0, Math.min(1, event.mood_intensity * (event.risk_level === "low" ? 0.4 : 0.75))),
+                    trend,
+                    risk_level: event.risk_level,
+                    updated_at: new Date().toISOString(),
+                  },
+                };
+              });
             },
           },
         );
-        await loadMemories(selectedAgentId);
       } catch (error) {
         setMessagesByAgent((prev) => {
           const existing = prev[selectedAgentId] ?? [];
@@ -577,13 +631,28 @@ export function ChatApp() {
     }, 30);
   };
 
+  const heartbeatDuration = `${Math.max(0.45, 60 / Math.max(1, displayHeartbeatBpm))}s`;
+
   return (
     <div className="app-bg min-h-screen p-4 md:p-6">
       <div className="mx-auto grid h-[calc(100vh-2rem)] max-w-[1600px] grid-cols-1 overflow-hidden rounded-[30px] border border-[var(--line-soft)] bg-[var(--surface-main)] shadow-[var(--shadow-main)] backdrop-blur-sm lg:grid-cols-[320px_1fr_360px]">
         <aside className="panel-scroll flex min-h-0 flex-col border-b border-[var(--line-soft)] bg-[var(--surface-side)] lg:border-r lg:border-b-0">
-          <div className="px-5 pt-6 pb-4">
-            <p className="text-xs uppercase tracking-[0.3em] text-[var(--text-muted)]">AI Contacts</p>
-            <h2 className="mt-2 text-2xl font-semibold text-[var(--text-main)]">陪伴联系人</h2>
+          <div className="relative px-5 pt-6 pb-4">
+            <div className="flex items-center justify-between">
+              <p className="text-xs uppercase tracking-[0.3em] text-[var(--text-muted)]">AI Contacts</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAddFriendMenu((prev) => !prev);
+                  setShowCustomCreateForm(false);
+                }}
+                className="friend-fab absolute top-4 right-5 z-10 h-12 w-12 text-xl font-semibold text-[var(--brand-text)] transition-all duration-300 hover:scale-110"
+                aria-label="添加好友"
+              >
+                +
+              </button>
+            </div>
+            <h2 className="mt-2 text-2xl font-semibold text-[var(--text-main)]">联系人</h2>
           </div>
           <div className="flex-1 space-y-2 overflow-y-auto px-3 pb-6">
             {agents.map((agent) => {
@@ -607,7 +676,7 @@ export function ChatApp() {
                     />
                     <div className="min-w-0">
                       <p className="truncate text-sm font-semibold text-[var(--text-main)]">{agent.name}</p>
-                      <p className="truncate text-xs text-[var(--text-muted)]">{agent.tagline}</p>
+                      <p className="truncate text-xs text-[var(--text-muted)]">在线</p>
                     </div>
                   </div>
                 </button>
@@ -620,7 +689,6 @@ export function ChatApp() {
           <header className="border-b border-[var(--line-soft)] px-5 py-4 md:px-8">
             <p className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">Current AI</p>
             <h1 className="mt-1 text-2xl font-semibold text-[var(--text-main)]">{selectedAgent?.name}</h1>
-            <p className="mt-1 text-sm text-[var(--text-muted)]">{selectedAgent?.persona}</p>
             <p className="mt-1 text-xs text-[var(--text-muted)]">{notice}</p>
           </header>
 
@@ -661,120 +729,140 @@ export function ChatApp() {
         </main>
 
         <aside className="panel-scroll flex min-h-0 flex-col border-t border-[var(--line-soft)] bg-[var(--surface-side)] lg:border-t-0 lg:border-l">
-          <div className="flex gap-2 border-b border-[var(--line-soft)] px-4 py-3">
-            <button
-              type="button"
-              onClick={() => setActiveTab("memories")}
-              className={`rounded-xl px-3 py-2 text-sm transition-all duration-300 ${
-                activeTab === "memories"
-                  ? "bg-[var(--surface-card)] text-[var(--text-main)] shadow-[var(--shadow-neon)]"
-                  : "text-[var(--text-muted)] hover:text-[var(--text-main)]"
-              }`}
-            >
-              记忆管理
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab("agents")}
-              className={`rounded-xl px-3 py-2 text-sm transition-all duration-300 ${
-                activeTab === "agents"
-                  ? "bg-[var(--surface-card)] text-[var(--text-main)] shadow-[var(--shadow-neon)]"
-                  : "text-[var(--text-muted)] hover:text-[var(--text-main)]"
-              }`}
-            >
-              角色管理
-            </button>
+          <div className="border-b border-[var(--line-soft)] px-4 py-3">
+            <p className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">Agent 实时看板</p>
+            <p className="mt-2 text-sm text-[var(--text-main)]">动态观察当前角色心情与心跳</p>
           </div>
-
-          {activeTab === "memories" ? (
-            <div className="flex-1 space-y-3 overflow-y-auto p-4">
-              {visibleMemories.length === 0 ? (
-                <p className="rounded-xl border border-[var(--line-soft)] bg-[var(--surface-card)] p-3 text-sm text-[var(--text-muted)]">当前角色还没有记忆。</p>
-              ) : (
-                visibleMemories.map((item) => (
-                  <section key={item.id} className="rounded-2xl border border-[var(--line-soft)] bg-[var(--surface-card)] p-3 shadow-[0_10px_24px_rgba(8,12,38,0.35)]">
-                    <p className="text-xs uppercase tracking-[0.14em] text-[var(--text-muted)]">{item.memoryType}</p>
-                    <p className="mt-2 text-sm text-[var(--text-main)]">{item.content}</p>
-                    <p className="mt-2 text-[11px] text-[var(--text-muted)]">
-                      confidence {item.confidence.toFixed(2)} · importance {item.importance.toFixed(2)}
-                    </p>
-                    <div className="mt-3 flex gap-2 text-xs">
-                      <button
-                        type="button"
-                        onClick={() => void setMemoryStatus(item.id, item.status === "frozen" ? "active" : "frozen")}
-                        className="rounded-lg border border-[var(--line-soft)] px-2 py-1 text-[var(--text-main)] transition-all duration-300 hover:border-[var(--line-strong)] hover:shadow-[var(--shadow-neon)]"
-                      >
-                        {item.status === "frozen" ? "激活" : "冻结"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void setMemoryStatus(item.id, "deleted")}
-                        className="rounded-lg border border-[var(--line-soft)] px-2 py-1 text-[var(--text-main)] transition-all duration-300 hover:border-fuchsia-400/70 hover:text-fuchsia-200"
-                      >
-                        删除
-                      </button>
-                    </div>
-                  </section>
-                ))
-              )}
-            </div>
-          ) : (
-            <div className="flex-1 space-y-4 overflow-y-auto p-4">
-              <div className="space-y-2">
-                {agents.map((agent) => (
-                  <section key={agent.id} className="rounded-2xl border border-[var(--line-soft)] bg-[var(--surface-card)] p-3 shadow-[0_10px_24px_rgba(8,12,38,0.35)]">
-                    <div className="flex items-center justify-between">
-                      <p className="text-sm font-semibold text-[var(--text-main)]">{agent.name}</p>
-                      <button
-                        type="button"
-                        onClick={() => void deleteAgentHandle(agent.id)}
-                        disabled={agent.id === "default"}
-                        className="text-xs text-[var(--text-muted)] disabled:opacity-40"
-                      >
-                        删除
-                      </button>
-                    </div>
-                    <p className="mt-1 text-xs text-[var(--text-muted)]">{agent.speakingStyle}</p>
-                  </section>
-                ))}
+          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            <section className="rounded-2xl border border-[var(--line-soft)] bg-[var(--surface-card)] p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-[var(--text-muted)]">当前心情</p>
+                  <p className="mt-1 text-lg font-semibold text-[var(--text-main)]">
+                    {moodText(selectedLiveState?.mood_label ?? "calm")}
+                  </p>
+                </div>
+                <div className="heartbeat-core" style={{ ["--beat-duration" as string]: heartbeatDuration }}>
+                  <span className="heartbeat-ring" />
+                  <span className="heartbeat-dot" />
+                </div>
               </div>
+              <div className="mt-4 h-2 rounded-full bg-white/10">
+                <div
+                  className="h-2 rounded-full transition-all duration-500"
+                  style={{
+                    width: `${displayMoodIndex}%`,
+                    backgroundImage: "linear-gradient(120deg, #8a2be2 0%, #d946ef 42%, #22d3ee 100%)",
+                    boxShadow: "0 0 14px rgba(168,85,247,0.45)",
+                  }}
+                />
+              </div>
+              <p className="mt-2 text-xs text-[var(--text-muted)]">心情指数 {displayMoodIndex} / 100</p>
+            </section>
 
-              <form onSubmit={(event) => void createAgentHandle(event)} className="space-y-2 rounded-2xl border border-[var(--line-soft)] bg-[var(--surface-card)] p-3 shadow-[var(--shadow-neon)]">
-                <p className="text-sm font-semibold text-[var(--text-main)]">手动创建角色</p>
-                <input
-                  value={draftName}
-                  onChange={(event) => setDraftName(event.target.value)}
-                  placeholder="角色名字"
-                  className="w-full rounded-lg border border-[var(--line-soft)] bg-transparent px-3 py-2 text-sm text-[var(--text-main)] outline-none transition-all duration-300 placeholder:text-[var(--text-muted)] focus:border-[var(--line-strong)] focus:shadow-[var(--shadow-neon)]"
-                />
-                <input
-                  value={draftPersona}
-                  onChange={(event) => setDraftPersona(event.target.value)}
-                  placeholder="角色性格"
-                  className="w-full rounded-lg border border-[var(--line-soft)] bg-transparent px-3 py-2 text-sm text-[var(--text-main)] outline-none transition-all duration-300 placeholder:text-[var(--text-muted)] focus:border-[var(--line-strong)] focus:shadow-[var(--shadow-neon)]"
-                />
-                <input
-                  value={draftStyle}
-                  onChange={(event) => setDraftStyle(event.target.value)}
-                  placeholder="说话风格"
-                  className="w-full rounded-lg border border-[var(--line-soft)] bg-transparent px-3 py-2 text-sm text-[var(--text-main)] outline-none transition-all duration-300 placeholder:text-[var(--text-muted)] focus:border-[var(--line-strong)] focus:shadow-[var(--shadow-neon)]"
-                />
-                <button
-                  type="submit"
-                  className="w-full rounded-lg bg-[var(--brand-main)] px-3 py-2 text-sm font-semibold text-[var(--brand-text)] transition-all duration-300 hover:scale-[1.02] hover:shadow-[0_0_24px_rgba(217,70,239,0.45)]"
-                >
-                  创建
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void aiCreateAgentHandle()}
-                  className="w-full rounded-lg border border-[var(--line-soft)] px-3 py-2 text-sm text-[var(--text-main)] transition-all duration-300 hover:border-[var(--line-strong)] hover:shadow-[var(--shadow-neon)]"
-                >
-                  AI 自动生成
-                </button>
-              </form>
-            </div>
-          )}
+            <section className="grid grid-cols-2 gap-2">
+              <article className="rounded-xl border border-[var(--line-soft)] bg-[var(--surface-card)] p-3">
+                <p className="text-xs text-[var(--text-muted)]">心跳频率</p>
+                <p className="mt-1 text-base font-semibold text-[var(--text-main)]">{displayHeartbeatBpm} bpm</p>
+              </article>
+              <article className="rounded-xl border border-[var(--line-soft)] bg-[var(--surface-card)] p-3">
+                <p className="text-xs text-[var(--text-muted)]">压力水平</p>
+                <p className="mt-1 text-base font-semibold text-[var(--text-main)]">
+                  {Math.round(displayStressLevel * 100)}%
+                </p>
+                <div className="mt-2 h-1.5 rounded-full bg-white/10">
+                  <div
+                    className="h-1.5 rounded-full transition-all duration-500"
+                    style={{
+                      width: `${Math.round(displayStressLevel * 100)}%`,
+                      backgroundImage: "linear-gradient(90deg, rgba(34,211,238,0.9), rgba(244,114,182,0.95))",
+                    }}
+                  />
+                </div>
+              </article>
+              <article className="rounded-xl border border-[var(--line-soft)] bg-[var(--surface-card)] p-3">
+                <p className="text-xs text-[var(--text-muted)]">趋势</p>
+                <p className="mt-1 text-base font-semibold text-[var(--text-main)]">{selectedLiveState?.trend ?? "steady"}</p>
+              </article>
+              <article className="rounded-xl border border-[var(--line-soft)] bg-[var(--surface-card)] p-3">
+                <p className="text-xs text-[var(--text-muted)]">最后更新</p>
+                <p className="mt-1 text-base font-semibold text-[var(--text-main)]">
+                  {selectedLiveState ? formatAgo(selectedLiveState.updated_at) : "未更新"}
+                </p>
+              </article>
+            </section>
+
+            <section className="rounded-2xl border border-[var(--line-soft)] bg-[var(--surface-card)] p-4 text-sm text-[var(--text-muted)]">
+              风险等级: <span className="text-[var(--text-main)]">{selectedLiveState?.risk_level ?? "low"}</span>
+            </section>
+
+            {showAddFriendMenu ? (
+              <section className="friend-pop space-y-3 border-t border-[var(--line-soft)] pt-3">
+                <p className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">添加好友</p>
+                {!showCustomCreateForm ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setShowCustomCreateForm(true)}
+                      className="w-full rounded-2xl border border-[var(--line-soft)] bg-[var(--surface-card)] px-4 py-3 text-left text-sm font-semibold text-[var(--text-main)] transition-all duration-300 hover:shadow-[var(--shadow-neon)]"
+                    >
+                      自定义你的ta
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void aiCreateAgentHandle()}
+                      className="w-full rounded-2xl border border-[var(--line-soft)] bg-[var(--surface-card)] px-4 py-3 text-left text-sm font-semibold text-[var(--text-main)] transition-all duration-300 hover:shadow-[var(--shadow-neon)]"
+                    >
+                      你有一个好友申请
+                    </button>
+                  </>
+                ) : (
+                  <form
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void createAgentHandle();
+                    }}
+                    className="friend-pop space-y-2 rounded-2xl border border-[var(--line-soft)] bg-[var(--surface-card)] p-3 shadow-[var(--shadow-neon)]"
+                  >
+                    <p className="text-sm font-semibold text-[var(--text-main)]">自定义你的ta</p>
+                    <input
+                      value={draftName}
+                      onChange={(event) => setDraftName(event.target.value)}
+                      placeholder="昵称"
+                      className="w-full rounded-lg border border-[var(--line-soft)] bg-transparent px-3 py-2 text-sm text-[var(--text-main)] outline-none transition-all duration-300 placeholder:text-[var(--text-muted)] focus:border-[var(--line-strong)] focus:shadow-[var(--shadow-neon)]"
+                    />
+                    <input
+                      value={draftPersona}
+                      onChange={(event) => setDraftPersona(event.target.value)}
+                      placeholder="个性"
+                      className="w-full rounded-lg border border-[var(--line-soft)] bg-transparent px-3 py-2 text-sm text-[var(--text-main)] outline-none transition-all duration-300 placeholder:text-[var(--text-muted)] focus:border-[var(--line-strong)] focus:shadow-[var(--shadow-neon)]"
+                    />
+                    <input
+                      value={draftStyle}
+                      onChange={(event) => setDraftStyle(event.target.value)}
+                      placeholder="说话风格"
+                      className="w-full rounded-lg border border-[var(--line-soft)] bg-transparent px-3 py-2 text-sm text-[var(--text-main)] outline-none transition-all duration-300 placeholder:text-[var(--text-muted)] focus:border-[var(--line-strong)] focus:shadow-[var(--shadow-neon)]"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        type="submit"
+                        className="flex-1 rounded-lg bg-[var(--brand-main)] px-3 py-2 text-sm font-semibold text-[var(--brand-text)] transition-all duration-300 hover:scale-[1.02] hover:shadow-[0_0_24px_rgba(217,70,239,0.45)]"
+                      >
+                        添加
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowCustomCreateForm(false)}
+                        className="rounded-lg border border-[var(--line-soft)] px-3 py-2 text-sm text-[var(--text-main)]"
+                      >
+                        返回
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </section>
+            ) : null}
+          </div>
         </aside>
       </div>
     </div>

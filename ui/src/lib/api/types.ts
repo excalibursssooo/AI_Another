@@ -15,9 +15,25 @@ export interface ChatDoneEvent {
   agent_id: string;
   agent_name: string;
   emotion_label: string;
+  mood_intensity: number;
+  heartbeat_bpm: number;
   risk_level: string;
   recalled_memories: Array<{ memory_type: string; content: string }>;
   persisted_memory_count: number;
+}
+
+export interface AgentLiveStateDto {
+  agent_id: string;
+  agent_name: string;
+  mood_label: string;
+  mood_intensity: number;
+  mood_index: number;
+  heartbeat_bpm: number;
+  heartbeat_interval_ms: number;
+  stress_level: number;
+  trend: "up" | "down" | "steady";
+  risk_level: string;
+  updated_at: string;
 }
 
 export interface ConversationTurnDto {

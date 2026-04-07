@@ -1,5 +1,6 @@
 import { httpDelete, httpGet, httpPost, streamPost } from "@/lib/api/client";
 import {
+  AgentLiveStateDto,
   AgentAICreateResponseDto,
   AgentCreateRequestDto,
   AgentResponseDto,
@@ -73,6 +74,8 @@ export async function streamChat(
         agent_id: event.agent_id,
         agent_name: event.agent_name,
         emotion_label: event.emotion_label,
+        mood_intensity: typeof event.mood_intensity === "number" ? event.mood_intensity : 0.35,
+        heartbeat_bpm: typeof event.heartbeat_bpm === "number" ? event.heartbeat_bpm : 72,
         risk_level: event.risk_level,
         recalled_memories: event.recalled_memories
           .filter(
@@ -101,4 +104,9 @@ export async function listConversationTurns(
     limit: String(limit),
   }).toString();
   return httpGet<ConversationTurnDto[]>(`/conversations?${query}`);
+}
+
+export async function getAgentLiveState(userId: string, agentId: string): Promise<AgentLiveStateDto> {
+  const query = new URLSearchParams({ user_id: userId }).toString();
+  return httpGet<AgentLiveStateDto>(`/agents/${agentId}/state/live?${query}`);
 }

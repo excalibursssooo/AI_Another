@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,12 +10,13 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 import socket
 from starlette.responses import StreamingResponse
-from typing import Iterator
+from typing import Any, Iterator
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
 from core.agents.service import AgentAICreationError, AgentService
 from core.emotion.service import EmotionService
+from core.memory.models import MemoryItem
 from core.memory.service import MemoryService
 from core.safety.service import SafetyService
 from core.session.conversation_store import ConversationStore
@@ -46,7 +48,6 @@ agent_service = AgentService.build_from_env()
 task_service = TaskService.build_from_env()
 orchestrator = SessionOrchestrator(
     memory_service=memory_service,
-    emotion_service=emotion_service,
     safety_service=safety_service,
     reply_generator=reply_generator,
     conversation_store=conversation_store,
@@ -65,9 +66,25 @@ class ChatResponse(BaseModel):
     agent_id: str
     agent_name: str
     emotion_label: str
+    mood_intensity: float
+    heartbeat_bpm: int
     risk_level: str
     recalled_memories: list[dict[str, str]]
     persisted_memory_count: int
+
+
+class AgentLiveStateResponse(BaseModel):
+    agent_id: str
+    agent_name: str
+    mood_label: str
+    mood_intensity: float
+    mood_index: int
+    heartbeat_bpm: int
+    heartbeat_interval_ms: int
+    stress_level: float
+    trend: str
+    risk_level: str
+    updated_at: str
 
 
 class ConversationTurnResponse(BaseModel):
@@ -202,7 +219,10 @@ class MemoryResponse(BaseModel):
     confidence: float
     importance: float
     status: str
+    conflict_state: str
     created_at: str
+    access_count: int
+    last_accessed_at: str | None
 
 
 class MemoryExtractDebugRequest(BaseModel):
@@ -236,6 +256,58 @@ class MemoryExtractDebugResponse(BaseModel):
 class MemoryStatusRequest(BaseModel):
     user_id: str = Field(..., min_length=1)
     agent_id: str = Field(default="default", min_length=1)
+
+
+class MemoryCompactResponse(BaseModel):
+    total: int
+    deleted_count: int
+    deleted_ids: list[str]
+
+
+class MemoryRecallDebugRequest(BaseModel):
+    user_id: str = Field(..., min_length=1)
+    agent_id: str = Field(default="default", min_length=1)
+    query_text: str | None = Field(default=None, max_length=4000)
+    limit: int = Field(default=5, ge=1, le=50)
+
+
+class MemoryRecallScoreItem(BaseModel):
+    rank: int
+    memory_id: str
+    user_id: str
+    agent_id: str
+    subject: str
+    memory_type: str
+    content: str
+    status: str
+    conflict_state: str
+    semantic_score: float
+    importance_score: float
+    freshness_score: float
+    stability_score: float
+    conflict_factor: float
+    final_score: float
+
+
+class MemoryRecallDebugResponse(BaseModel):
+    query_text: str
+    items: list[MemoryRecallScoreItem]
+
+
+class MemoryRecallWeights(BaseModel):
+    semantic: float
+    importance: float
+    freshness: float
+    stability: float
+    conflict: float
+
+
+class MemoryRecallWeightsUpdateRequest(BaseModel):
+    semantic: float = Field(..., ge=0.0, le=10.0)
+    importance: float = Field(..., ge=0.0, le=10.0)
+    freshness: float = Field(..., ge=0.0, le=10.0)
+    stability: float = Field(..., ge=0.0, le=10.0)
+    conflict: float = Field(..., ge=0.0, le=10.0)
 
 
 class TaskConfirmRequest(BaseModel):
@@ -303,12 +375,102 @@ TELEMETRY_ENABLED = os.getenv("TELEMETRY_ENABLED", "true").strip().lower() in {"
 _frontend_heartbeats: list[dict[str, object]] = []
 _frontend_errors: list[dict[str, object]] = []
 _web_vitals: list[dict[str, object]] = []
+_agent_live_states: dict[tuple[str, str], dict[str, object]] = {}
 
 
 def _append_telemetry(buffer: list[dict[str, object]], payload: dict[str, object]) -> None:
     buffer.append(payload)
     if len(buffer) > MAX_TELEMETRY_ITEMS:
         del buffer[0 : len(buffer) - MAX_TELEMETRY_ITEMS]
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _to_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _derive_stress_level(mood_label: str, mood_intensity: float, risk_level: str) -> float:
+    base = 0.25 * mood_intensity
+    if mood_label in {"anxious", "angry", "sad"}:
+        base += 0.45 * mood_intensity
+    if risk_level in {"medium", "high"}:
+        base += 0.2
+    return max(0.0, min(1.0, base))
+
+
+def _update_agent_live_state(
+    *,
+    user_id: str,
+    agent_id: str,
+    agent_name: str,
+    mood_label: str,
+    mood_intensity: float,
+    heartbeat_bpm: int,
+    risk_level: str,
+) -> dict[str, object]:
+    key = (user_id, agent_id)
+    previous = _agent_live_states.get(key)
+
+    mood = max(0.0, min(1.0, mood_intensity))
+    bpm = max(55, min(130, int(heartbeat_bpm)))
+    mood_index = int(round(mood * 100))
+    stress_level = _derive_stress_level(mood_label=mood_label, mood_intensity=mood, risk_level=risk_level)
+
+    trend = "steady"
+    if previous is not None:
+        old_index = _to_int(previous.get("mood_index", mood_index), mood_index)
+        if mood_index >= old_index + 6:
+            trend = "up"
+        elif mood_index <= old_index - 6:
+            trend = "down"
+
+    state = {
+        "agent_id": agent_id,
+        "agent_name": agent_name,
+        "mood_label": mood_label,
+        "mood_intensity": mood,
+        "mood_index": mood_index,
+        "heartbeat_bpm": bpm,
+        "heartbeat_interval_ms": int(60_000 / max(1, bpm)),
+        "stress_level": stress_level,
+        "trend": trend,
+        "risk_level": risk_level,
+        "updated_at": _now_iso(),
+    }
+    _agent_live_states[key] = state
+    return state
+
+
+def _get_agent_live_state(user_id: str, agent_id: str, agent_name: str) -> dict[str, object]:
+    state = _agent_live_states.get((user_id, agent_id))
+    if state is not None:
+        return state
+    return {
+        "agent_id": agent_id,
+        "agent_name": agent_name,
+        "mood_label": "calm",
+        "mood_intensity": 0.35,
+        "mood_index": 35,
+        "heartbeat_bpm": 72,
+        "heartbeat_interval_ms": int(60_000 / 72),
+        "stress_level": 0.2,
+        "trend": "steady",
+        "risk_level": "low",
+        "updated_at": _now_iso(),
+    }
 
 
 @app.get("/health")
@@ -412,9 +574,45 @@ def chat(req: ChatRequest) -> StreamingResponse:
 
     def event_stream() -> Iterator[str]:
         for event in stream_iter:
+            if event.get("type") == "done":
+                _update_agent_live_state(
+                    user_id=req.user_id,
+                    agent_id=str(event.get("agent_id", req.agent_id)),
+                    agent_name=str(event.get("agent_name", selected_agent.display_name or selected_agent.name)),
+                    mood_label=str(event.get("emotion_label", "calm")),
+                    mood_intensity=_to_float(event.get("mood_intensity", 0.35), 0.35),
+                    heartbeat_bpm=_to_int(event.get("heartbeat_bpm", 72), 72),
+                    risk_level=str(event.get("risk_level", "low")),
+                )
             yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.get("/agents/{agent_id}/state/live", response_model=AgentLiveStateResponse)
+def get_agent_live_state(agent_id: str, user_id: str) -> AgentLiveStateResponse:
+    selected_agent = agent_service.get_agent(agent_id)
+    if selected_agent is None:
+        raise HTTPException(status_code=404, detail="agent not found")
+
+    state = _get_agent_live_state(
+        user_id=user_id,
+        agent_id=agent_id,
+        agent_name=selected_agent.display_name or selected_agent.name,
+    )
+    return AgentLiveStateResponse(
+        agent_id=str(state["agent_id"]),
+        agent_name=str(state["agent_name"]),
+        mood_label=str(state["mood_label"]),
+        mood_intensity=_to_float(state["mood_intensity"], 0.35),
+        mood_index=_to_int(state["mood_index"], 35),
+        heartbeat_bpm=_to_int(state["heartbeat_bpm"], 72),
+        heartbeat_interval_ms=_to_int(state["heartbeat_interval_ms"], int(60_000 / 72)),
+        stress_level=_to_float(state["stress_level"], 0.2),
+        trend=str(state["trend"]),
+        risk_level=str(state["risk_level"]),
+        updated_at=str(state["updated_at"]),
+    )
 
 
 @app.get("/conversations", response_model=list[ConversationTurnResponse])
@@ -545,15 +743,15 @@ def debug_agent_memory_seed(agent_id: str, req: AgentMemorySeedDebugRequest) -> 
         dry_run=bool(debug.get("dry_run", True)),
         force_reextract=bool(debug.get("force_reextract", False)),
         skipped_existing=bool(debug.get("skipped_existing", False)),
-        existing_count=int(debug.get("existing_count", 0)),
+        existing_count=_to_int(debug.get("existing_count", 0), 0),
         used_fallback=bool(debug.get("used_fallback", False)),
         extraction_backend=str(extraction_debug.get("backend", "unknown")),
         extraction_model=str(extraction_debug.get("model", "unknown")),
         extraction_is_llm=bool(extraction_debug.get("is_llm", False)),
         extraction_reason=str(extraction_debug.get("reason", "")),
         raw_text=str(extraction_debug.get("raw_text", "")),
-        candidate_count=int(debug.get("candidate_count", 0)),
-        persisted_count=int(debug.get("persisted_count", 0)),
+        candidate_count=_to_int(debug.get("candidate_count", 0), 0),
+        persisted_count=_to_int(debug.get("persisted_count", 0), 0),
         candidates=candidates,
     )
 
@@ -734,7 +932,10 @@ def list_memories(user_id: str, agent_id: str = "default", status: str = "all") 
             confidence=item.confidence,
             importance=item.importance,
             status=item.status,
+            conflict_state=item.conflict_state,
             created_at=item.created_at.isoformat(),
+            access_count=item.access_count,
+            last_accessed_at=item.last_accessed_at.isoformat() if item.last_accessed_at else None,
         )
         for item in memories
     ]
@@ -808,7 +1009,10 @@ def freeze_memory(memory_id: str, req: MemoryStatusRequest) -> MemoryResponse:
         confidence=updated.confidence,
         importance=updated.importance,
         status=updated.status,
+        conflict_state=updated.conflict_state,
         created_at=updated.created_at.isoformat(),
+        access_count=updated.access_count,
+        last_accessed_at=updated.last_accessed_at.isoformat() if updated.last_accessed_at else None,
     )
 
 
@@ -827,7 +1031,10 @@ def activate_memory(memory_id: str, req: MemoryStatusRequest) -> MemoryResponse:
         confidence=updated.confidence,
         importance=updated.importance,
         status=updated.status,
+        conflict_state=updated.conflict_state,
         created_at=updated.created_at.isoformat(),
+        access_count=updated.access_count,
+        last_accessed_at=updated.last_accessed_at.isoformat() if updated.last_accessed_at else None,
     )
 
 
@@ -846,7 +1053,96 @@ def delete_memory(memory_id: str, req: MemoryStatusRequest) -> MemoryResponse:
         confidence=updated.confidence,
         importance=updated.importance,
         status=updated.status,
+        conflict_state=updated.conflict_state,
         created_at=updated.created_at.isoformat(),
+        access_count=updated.access_count,
+        last_accessed_at=updated.last_accessed_at.isoformat() if updated.last_accessed_at else None,
+    )
+
+
+@app.post("/memories/compact", response_model=MemoryCompactResponse)
+def compact_memories(req: MemoryStatusRequest) -> MemoryCompactResponse:
+    result = memory_service.compact_similar_memories(user_id=req.user_id, agent_id=req.agent_id)
+    deleted_ids_obj = result.get("deleted_ids", [])
+    deleted_ids = deleted_ids_obj if isinstance(deleted_ids_obj, list) else []
+    return MemoryCompactResponse(
+        total=_to_int(result.get("total", 0), 0),
+        deleted_count=_to_int(result.get("deleted_count", 0), 0),
+        deleted_ids=[str(item) for item in deleted_ids if isinstance(item, str)],
+    )
+
+
+@app.post("/memories/recall/debug", response_model=MemoryRecallDebugResponse)
+def debug_memory_recall(req: MemoryRecallDebugRequest) -> MemoryRecallDebugResponse:
+    scored = memory_service.debug_retrieval_scores(
+        user_id=req.user_id,
+        agent_id=req.agent_id,
+        query_text=req.query_text,
+        limit=req.limit,
+    )
+
+    items: list[MemoryRecallScoreItem] = []
+    for entry in scored:
+        memory_obj = entry.get("memory")
+        if not isinstance(memory_obj, MemoryItem):
+            continue
+        items.append(
+            MemoryRecallScoreItem(
+                rank=_to_int(entry.get("rank", 0), 0),
+                memory_id=memory_obj.id,
+                user_id=memory_obj.user_id,
+                agent_id=memory_obj.agent_id,
+                subject=memory_obj.subject,
+                memory_type=memory_obj.memory_type,
+                content=memory_obj.content,
+                status=memory_obj.status,
+                conflict_state=memory_obj.conflict_state,
+                semantic_score=_to_float(entry.get("semantic_score", 0.0), 0.0),
+                importance_score=_to_float(entry.get("importance_score", 0.0), 0.0),
+                freshness_score=_to_float(entry.get("freshness_score", 0.0), 0.0),
+                stability_score=_to_float(entry.get("stability_score", 0.0), 0.0),
+                conflict_factor=_to_float(entry.get("conflict_factor", 0.0), 0.0),
+                final_score=_to_float(entry.get("final_score", 0.0), 0.0),
+            ),
+        )
+
+    return MemoryRecallDebugResponse(
+        query_text=req.query_text or "",
+        items=items,
+    )
+
+
+@app.get("/memories/recall/weights", response_model=MemoryRecallWeights)
+def get_memory_recall_weights() -> MemoryRecallWeights:
+    weights = memory_service.get_retrieval_weights()
+    return MemoryRecallWeights(
+        semantic=weights.semantic,
+        importance=weights.importance,
+        freshness=weights.freshness,
+        stability=weights.stability,
+        conflict=weights.conflict,
+    )
+
+
+@app.post("/memories/recall/weights", response_model=MemoryRecallWeights)
+def update_memory_recall_weights(req: MemoryRecallWeightsUpdateRequest) -> MemoryRecallWeights:
+    total = req.semantic + req.importance + req.freshness + req.stability + req.conflict
+    if total <= 0:
+        raise HTTPException(status_code=400, detail="at least one weight must be greater than 0")
+
+    updated = memory_service.update_retrieval_weights(
+        semantic=req.semantic,
+        importance=req.importance,
+        freshness=req.freshness,
+        stability=req.stability,
+        conflict=req.conflict,
+    )
+    return MemoryRecallWeights(
+        semantic=updated.semantic,
+        importance=updated.importance,
+        freshness=updated.freshness,
+        stability=updated.stability,
+        conflict=updated.conflict,
     )
 
 

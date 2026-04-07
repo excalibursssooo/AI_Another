@@ -16,6 +16,9 @@ class MemoryItem:
     importance: float
     status: str
     created_at: datetime
+    conflict_state: str = "none"
+    access_count: int = 0
+    last_accessed_at: datetime | None = None
 
 
 @dataclass

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import os
 from pathlib import Path
 from typing import Any, Iterator
+import json
 
 from pydantic import SecretStr
 
@@ -11,6 +13,14 @@ from core.session.conversation_store import ConversationTurn
 
 class LLMUnavailableError(RuntimeError):
     pass
+
+
+@dataclass
+class GeneratedReply:
+    reply: str
+    mood_label: str
+    mood_intensity: float
+    heartbeat_bpm: int
 
 
 class ReplyGenerator:
@@ -58,16 +68,12 @@ class ReplyGenerator:
     def generate(
         self,
         user_message: str,
-        emotion_label: str,
-        emotion_intensity: float,
         recalled_memories: list[dict[str, str]],
         recent_turns: list[ConversationTurn],
         persona_prompt: str | None = None,
-    ) -> str:
+    ) -> GeneratedReply:
         messages = _build_messages(
             user_message=user_message,
-            emotion_label=emotion_label,
-            emotion_intensity=emotion_intensity,
             recalled_memories=recalled_memories,
             recent_turns=recent_turns,
             persona_prompt=persona_prompt,
@@ -96,62 +102,29 @@ class ReplyGenerator:
         text = _extract_message_text(raw_message)
         if not text:
             raise LLMUnavailableError("llm returned empty content")
-        return text
+        return _parse_generated_reply(text)
 
     def stream_generate(
         self,
         user_message: str,
-        emotion_label: str,
-        emotion_intensity: float,
         recalled_memories: list[dict[str, str]],
         recent_turns: list[ConversationTurn],
         persona_prompt: str | None = None,
     ) -> Iterator[str]:
-        messages = _build_messages(
+        generated = self.generate(
             user_message=user_message,
-            emotion_label=emotion_label,
-            emotion_intensity=emotion_intensity,
             recalled_memories=recalled_memories,
             recent_turns=recent_turns,
             persona_prompt=persona_prompt,
         )
+        text = generated.reply
+        if not text:
+            raise LLMUnavailableError("llm returned empty content")
+        chunk_size = 24
+        for index in range(0, len(text), chunk_size):
+            yield text[index : index + chunk_size]
 
-        if self._runtime == "langchain":
-            if self._llm is None:
-                raise LLMUnavailableError("model client unavailable")
-            yield from self._stream_with_langchain(messages)
-            return
-
-        if self._client is None:
-            raise LLMUnavailableError("model client unavailable")
-
-        try:
-            stream: Any = self._client.chat.completions.create(
-                model=self._model_name,
-                messages=messages,
-                thinking={"type": "disabled"},
-                stream=True,
-                max_tokens=4096,
-                temperature=0.6,
-            )
-        except Exception as exc:
-            raise LLMUnavailableError("failed to call llm in stream mode") from exc
-
-        yielded = False
-        try:
-            for chunk in stream:
-                text_piece = _extract_stream_chunk_text(chunk)
-                if not text_piece:
-                    continue
-                yielded = True
-                yield text_piece
-        except Exception as exc:
-            raise LLMUnavailableError("failed during stream consumption") from exc
-
-        if not yielded:
-            raise LLMUnavailableError("llm stream returned empty content")
-
-    def _generate_with_langchain(self, messages: list[dict[str, str]]) -> str:
+    def _generate_with_langchain(self, messages: list[dict[str, str]]) -> GeneratedReply:
         try:
             from langchain_core.messages import HumanMessage, SystemMessage  # type: ignore
         except Exception as exc:  # pragma: no cover
@@ -173,46 +146,11 @@ class ReplyGenerator:
         text = _extract_langchain_content(response)
         if not text:
             raise LLMUnavailableError("llm returned empty content")
-        return text
-
-    def _stream_with_langchain(self, messages: list[dict[str, str]]) -> Iterator[str]:
-        try:
-            from langchain_core.messages import HumanMessage, SystemMessage  # type: ignore
-        except Exception as exc:  # pragma: no cover
-            raise LLMUnavailableError("langchain-core unavailable") from exc
-
-        try:
-            llm = self._llm
-            if llm is None:
-                raise LLMUnavailableError("model client unavailable")
-            stream = llm.stream(
-                [
-                    SystemMessage(content=messages[0]["content"]),
-                    HumanMessage(content=messages[1]["content"]),
-                ],
-            )
-        except Exception as exc:
-            raise LLMUnavailableError("failed to call llm in stream mode") from exc
-
-        yielded = False
-        try:
-            for chunk in stream:
-                text_piece = _extract_stream_chunk_text(chunk)
-                if not text_piece:
-                    continue
-                yielded = True
-                yield text_piece
-        except Exception as exc:
-            raise LLMUnavailableError("failed during stream consumption") from exc
-
-        if not yielded:
-            raise LLMUnavailableError("llm stream returned empty content")
+        return _parse_generated_reply(text)
 
 
 def _build_messages(
     user_message: str,
-    emotion_label: str,
-    emotion_intensity: float,
     recalled_memories: list[dict[str, str]],
     recent_turns: list[ConversationTurn],
     persona_prompt: str | None,
@@ -232,6 +170,7 @@ def _build_messages(
     system_prompt = (
         "你是一个有独特身份、性格、过去的真实的个体。"
         "你需要做出符合你性格的回复，并且需要真实的带入情绪。"
+        "你必须输出JSON对象，不要输出任何额外文字。"
     )
 
     if persona_prompt:
@@ -246,12 +185,11 @@ def _build_messages(
     )
 
     user_prompt = (
-        "请基于以下结构化上下文生成最终回复：\n"
-        f"情绪标签: {emotion_label}\n"
-        f"情绪强度: {emotion_intensity:.2f}\n"
+        "请基于以下结构化上下文生成最终回复，并同时给出你(Agent视角)此刻心情参数。\n"
         f"最近多轮历史:\n{history_text}\n"
         f"用户当前输入: {user_message}\n"
-        "请输出自然中文回复，2-5句。"
+        "请严格输出JSON，格式如下:"
+        '{"reply":"2-5句自然中文","agent_mood":{"label":"calm|happy|sad|anxious|angry|focused","intensity":0-1,"heartbeat_bpm":55-130} }'
     )
 
     return [
@@ -355,6 +293,57 @@ def _extract_stream_chunk_text(chunk: object) -> str:
                         return content
 
     return ""
+
+
+def _parse_generated_reply(raw_text: str) -> GeneratedReply:
+    normalized = _strip_fenced_json(raw_text)
+    try:
+        payload = json.loads(normalized)
+    except Exception as exc:
+        raise LLMUnavailableError("llm returned non-json content") from exc
+
+    if not isinstance(payload, dict):
+        raise LLMUnavailableError("llm json payload is invalid")
+
+    reply = str(payload.get("reply", "")).strip()
+    mood_obj = payload.get("agent_mood", {})
+    if not isinstance(mood_obj, dict):
+        mood_obj = {}
+
+    mood_label = str(mood_obj.get("label", "calm")).strip().lower() or "calm"
+    try:
+        mood_intensity = float(mood_obj.get("intensity", 0.35))
+    except (TypeError, ValueError):
+        mood_intensity = 0.35
+    mood_intensity = max(0.0, min(1.0, mood_intensity))
+
+    try:
+        heartbeat_bpm = int(float(mood_obj.get("heartbeat_bpm", 72)))
+    except (TypeError, ValueError):
+        heartbeat_bpm = 72
+    heartbeat_bpm = max(55, min(130, heartbeat_bpm))
+
+    if not reply:
+        raise LLMUnavailableError("llm returned empty reply in json")
+
+    return GeneratedReply(
+        reply=reply,
+        mood_label=mood_label,
+        mood_intensity=mood_intensity,
+        heartbeat_bpm=heartbeat_bpm,
+    )
+
+
+def _strip_fenced_json(raw_text: str) -> str:
+    text = raw_text.strip()
+    if not text.startswith("```"):
+        return text
+    lines = text.splitlines()
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
 
 
 def _get_env(key: str, default: str) -> str:
