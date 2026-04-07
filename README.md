@@ -172,4 +172,4 @@ npm run lint
 4. 记忆向量索引：Qdrant
 
 ## 界面展示
-![UI](figures\UI.jpg)
+![UI](figures/UI.jpg)
