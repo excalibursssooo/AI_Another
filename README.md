@@ -24,7 +24,7 @@
 2. 前端：Next.js、TypeScript、Tailwind CSS
 3. 记忆存储：PostgreSQL（结构化）+ Qdrant（向量）
 4. 会话/角色/任务持久化：JSON 文件
-5. 模型调用：Zhipu（zai-sdk）
+5. 模型调用：OpenRouter（chat/completions）
 
 ## 目录结构
 
@@ -62,9 +62,9 @@ pip install -r requirements.txt
 ```powershell
 Copy-Item .env.example .env
 ```
-目前只适配了GLM系列的APIKEY，在.env文件的
+在 .env 文件中配置 OpenRouter key：
 ```env
-ZAI_API_KEY=<your_api_key>
+OPENROUTER_API_KEY=<your_api_key>
 ```
 3. 启动 API
 
@@ -126,6 +126,21 @@ npm run start
 ```powershell
 npm run lint
 ```
+5. 环境配置
+在 `ui` 目录下创建 `.env.local`：
+
+```env
+# true: 使用本地 mock 数据（默认）
+# false: 连接真实后端
+NEXT_PUBLIC_USE_MOCK=true
+
+# 真实后端地址（当 NEXT_PUBLIC_USE_MOCK=false 时生效）
+NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
+
+# 前端演示用户ID
+NEXT_PUBLIC_DEMO_USER_ID=u001
+```
+
 
 ## 主要 API
 
@@ -183,6 +198,7 @@ npm run lint
 * [x] 记忆系统优化
 * [x] 展示角色当前状态栏
 * [x] 新增角色动态功能
+* [x] 完成对话和记忆的异步进行 
 * [ ] 对话及agent隐式存储
 * [ ] 多模态支持
 * [ ] 多api接入

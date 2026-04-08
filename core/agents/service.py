@@ -10,6 +10,7 @@ from typing import Any
 from typing import Protocol
 from uuid import uuid4
 
+from core.common.openrouter import OpenRouterError, get_env as get_common_env, get_openrouter_client
 from core.agents.models import AgentProfile
 
 
@@ -44,15 +45,10 @@ class AgentAttributeGenerator(Protocol):
         ...
 
 
-class ZhipuAgentAttributeGenerator:
-    def __init__(self, api_key: str, model_name: str) -> None:
-        try:
-            from zai import ZhipuAiClient  # type: ignore
-        except Exception as exc:  # pragma: no cover
-            raise RuntimeError("zai-sdk is required for AI agent creation") from exc
-
-        self._client = ZhipuAiClient(api_key=api_key)
+class OpenRouterAgentAttributeGenerator:
+    def __init__(self, model_name: str) -> None:
         self._model_name = model_name
+        self._client = get_openrouter_client("AGENT_CREATOR_MODEL_NAME", model_name)
 
     def generate(self, prompt: str) -> dict[str, object]:
         debug = self.generate_debug(prompt)
@@ -62,8 +58,7 @@ class ZhipuAgentAttributeGenerator:
         return payload_obj
 
     def generate_debug(self, prompt: str) -> dict[str, object]:
-        response: Any = self._client.chat.completions.create(
-            model=self._model_name,
+        text = self._client.chat_text(
             messages=[
                 {
                     "role": "system",
@@ -78,12 +73,10 @@ class ZhipuAgentAttributeGenerator:
                 },
                 {"role": "user", "content": prompt},
             ],
-            thinking={"type": "disabled"},
             max_tokens=2048,
             temperature=0.7,
         )
 
-        text = _extract_message_text(response.choices[0].message)
         parse_error = ""
         normalized: dict[str, object] | None = None
         try:
@@ -93,7 +86,7 @@ class ZhipuAgentAttributeGenerator:
             parse_error = str(exc)
 
         return {
-            "backend": "zhipu",
+            "backend": "openrouter",
             "model": self._model_name,
             "prompt": prompt,
             "raw_text": text,
@@ -240,24 +233,24 @@ class AgentService:
 
     @staticmethod
     def build_default() -> "AgentService":
-        api_key = _get_env("ZHIPU_API_KEY", "")
-        model_name = _get_env("AGENT_CREATOR_MODEL_NAME", _get_env("CHAT_MODEL_NAME", "glm-4.7-flash"))
+        api_key = _get_env("OPENROUTER_API_KEY", "")
+        model_name = _get_env("AGENT_CREATOR_MODEL_NAME", _get_env("CHAT_MODEL_NAME", "openai/gpt-5.2"))
         generator: AgentAttributeGenerator | None = None
         if api_key:
             try:
-                generator = ZhipuAgentAttributeGenerator(api_key=api_key, model_name=model_name)
+                generator = OpenRouterAgentAttributeGenerator(model_name=model_name)
             except Exception:
                 generator = None
         return AgentService(repository=InMemoryAgentRepository(), generator=generator)
 
     @staticmethod
     def build_from_env() -> "AgentService":
-        api_key = _get_env("ZHIPU_API_KEY", "")
-        model_name = _get_env("AGENT_CREATOR_MODEL_NAME", _get_env("CHAT_MODEL_NAME", "glm-4.7-flash"))
+        api_key = _get_env("OPENROUTER_API_KEY", "")
+        model_name = _get_env("AGENT_CREATOR_MODEL_NAME", _get_env("CHAT_MODEL_NAME", "openai/gpt-5.2"))
         generator: AgentAttributeGenerator | None = None
         if api_key:
             try:
-                generator = ZhipuAgentAttributeGenerator(api_key=api_key, model_name=model_name)
+                generator = OpenRouterAgentAttributeGenerator(model_name=model_name)
             except Exception:
                 generator = None
 

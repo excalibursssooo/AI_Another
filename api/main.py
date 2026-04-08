@@ -205,7 +205,7 @@ class InfraDebugResponse(BaseModel):
     memory_vector: str
     emotion_backend: str
     emotion_model: str
-    zhipu_api_key_present: bool
+    openrouter_api_key_present: bool
     postgres: InfraTargetStatus
     qdrant: InfraTargetStatus
 
@@ -948,9 +948,9 @@ def emotion_debug(req: EmotionDebugRequest) -> EmotionDebugResponse:
 def infra_debug() -> InfraDebugResponse:
     memory_repository = _get_env("MEMORY_REPOSITORY", "memory")
     memory_vector = _get_env("MEMORY_VECTOR", "memory")
-    emotion_backend = _get_env("EMOTION_BACKEND", "zhipu")
-    emotion_model = _get_env("EMOTION_MODEL_NAME", "glm-4.7-flash")
-    zhipu_api_key = _get_env("ZHIPU_API_KEY", "")
+    emotion_backend = _get_env("EMOTION_BACKEND", "openrouter")
+    emotion_model = _get_env("EMOTION_MODEL_NAME", "openai/gpt-5.2")
+    openrouter_api_key = _get_env("OPENROUTER_API_KEY", "")
 
     postgres_dsn = _get_env("POSTGRES_DSN", "")
     postgres_status = _check_postgres(memory_repository == "postgres", postgres_dsn)
@@ -963,7 +963,7 @@ def infra_debug() -> InfraDebugResponse:
         memory_vector=memory_vector,
         emotion_backend=emotion_backend,
         emotion_model=emotion_model,
-        zhipu_api_key_present=bool(zhipu_api_key),
+        openrouter_api_key_present=bool(openrouter_api_key),
         postgres=postgres_status,
         qdrant=qdrant_status,
     )

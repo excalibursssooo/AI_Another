@@ -2,13 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-import os
-from pathlib import Path
-from typing import Any
-
-from pydantic import SecretStr
 
 from core.agents.models import AgentProfile
+from core.common.openrouter import OpenRouterError, get_env, get_openrouter_client
 from core.session.conversation_store import ConversationTurn
 
 
@@ -24,46 +20,19 @@ class GeneratedPost:
 
 
 class FeedGenerator:
-    """Generates feed posts with LLM only (no rule fallback)."""
+    """Generates feed posts with OpenRouter only."""
 
-    def __init__(self, api_key: str | None, model_name: str, runtime: str) -> None:
-        self._api_key = api_key
+    def __init__(self, model_name: str) -> None:
         self._model_name = model_name
-        self._runtime = runtime
-        self._client: Any | None = None
-        self._llm: Any | None = None
-
-        if not api_key:
-            return
-
-        if runtime == "langchain":
-            try:
-                from langchain_openai import ChatOpenAI  # type: ignore
-            except Exception as exc:  # pragma: no cover
-                raise RuntimeError("langchain-openai is required for FeedGenerator") from exc
-
-            self._llm = ChatOpenAI(
-                model=model_name,
-                temperature=0.85,
-                model_kwargs={"max_tokens": 768},
-                api_key=SecretStr(api_key),
-                base_url="https://open.bigmodel.cn/api/paas/v4/",
-            )
-            return
-
         try:
-            from zai import ZhipuAiClient  # type: ignore
-        except Exception as exc:  # pragma: no cover
-            raise RuntimeError("zai-sdk is required for FeedGenerator") from exc
-
-        self._client = ZhipuAiClient(api_key=api_key)
+            self._client = get_openrouter_client("FEED_MODEL_NAME", model_name)
+        except OpenRouterError:
+            self._client = None
 
     @staticmethod
     def build_from_env() -> "FeedGenerator":
-        api_key = _get_env("ZAI_API_KEY", _get_env("ZHIPU_API_KEY", ""))
-        model_name = _get_env("FEED_MODEL_NAME", _get_env("CHAT_MODEL_NAME", "glm-4.7-flash"))
-        runtime = _get_env("FEED_RUNTIME", _get_env("CHAT_RUNTIME", "langchain"))
-        return FeedGenerator(api_key=api_key or None, model_name=model_name, runtime=runtime)
+        model_name = get_env("FEED_MODEL_NAME", get_env("CHAT_MODEL_NAME", "openai/gpt-5.2"))
+        return FeedGenerator(model_name=model_name)
 
     def generate(
         self,
@@ -73,18 +42,8 @@ class FeedGenerator:
         mood_label: str,
         mood_intensity: float,
     ) -> GeneratedPost:
-        if self._runtime == "langchain":
-            if self._llm is None:
-                raise FeedGenerationUnavailableError("动态生成模型不可用，请先配置可用模型。")
-            return self._generate_with_langchain(
-                agent_profile=agent_profile,
-                recent_turns=recent_turns,
-                mood_label=mood_label,
-                mood_intensity=mood_intensity,
-            )
-
         if self._client is None:
-            raise FeedGenerationUnavailableError("动态生成模型不可用，请先配置可用模型。")
+            raise FeedGenerationUnavailableError("动态生成模型不可用，请先配置 OPENROUTER_API_KEY。")
 
         messages = _build_messages(
             agent_profile=agent_profile,
@@ -93,54 +52,14 @@ class FeedGenerator:
             mood_intensity=mood_intensity,
         )
         try:
-            response: Any = self._client.chat.completions.create(
-                model=self._model_name,
+            text = self._client.chat_text(
                 messages=messages,
-                thinking={"type": "disabled"},
                 max_tokens=768,
                 temperature=0.85,
             )
-        except Exception as exc:
+        except OpenRouterError as exc:
             raise FeedGenerationUnavailableError("动态生成模型调用失败，请稍后重试。") from exc
 
-        text = _extract_message_text(response.choices[0].message)
-        if not text:
-            raise FeedGenerationUnavailableError("动态生成模型返回为空，请稍后重试。")
-        return _parse_generated_post(text)
-
-    def _generate_with_langchain(
-        self,
-        *,
-        agent_profile: AgentProfile,
-        recent_turns: list[ConversationTurn],
-        mood_label: str,
-        mood_intensity: float,
-    ) -> GeneratedPost:
-        try:
-            from langchain_core.messages import HumanMessage, SystemMessage  # type: ignore
-        except Exception as exc:  # pragma: no cover
-            raise FeedGenerationUnavailableError("动态生成模型不可用，请先配置可用模型。") from exc
-
-        messages = _build_messages(
-            agent_profile=agent_profile,
-            recent_turns=recent_turns,
-            mood_label=mood_label,
-            mood_intensity=mood_intensity,
-        )
-        try:
-            llm = self._llm
-            if llm is None:
-                raise FeedGenerationUnavailableError("动态生成模型不可用，请先配置可用模型。")
-            response = llm.invoke(
-                [
-                    SystemMessage(content=messages[0]["content"]),
-                    HumanMessage(content=messages[1]["content"]),
-                ],
-            )
-        except Exception as exc:
-            raise FeedGenerationUnavailableError("动态生成模型调用失败，请稍后重试。") from exc
-
-        text = _extract_langchain_content(response)
         if not text:
             raise FeedGenerationUnavailableError("动态生成模型返回为空，请稍后重试。")
         return _parse_generated_post(text)
@@ -184,47 +103,6 @@ def _build_messages(
     ]
 
 
-def _extract_message_text(raw_message: object) -> str:
-    if hasattr(raw_message, "content"):
-        content = getattr(raw_message, "content")
-        if isinstance(content, str):
-            return content.strip()
-        if isinstance(content, list):
-            parts: list[str] = []
-            for part in content:
-                if isinstance(part, dict):
-                    text = part.get("text")
-                    if isinstance(text, str):
-                        parts.append(text)
-            return "\n".join(parts).strip()
-
-    if isinstance(raw_message, dict):
-        content = raw_message.get("content")
-        if isinstance(content, str):
-            return content.strip()
-
-    return ""
-
-
-def _extract_langchain_content(raw_message: object) -> str:
-    if hasattr(raw_message, "content"):
-        content = getattr(raw_message, "content")
-        if isinstance(content, str):
-            return content.strip()
-        if isinstance(content, list):
-            parts: list[str] = []
-            for part in content:
-                if isinstance(part, dict):
-                    text = part.get("text")
-                    if isinstance(text, str):
-                        parts.append(text)
-                elif isinstance(part, str):
-                    parts.append(part)
-            return "\n".join(parts).strip()
-
-    return ""
-
-
 def _parse_generated_post(raw_text: str) -> GeneratedPost:
     normalized = _strip_fenced_json(raw_text)
     try:
@@ -263,24 +141,3 @@ def _strip_fenced_json(raw_text: str) -> str:
     if lines and lines[-1].startswith("```"):
         lines = lines[:-1]
     return "\n".join(lines).strip()
-
-
-def _get_env(key: str, default: str) -> str:
-    value = os.getenv(key)
-    if value:
-        return value
-
-    dotenv_path = Path(__file__).resolve().parents[2] / ".env"
-    if not dotenv_path.exists():
-        return default
-
-    with dotenv_path.open("r", encoding="utf-8") as file:
-        for raw_line in file:
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            env_key, env_value = line.split("=", 1)
-            if env_key.strip() == key:
-                return env_value.strip().strip('"').strip("'")
-
-    return default

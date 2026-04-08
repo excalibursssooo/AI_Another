@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import os
+from pathlib import Path
+from threading import Thread
 from typing import Iterator, Protocol
 
 from core.agents.models import AgentProfile
+from core.memory.models import MemoryItem
 from core.memory.service import MemoryService
 from core.safety.service import SafetyService
 from core.session.conversation_store import ConversationStore, ConversationTurn
@@ -227,17 +231,26 @@ class SessionOrchestrator:
         self.conversation_store.append(user_id=conversation_key, role="user", content=message)
         self.conversation_store.append(user_id=conversation_key, role="assistant", content=reply)
 
-        turn_candidates = self.memory_service.extract_candidates_from_turn(
-            user_message=message,
-            assistant_reply=reply,
-            agent_name=target_agent_name,
-            historical_memories=recalled,
-        )
-        persisted = self.memory_service.persist_candidates(
-            user_id=user_id,
-            agent_id=target_agent_id,
-            candidates=turn_candidates,
-        )
+        persisted_count = 0
+        if _is_memory_async_write_enabled():
+            # For streaming chat, run memory write in background so the next turn can start immediately.
+            self._persist_turn_memories_async(
+                user_id=user_id,
+                agent_id=target_agent_id,
+                user_message=message,
+                assistant_reply=reply,
+                agent_name=target_agent_name,
+                historical_memories=recalled,
+            )
+        else:
+            persisted_count = self._persist_turn_memories_sync(
+                user_id=user_id,
+                agent_id=target_agent_id,
+                user_message=message,
+                assistant_reply=reply,
+                agent_name=target_agent_name,
+                historical_memories=recalled,
+            )
 
         yield {
             "type": "done",
@@ -255,12 +268,60 @@ class SessionOrchestrator:
                 }
                 for item in recalled
             ],
-            "persisted_memory_count": len(persisted),
+            "persisted_memory_count": persisted_count,
         }
 
     @staticmethod
     def to_dict(result: ChatResult) -> dict[str, object]:
         return asdict(result)
+
+    def _persist_turn_memories_sync(
+        self,
+        *,
+        user_id: str,
+        agent_id: str,
+        user_message: str,
+        assistant_reply: str,
+        agent_name: str,
+        historical_memories: list[MemoryItem],
+    ) -> int:
+        turn_candidates = self.memory_service.extract_candidates_from_turn(
+            user_message=user_message,
+            assistant_reply=assistant_reply,
+            agent_name=agent_name,
+            historical_memories=historical_memories,
+        )
+        persisted = self.memory_service.persist_candidates(
+            user_id=user_id,
+            agent_id=agent_id,
+            candidates=turn_candidates,
+        )
+        return len(persisted)
+
+    def _persist_turn_memories_async(
+        self,
+        *,
+        user_id: str,
+        agent_id: str,
+        user_message: str,
+        assistant_reply: str,
+        agent_name: str,
+        historical_memories: list[MemoryItem],
+    ) -> None:
+        def worker() -> None:
+            try:
+                self._persist_turn_memories_sync(
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    user_message=user_message,
+                    assistant_reply=assistant_reply,
+                    agent_name=agent_name,
+                    historical_memories=historical_memories,
+                )
+            except Exception as exc:
+                print(f"[memory] async persist failed for {user_id}/{agent_id}: {exc}", flush=True)
+
+        Thread(target=worker, daemon=True).start()
 
 
 def _build_recent_turns_summary(recent_turns: list[ConversationTurn], max_turns: int = 4) -> str:
@@ -272,3 +333,29 @@ def _build_recent_turns_summary(recent_turns: list[ConversationTurn], max_turns:
         role = "用户" if turn.role == "user" else "助手"
         lines.append(f"{role}:{turn.content}")
     return " | ".join(lines)
+
+
+def _is_memory_async_write_enabled() -> bool:
+    raw = _get_env("MEMORY_ASYNC_WRITE", "true").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _get_env(key: str, default: str) -> str:
+    value = os.getenv(key)
+    if value:
+        return value
+
+    dotenv_path = Path(__file__).resolve().parents[2] / ".env"
+    if not dotenv_path.exists():
+        return default
+
+    with dotenv_path.open("r", encoding="utf-8") as file:
+        for raw_line in file:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            env_key, env_value = line.split("=", 1)
+            if env_key.strip() == key:
+                return env_value.strip().strip('"').strip("'")
+
+    return default

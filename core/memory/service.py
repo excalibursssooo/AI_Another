@@ -9,9 +9,8 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
 
-from pydantic import SecretStr
-
 from core.agents.models import AgentProfile
+from core.common.openrouter import OpenRouterError, get_openrouter_client
 from core.memory.embedding import SimpleEmbeddingModel
 from core.memory.models import MemoryCandidate, MemoryItem
 from core.memory.repository import InMemoryMemoryRepository, MemoryRepository, PostgresMemoryRepository
@@ -33,8 +32,8 @@ class MemoryBackendConfig:
         return MemoryBackendConfig(
             repository=_get_env("MEMORY_REPOSITORY", "memory"),
             vector=_get_env("MEMORY_VECTOR", "memory"),
-            extraction_backend=_get_env("MEMORY_EXTRACTION_BACKEND", "rule"),
-            extraction_model_name=_get_env("MEMORY_EXTRACTION_MODEL_NAME", "glm-4.7-flash"),
+            extraction_backend=_get_env("MEMORY_EXTRACTION_BACKEND", "openrouter"),
+            extraction_model_name=_get_env("MEMORY_EXTRACTION_MODEL_NAME", "openai/gpt-5.2"),
         )
 
 
@@ -143,17 +142,12 @@ class RuleMemoryExtractor:
         }
 
 
-class ZhipuMemoryExtractor:
-    """LLM-based extractor for conversational memory judgment."""
+class OpenRouterMemoryExtractor:
+    """LLM-based extractor using OpenRouter."""
 
-    def __init__(self, api_key: str, model_name: str) -> None:
-        try:
-            from zai import ZhipuAiClient  # type: ignore
-        except Exception as exc:  # pragma: no cover
-            raise RuntimeError("zai-sdk is required for ZhipuMemoryExtractor") from exc
-
-        self._client = ZhipuAiClient(api_key=api_key)
+    def __init__(self, model_name: str) -> None:
         self._model_name = model_name
+        self._client = get_openrouter_client("MEMORY_EXTRACTION_MODEL_NAME", model_name)
 
     def extract(self, message: str) -> list[MemoryCandidate]:
         _, _, _, _, candidates = self._extract_with_raw(message)
@@ -162,7 +156,7 @@ class ZhipuMemoryExtractor:
     def extract_debug(self, message: str) -> dict[str, object]:
         system_prompt, user_content, raw_response, raw_text, candidates = self._extract_with_raw(message)
         return {
-            "backend": "zhipu",
+            "backend": "openrouter",
             "model": self._model_name,
             "is_llm": True,
             "system_prompt": system_prompt,
@@ -183,8 +177,7 @@ class ZhipuMemoryExtractor:
 
     def _extract_with_raw(self, message: str) -> tuple[str, str, str, str, list[MemoryCandidate]]:
         system_prompt = _build_memory_system_prompt()
-        response: Any = self._client.chat.completions.create(
-            model=self._model_name,
+        payload = self._client.chat_json(
             messages=[
                 {
                     "role": "system",
@@ -192,78 +185,11 @@ class ZhipuMemoryExtractor:
                 },
                 {"role": "user", "content": message},
             ],
-            thinking={"type": "disabled"},
             max_tokens=2048,
             temperature=0.1,
         )
-
-        raw_message = response.choices[0].message
-        raw_response = _safe_serialize_response(response)
-        text = _extract_message_text(raw_message)
-        return system_prompt, message, raw_response, text, _parse_candidates(text)
-
-
-class LangChainZhipuMemoryExtractor:
-    """LangChain + Zhipu(OpenAI compatible) memory extractor."""
-
-    def __init__(self, api_key: str, model_name: str) -> None:
-        try:
-            from langchain_openai import ChatOpenAI  # type: ignore
-        except Exception as exc:  # pragma: no cover
-            raise RuntimeError("langchain-openai is required for LangChainZhipuMemoryExtractor") from exc
-
-        self._model_name = model_name
-        self._llm = ChatOpenAI(
-            model=model_name,
-            temperature=0.1,
-            model_kwargs={"max_tokens": 2048},
-            api_key=SecretStr(api_key),
-            base_url="https://open.bigmodel.cn/api/paas/v4/",
-        )
-
-    def extract(self, message: str) -> list[MemoryCandidate]:
-        _, _, _, _, candidates = self._extract_with_raw(message)
-        return candidates
-
-    def extract_debug(self, message: str) -> dict[str, object]:
-        system_prompt, user_content, raw_response, raw_text, candidates = self._extract_with_raw(message)
-        return {
-            "backend": "zhipu-langchain",
-            "model": self._model_name,
-            "is_llm": True,
-            "system_prompt": system_prompt,
-            "user_content": user_content,
-            "raw_response": raw_response,
-            "raw_text": raw_text,
-            "candidates": [
-                {
-                    "subject": item.subject,
-                    "memory_type": item.memory_type,
-                    "content": item.content,
-                    "confidence": item.confidence,
-                    "importance": item.importance,
-                }
-                for item in candidates
-            ],
-        }
-
-    def _extract_with_raw(self, message: str) -> tuple[str, str, str, str, list[MemoryCandidate]]:
-        try:
-            from langchain_core.messages import HumanMessage, SystemMessage  # type: ignore
-        except Exception as exc:  # pragma: no cover
-            raise RuntimeError("langchain-core is required for LangChainZhipuMemoryExtractor") from exc
-
-        system_prompt = _build_memory_system_prompt()
-        response = self._llm.invoke(
-            [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=message),
-            ],
-        )
-        raw_response = _safe_serialize_response(response)
-        text = _extract_langchain_content(response)
-        if not text and _is_length_truncated(response):
-            text = "[]"
+        raw_response = _safe_serialize_response(payload)
+        text = _extract_openrouter_content(payload)
         return system_prompt, message, raw_response, text, _parse_candidates(text)
 
 
@@ -335,23 +261,15 @@ class MemoryService:
 
         extractor: MemoryExtractor
         extraction_reason = "configured to use local rule extractor"
-        if config.extraction_backend == "zhipu":
-            api_key = _get_env("ZAI_API_KEY", _get_env("ZHIPU_API_KEY", ""))
-            runtime = _get_env("MEMORY_EXTRACTION_RUNTIME", "langchain")
+        if config.extraction_backend == "openrouter":
+            api_key = _get_env("OPENROUTER_API_KEY", "")
             if not api_key:
                 extractor = RuleMemoryExtractor()
-                extraction_reason = "fallback to rule: ZAI_API_KEY/ZHIPU_API_KEY missing"
+                extraction_reason = "fallback to rule: OPENROUTER_API_KEY missing"
             else:
                 try:
-                    if runtime == "langchain":
-                        extractor = LangChainZhipuMemoryExtractor(
-                            api_key=api_key,
-                            model_name=config.extraction_model_name,
-                        )
-                        extraction_reason = f"using llm extractor(langchain): {config.extraction_model_name}"
-                    else:
-                        extractor = ZhipuMemoryExtractor(api_key=api_key, model_name=config.extraction_model_name)
-                        extraction_reason = f"using llm extractor(zai): {config.extraction_model_name}"
+                    extractor = OpenRouterMemoryExtractor(model_name=config.extraction_model_name)
+                    extraction_reason = f"using llm extractor(openrouter): {config.extraction_model_name}"
                 except Exception as exc:
                     extractor = RuleMemoryExtractor()
                     extraction_reason = f"fallback to rule: {exc}"
@@ -818,25 +736,32 @@ class MemoryService:
         }
 
 
-def _extract_message_text(raw_message: object) -> str:
-    if hasattr(raw_message, "content"):
-        content = getattr(raw_message, "content")
-        if isinstance(content, str):
-            return content.strip()
-        if isinstance(content, list):
-            text_parts: list[str] = []
-            for part in content:
-                if isinstance(part, dict):
-                    text_value = part.get("text")
-                    if isinstance(text_value, str):
-                        text_parts.append(text_value)
-            return "\n".join(text_parts).strip()
+def _extract_openrouter_content(payload: dict[str, object]) -> str:
+    choices_obj = payload.get("choices")
+    if not isinstance(choices_obj, list) or not choices_obj:
+        return ""
 
-    if isinstance(raw_message, dict):
-        content = raw_message.get("content", "")
-        if isinstance(content, str):
-            return content.strip()
+    first = choices_obj[0]
+    if not isinstance(first, dict):
+        return ""
 
+    message_obj = first.get("message")
+    if not isinstance(message_obj, dict):
+        return ""
+
+    content = message_obj.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                text_value = part.get("text")
+                if isinstance(text_value, str) and text_value.strip():
+                    parts.append(text_value.strip())
+            elif isinstance(part, str) and part.strip():
+                parts.append(part.strip())
+        return "\n".join(parts).strip()
     return ""
 
 
@@ -891,37 +816,6 @@ def _parse_candidates(text: str) -> list[MemoryCandidate]:
         )
 
     return candidates
-
-
-def _extract_langchain_content(response: object) -> str:
-    content = getattr(response, "content", "")
-    if isinstance(content, str):
-        return content.strip()
-
-    if isinstance(content, list):
-        parts: list[str] = []
-        for part in content:
-            if isinstance(part, dict):
-                text_value = part.get("text")
-                if isinstance(text_value, str) and text_value.strip():
-                    parts.append(text_value.strip())
-            elif isinstance(part, str) and part.strip():
-                parts.append(part.strip())
-        return "\n".join(parts).strip()
-
-    if isinstance(content, dict):
-        text_value = content.get("text")
-        if isinstance(text_value, str):
-            return text_value.strip()
-
-    return ""
-
-
-def _is_length_truncated(response: object) -> bool:
-    metadata = getattr(response, "response_metadata", None)
-    if isinstance(metadata, dict):
-        return str(metadata.get("finish_reason", "")).lower() == "length"
-    return False
 
 
 def _safe_serialize_response(response: object) -> str:
