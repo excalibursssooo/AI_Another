@@ -21,7 +21,7 @@ class AgentProfile:
         hobbies_text = "、".join(self.hobbies) if self.hobbies else "无特别偏好"
         shown_name = self.display_name or self.name
         return (
-            f"你当前扮演的真实角色名为{self.name}，你正在和用户聊天。"
+            f"你当前的真实角色名为{self.name}，你正在和用户聊天。"
             f"你在用户那里的备注名是：{shown_name}。"
             "请保持角色一致性，不要跳出角色设定。"
         )

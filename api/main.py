@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,8 +18,12 @@ from urllib.request import urlopen
 from core.agents.service import AgentAICreationError, AgentService
 from core.emotion.service import EmotionService
 from core.memory.models import MemoryItem
+from core.memory.models import MemoryCandidate
 from core.memory.service import MemoryService
 from core.safety.service import SafetyService
+from core.posts.generator import FeedGenerationUnavailableError, FeedGenerator
+from core.posts.models import FeedPost
+from core.posts.service import FeedService
 from core.session.conversation_store import ConversationStore
 from core.session.orchestrator import SessionOrchestrator
 from core.session.reply_generator import ReplyGenerator
@@ -46,12 +51,17 @@ reply_generator = ReplyGenerator.build_from_env()
 conversation_store = ConversationStore.build_from_env()
 agent_service = AgentService.build_from_env()
 task_service = TaskService.build_from_env()
+feed_service = FeedService.build_from_env()
+feed_generator = FeedGenerator.build_from_env()
 orchestrator = SessionOrchestrator(
     memory_service=memory_service,
     safety_service=safety_service,
     reply_generator=reply_generator,
     conversation_store=conversation_store,
 )
+
+_feed_scheduler_task: asyncio.Task[None] | None = None
+_last_feed_generated_at: dict[tuple[str, str], datetime] = {}
 
 
 class ChatRequest(BaseModel):
@@ -329,6 +339,64 @@ class TaskResponse(BaseModel):
     subtasks: list[str]
     source_message: str
     created_at: str
+
+
+class PostResponse(BaseModel):
+    id: str
+    user_id: str
+    agent_id: str
+    agent_name: str
+    content: str
+    topic_seed: str
+    post_type: str
+    status: str
+    source_task_id: str | None
+    created_at: str
+
+
+class PostListResponse(BaseModel):
+    items: list[PostResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class GeneratePostRequest(BaseModel):
+    user_id: str = Field(..., min_length=1)
+    source_task_id: str | None = Field(default=None, max_length=120)
+
+
+class GeneratePostResponse(BaseModel):
+    skipped: bool
+    reason: str
+    post: PostResponse | None
+
+
+class TriggerChatResponse(BaseModel):
+    post_id: str
+    user_id: str
+    agent_id: str
+    suggested_message: str
+
+
+@app.on_event("startup")
+async def on_startup() -> None:
+    global _feed_scheduler_task
+    if _is_feed_scheduler_enabled():
+        _feed_scheduler_task = asyncio.create_task(_run_feed_scheduler())
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    global _feed_scheduler_task
+    if _feed_scheduler_task is None:
+        return
+    _feed_scheduler_task.cancel()
+    try:
+        await _feed_scheduler_task
+    except asyncio.CancelledError:
+        pass
+    _feed_scheduler_task = None
 
 
 class TelemetryAckResponse(BaseModel):
@@ -1191,6 +1259,60 @@ def list_tasks(user_id: str) -> list[TaskResponse]:
     ]
 
 
+@app.get("/posts", response_model=PostListResponse)
+def list_posts(user_id: str, limit: int = 20, offset: int = 0, include_archived: bool = False) -> PostListResponse:
+    listed = feed_service.list_posts(
+        user_id=user_id,
+        limit=limit,
+        offset=offset,
+        include_archived=include_archived,
+    )
+    return PostListResponse(
+        items=[_build_post_response(item) for item in listed.items],
+        total=listed.total,
+        limit=listed.limit,
+        offset=listed.offset,
+    )
+
+
+@app.post("/agents/{agent_id}/generate-post", response_model=GeneratePostResponse)
+def generate_post(agent_id: str, req: GeneratePostRequest) -> GeneratePostResponse:
+    profile = agent_service.get_agent(agent_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="agent not found")
+    if profile.status != "active":
+        raise HTTPException(status_code=400, detail="agent is not active")
+
+    try:
+        published = _generate_and_publish_post(
+            user_id=req.user_id,
+            agent_id=profile.id,
+            source_task_id=req.source_task_id,
+        )
+    except FeedGenerationUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return GeneratePostResponse(
+        skipped=published.skipped,
+        reason=published.reason,
+        post=_build_post_response(published.post) if published.post is not None else None,
+    )
+
+
+@app.post("/posts/{post_id}/trigger-chat", response_model=TriggerChatResponse)
+def trigger_chat_from_post(post_id: str, user_id: str) -> TriggerChatResponse:
+    post = feed_service.get_post(user_id=user_id, post_id=post_id)
+    if post is None:
+        raise HTTPException(status_code=404, detail="post not found")
+
+    return TriggerChatResponse(
+        post_id=post.id,
+        user_id=user_id,
+        agent_id=post.agent_id,
+        suggested_message=post.topic_seed,
+    )
+
+
 def _seed_agent_profile_memories(agent_id: str) -> None:
     profile = agent_service.get_agent(agent_id)
     if profile is None:
@@ -1200,6 +1322,164 @@ def _seed_agent_profile_memories(agent_id: str) -> None:
         memory_service.initialize_agent_profile_memories(profile)
     except Exception as exc:
         print(f"[memory] failed to seed profile memories for {agent_id}: {exc}", flush=True)
+
+
+def _build_post_response(post: FeedPost) -> PostResponse:
+    profile = agent_service.get_agent(post.agent_id)
+    agent_name = post.agent_id
+    if profile is not None:
+        agent_name = profile.display_name or profile.name
+
+    return PostResponse(
+        id=post.id,
+        user_id=post.user_id,
+        agent_id=post.agent_id,
+        agent_name=agent_name,
+        content=post.content,
+        topic_seed=post.topic_seed,
+        post_type=post.post_type,
+        status=post.status,
+        source_task_id=post.source_task_id,
+        created_at=post.created_at.isoformat(),
+    )
+
+
+def _generate_and_publish_post(
+    *,
+    user_id: str,
+    agent_id: str,
+    source_task_id: str | None = None,
+):
+    profile = agent_service.get_agent(agent_id)
+    if profile is None:
+        raise FeedGenerationUnavailableError("动态生成失败：agent 不存在。")
+
+    shown_name = profile.display_name or profile.name
+    state = _get_agent_live_state(user_id=user_id, agent_id=agent_id, agent_name=shown_name)
+    mood_label = str(state.get("mood_label", "calm"))
+    mood_intensity = _to_float(state.get("mood_intensity", 0.35), 0.35)
+
+    conversation_key = f"{user_id}:{agent_id}"
+    recent_turns = conversation_store.recent(user_id=conversation_key, limit=6)
+    generated = feed_generator.generate(
+        agent_profile=profile,
+        recent_turns=recent_turns,
+        mood_label=mood_label,
+        mood_intensity=mood_intensity,
+    )
+    published = feed_service.publish_post(
+        user_id=user_id,
+        agent_id=agent_id,
+        content=generated.content,
+        topic_seed=generated.topic_seed,
+        post_type=generated.post_type,
+        source_task_id=source_task_id,
+    )
+    _persist_post_as_memory(user_id=user_id, agent_id=agent_id, published=published)
+    return published
+
+
+def _persist_post_as_memory(*, user_id: str, agent_id: str, published: object) -> None:
+    post_obj = getattr(published, "post", None)
+    skipped = bool(getattr(published, "skipped", False))
+    if skipped or post_obj is None:
+        return
+
+    post_content = str(getattr(post_obj, "content", "")).strip()
+    topic_seed = str(getattr(post_obj, "topic_seed", "")).strip()
+    if not post_content:
+        return
+
+    memory_text = f"我发布过一条动态：{post_content}"
+    if topic_seed:
+        memory_text = memory_text + f"。当时我想聊的话题是：{topic_seed}"
+
+    try:
+        memory_service.persist_candidates(
+            user_id=user_id,
+            agent_id=agent_id,
+            candidates=[
+                MemoryCandidate(
+                    subject="agent",
+                    memory_type="agent_post",
+                    content=memory_text,
+                    confidence=0.82,
+                    importance=0.68,
+                ),
+            ],
+        )
+    except Exception as exc:
+        print(f"[feed] failed to persist post memory for {user_id}/{agent_id}: {exc}", flush=True)
+
+
+def _is_feed_scheduler_enabled() -> bool:
+    return _get_env("FEED_GENERATION_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _get_feed_scheduler_interval_seconds() -> int:
+    raw = _get_env("FEED_GENERATION_INTERVAL_SECONDS", "300")
+    try:
+        interval = int(raw)
+    except ValueError:
+        interval = 300
+    return max(30, interval)
+
+
+def _get_feed_cooldown_seconds() -> int:
+    raw = _get_env("FEED_AGENT_COOLDOWN_SECONDS", "1800")
+    try:
+        cooldown = int(raw)
+    except ValueError:
+        cooldown = 1800
+    return max(0, cooldown)
+
+
+def _list_known_users_for_feed() -> list[str]:
+    return conversation_store.known_user_ids()
+
+
+def _should_skip_by_cooldown(user_id: str, agent_id: str) -> bool:
+    cooldown_seconds = _get_feed_cooldown_seconds()
+    if cooldown_seconds <= 0:
+        return False
+
+    last_generated_at = _last_feed_generated_at.get((user_id, agent_id))
+    if last_generated_at is None:
+        return False
+
+    return datetime.now(UTC) - last_generated_at < timedelta(seconds=cooldown_seconds)
+
+
+def _mark_generated_now(user_id: str, agent_id: str) -> None:
+    _last_feed_generated_at[(user_id, agent_id)] = datetime.now(UTC)
+
+
+async def _run_feed_scheduler() -> None:
+    interval = _get_feed_scheduler_interval_seconds()
+    await asyncio.sleep(interval)
+
+    while True:
+        try:
+            users = _list_known_users_for_feed()
+            if users:
+                active_agents = agent_service.list_agents(include_inactive=False)
+                for user_id in users:
+                    for agent in active_agents:
+                        if _should_skip_by_cooldown(user_id=user_id, agent_id=agent.id):
+                            continue
+                        try:
+                            await asyncio.to_thread(
+                                _generate_and_publish_post,
+                                user_id=user_id,
+                                agent_id=agent.id,
+                            )
+                            _mark_generated_now(user_id=user_id, agent_id=agent.id)
+                        except FeedGenerationUnavailableError as exc:
+                            print(f"[feed] generation skipped for {user_id}/{agent.id}: {exc}", flush=True)
+        except Exception as exc:
+            print(f"[feed] scheduler loop error: {exc}", flush=True)
+
+        await asyncio.sleep(interval)
 
 
 def _check_postgres(enabled: bool, dsn: str) -> InfraTargetStatus:

@@ -7,8 +7,12 @@ import {
   ChatDoneEvent,
   ChatRequestDto,
   ConversationTurnDto,
+  GeneratePostRequestDto,
+  GeneratePostResponseDto,
   MemoryResponseDto,
   MemoryStatusRequestDto,
+  PostListDto,
+  TriggerChatFromPostDto,
 } from "@/lib/api/types";
 
 export async function listAgents(includeInactive = false): Promise<AgentResponseDto[]> {
@@ -109,4 +113,26 @@ export async function listConversationTurns(
 export async function getAgentLiveState(userId: string, agentId: string): Promise<AgentLiveStateDto> {
   const query = new URLSearchParams({ user_id: userId }).toString();
   return httpGet<AgentLiveStateDto>(`/agents/${agentId}/state/live?${query}`);
+}
+
+export async function listPosts(
+  userId: string,
+  params?: { limit?: number; offset?: number; includeArchived?: boolean },
+): Promise<PostListDto> {
+  const query = new URLSearchParams({
+    user_id: userId,
+    limit: String(params?.limit ?? 20),
+    offset: String(params?.offset ?? 0),
+    include_archived: String(Boolean(params?.includeArchived ?? false)),
+  }).toString();
+  return httpGet<PostListDto>(`/posts?${query}`);
+}
+
+export async function generatePost(agentId: string, payload: GeneratePostRequestDto): Promise<GeneratePostResponseDto> {
+  return httpPost<GeneratePostRequestDto, GeneratePostResponseDto>(`/agents/${agentId}/generate-post`, payload);
+}
+
+export async function triggerChatFromPost(postId: string, userId: string): Promise<TriggerChatFromPostDto> {
+  const query = new URLSearchParams({ user_id: userId }).toString();
+  return httpPost<Record<string, never>, TriggerChatFromPostDto>(`/posts/${postId}/trigger-chat?${query}`, {});
 }

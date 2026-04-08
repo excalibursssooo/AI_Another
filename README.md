@@ -62,7 +62,10 @@ pip install -r requirements.txt
 ```powershell
 Copy-Item .env.example .env
 ```
-
+目前只适配了GLM系列的APIKEY，在.env文件的
+```env
+ZAI_API_KEY=<your_api_key>
+```
 3. 启动 API
 
 ```powershell
@@ -172,4 +175,15 @@ npm run lint
 4. 记忆向量索引：Qdrant
 
 ## 界面展示
-![UI](figures/UI.jpg)
+![UI](figures/UI_v0.2.jpg)
+
+
+## TODO
+* [x] 记忆系统优化
+* [x] 展示角色当前状态栏
+* [x] 新增角色动态功能
+* [ ] 多模态支持
+* [ ] 多api接入
+* [ ] 选角广场
+* [ ] ？助手类功能（toolcalling）
+

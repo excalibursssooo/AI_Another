@@ -50,6 +50,19 @@ class ConversationStore:
             return []
         return turns[-limit:]
 
+    def known_user_ids(self) -> list[str]:
+        users: set[str] = set()
+        for key in self._turns_by_user:
+            if not key:
+                continue
+            if ":" in key:
+                user_id, _ = key.split(":", 1)
+                if user_id:
+                    users.add(user_id)
+                continue
+            users.add(key)
+        return sorted(users)
+
     def _load(self) -> None:
         if self._persist_path is None or not self._persist_path.exists():
             return

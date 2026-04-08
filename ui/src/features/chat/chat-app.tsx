@@ -5,12 +5,15 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import {
   createAgent,
   createAgentByAi,
+  generatePost,
   getAgentLiveState,
   listConversationTurns,
   listAgents,
+  listPosts,
   streamChat,
+  triggerChatFromPost,
 } from "@/lib/api/companion";
-import { AgentLiveStateDto, AgentResponseDto } from "@/lib/api/types";
+import { AgentLiveStateDto, AgentResponseDto, PostItemDto } from "@/lib/api/types";
 import { reportFrontendError, reportWebVital, sendHeartbeat } from "@/lib/api/telemetry";
 import { seedAgents, seedMessages } from "@/lib/mock/seed";
 import { AiAgent, ChatMessage } from "@/features/chat/types";
@@ -102,6 +105,10 @@ export function ChatApp() {
   const [displayStressLevel, setDisplayStressLevel] = useState<number>(0.2);
   const [displayMoodIndex, setDisplayMoodIndex] = useState<number>(35);
   const [notice, setNotice] = useState<string>(USE_MOCK ? "当前为 Mock 模式" : "正在连接后端...");
+  const [rightPanelTab, setRightPanelTab] = useState<"state" | "feed">("state");
+  const [feedPosts, setFeedPosts] = useState<PostItemDto[]>([]);
+  const [feedLoading, setFeedLoading] = useState<boolean>(false);
+  const [isGeneratingPost, setIsGeneratingPost] = useState<boolean>(false);
 
   const [draftName, setDraftName] = useState<string>("");
   const [draftPersona, setDraftPersona] = useState<string>("");
@@ -347,6 +354,35 @@ export function ChatApp() {
       clearInterval(timer);
     };
   }, [selectedAgent]);
+
+  const loadFeedPosts = useCallback(async () => {
+    if (USE_MOCK) {
+      setFeedPosts([]);
+      return;
+    }
+
+    setFeedLoading(true);
+    try {
+      const rows = await listPosts(USER_ID, { limit: 20, offset: 0, includeArchived: false });
+      setFeedPosts(rows.items);
+    } catch (error) {
+      setNotice(`动态加载失败: ${(error as Error).message}`);
+    } finally {
+      setFeedLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (USE_MOCK) {
+      return;
+    }
+
+    void loadFeedPosts();
+    const timer = setInterval(() => {
+      void loadFeedPosts();
+    }, 12_000);
+    return () => clearInterval(timer);
+  }, [loadFeedPosts]);
 
   useEffect(() => {
     const baseHeartbeat = selectedLiveState?.heartbeat_bpm ?? 72;
@@ -631,6 +667,38 @@ export function ChatApp() {
     }, 30);
   };
 
+  const onGeneratePost = async () => {
+    if (!selectedAgent || isGeneratingPost || USE_MOCK) {
+      return;
+    }
+    setIsGeneratingPost(true);
+    try {
+      await generatePost(selectedAgent.id, { user_id: USER_ID });
+      await loadFeedPosts();
+      setNotice(`已生成 ${selectedAgent.name} 的新动态`);
+    } catch (error) {
+      setNotice(`动态生成失败: ${(error as Error).message}`);
+    } finally {
+      setIsGeneratingPost(false);
+    }
+  };
+
+  const onTriggerFromPost = async (post: PostItemDto) => {
+    if (USE_MOCK) {
+      setInput(post.topic_seed);
+      return;
+    }
+
+    try {
+      const payload = await triggerChatFromPost(post.id, USER_ID);
+      setSelectedAgentId(payload.agent_id);
+      setInput(payload.suggested_message);
+      setNotice("已注入话题，可直接发送");
+    } catch (error) {
+      setNotice(`话题注入失败: ${(error as Error).message}`);
+    }
+  };
+
   const heartbeatDuration = `${Math.max(0.45, 60 / Math.max(1, displayHeartbeatBpm))}s`;
 
   return (
@@ -730,11 +798,36 @@ export function ChatApp() {
 
         <aside className="panel-scroll flex min-h-0 flex-col border-t border-[var(--line-soft)] bg-[var(--surface-side)] lg:border-t-0 lg:border-l">
           <div className="border-b border-[var(--line-soft)] px-4 py-3">
-            <p className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">Agent 实时看板</p>
-            <p className="mt-2 text-sm text-[var(--text-main)]">动态观察当前角色心情与心跳</p>
+            <p className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">Agent 侧栏</p>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setRightPanelTab("state")}
+                className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-all ${
+                  rightPanelTab === "state"
+                    ? "border-[var(--line-strong)] bg-[var(--surface-card)] text-[var(--text-main)]"
+                    : "border-[var(--line-soft)] text-[var(--text-muted)]"
+                }`}
+              >
+                状态
+              </button>
+              <button
+                type="button"
+                onClick={() => setRightPanelTab("feed")}
+                className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-all ${
+                  rightPanelTab === "feed"
+                    ? "border-[var(--line-strong)] bg-[var(--surface-card)] text-[var(--text-main)]"
+                    : "border-[var(--line-soft)] text-[var(--text-muted)]"
+                }`}
+              >
+                动态
+              </button>
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
-            <section className="rounded-2xl border border-[var(--line-soft)] bg-[var(--surface-card)] p-4">
+            {rightPanelTab === "state" ? (
+              <>
+                <section className="rounded-2xl border border-[var(--line-soft)] bg-[var(--surface-card)] p-4">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-xs text-[var(--text-muted)]">当前心情</p>
@@ -758,9 +851,9 @@ export function ChatApp() {
                 />
               </div>
               <p className="mt-2 text-xs text-[var(--text-muted)]">心情指数 {displayMoodIndex} / 100</p>
-            </section>
+                </section>
 
-            <section className="grid grid-cols-2 gap-2">
+                <section className="grid grid-cols-2 gap-2">
               <article className="rounded-xl border border-[var(--line-soft)] bg-[var(--surface-card)] p-3">
                 <p className="text-xs text-[var(--text-muted)]">心跳频率</p>
                 <p className="mt-1 text-base font-semibold text-[var(--text-main)]">{displayHeartbeatBpm} bpm</p>
@@ -790,11 +883,51 @@ export function ChatApp() {
                   {selectedLiveState ? formatAgo(selectedLiveState.updated_at) : "未更新"}
                 </p>
               </article>
-            </section>
+                </section>
 
-            <section className="rounded-2xl border border-[var(--line-soft)] bg-[var(--surface-card)] p-4 text-sm text-[var(--text-muted)]">
-              风险等级: <span className="text-[var(--text-main)]">{selectedLiveState?.risk_level ?? "low"}</span>
-            </section>
+                <section className="rounded-2xl border border-[var(--line-soft)] bg-[var(--surface-card)] p-4 text-sm text-[var(--text-muted)]">
+                  风险等级: <span className="text-[var(--text-main)]">{selectedLiveState?.risk_level ?? "low"}</span>
+                </section>
+              </>
+            ) : (
+              <>
+                <section className="rounded-2xl border border-[var(--line-soft)] bg-[var(--surface-card)] p-3">
+                  <button
+                    type="button"
+                    onClick={() => void onGeneratePost()}
+                    disabled={isGeneratingPost || !selectedAgent || USE_MOCK}
+                    className="w-full rounded-xl bg-[var(--brand-main)] px-4 py-2 text-sm font-semibold text-[var(--brand-text)] transition-all duration-300 hover:scale-[1.02] disabled:opacity-60"
+                  >
+                    {isGeneratingPost ? "生成中..." : `让 ${selectedAgent?.name ?? "AI"} 发一条动态`}
+                  </button>
+                  <p className="mt-2 text-xs text-[var(--text-muted)]">点击动态卡片可将话题注入输入框。</p>
+                </section>
+
+                {feedLoading ? <p className="text-xs text-[var(--text-muted)]">动态加载中...</p> : null}
+
+                {!feedLoading && feedPosts.length === 0 ? (
+                  <section className="rounded-2xl border border-dashed border-[var(--line-soft)] bg-[var(--surface-card)] p-4 text-sm text-[var(--text-muted)]">
+                    还没有动态，先生成一条试试。
+                  </section>
+                ) : null}
+
+                {feedPosts.map((post) => (
+                  <button
+                    key={post.id}
+                    type="button"
+                    onClick={() => void onTriggerFromPost(post)}
+                    className="w-full rounded-2xl border border-[var(--line-soft)] bg-[var(--surface-card)] p-4 text-left transition-all duration-300 hover:shadow-[var(--shadow-neon)]"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">{post.agent_name}</p>
+                      <p className="text-xs text-[var(--text-muted)]">{formatAgo(post.created_at)}</p>
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-[var(--text-main)]">{post.content}</p>
+                    <p className="mt-2 text-xs text-[var(--text-muted)]">话题: {post.topic_seed}</p>
+                  </button>
+                ))}
+              </>
+            )}
 
             {showAddFriendMenu ? (
               <section className="friend-pop space-y-3 border-t border-[var(--line-soft)] pt-3">

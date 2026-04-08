@@ -210,11 +210,10 @@ class SessionOrchestrator:
                 recent_turns=recent_turns,
                 persona_prompt=agent_profile.to_persona_prompt() if agent_profile is not None else None,
             )
-            for piece in _chunk_text(generated.reply):
-                yield {"type": "delta", "content": piece}
             reply = generated.reply
             if not reply:
                 raise LLMUnavailableError("empty streamed reply")
+            yield {"type": "delta", "content": reply}
         except LLMUnavailableError:
             reply = "当前无法调用大模型，请稍后再试。"
             generated = GeneratedReply(
@@ -273,11 +272,3 @@ def _build_recent_turns_summary(recent_turns: list[ConversationTurn], max_turns:
         role = "用户" if turn.role == "user" else "助手"
         lines.append(f"{role}:{turn.content}")
     return " | ".join(lines)
-
-
-def _chunk_text(content: str, chunk_size: int = 24) -> Iterator[str]:
-    text = content.strip()
-    if not text:
-        return
-    for index in range(0, len(text), chunk_size):
-        yield text[index : index + chunk_size]

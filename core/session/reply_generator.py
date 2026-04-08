@@ -163,7 +163,7 @@ def _build_messages(
 
     history_lines: list[str] = []
     for turn in recent_turns:
-        role = "用户" if turn.role == "user" else "助手"
+        role = "用户" if turn.role == "user" else "assistant"
         history_lines.append(f"{role}: {turn.content}")
     history_text = "\n".join(history_lines) if history_lines else "无"
 
@@ -235,62 +235,6 @@ def _extract_langchain_content(raw_message: object) -> str:
                 elif isinstance(part, str):
                     parts.append(part)
             return "\n".join(parts).strip()
-
-    return ""
-
-
-def _extract_stream_chunk_text(chunk: object) -> str:
-    if hasattr(chunk, "content"):
-        content = getattr(chunk, "content")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for part in content:
-                if isinstance(part, dict):
-                    text = part.get("text")
-                    if isinstance(text, str):
-                        parts.append(text)
-                elif isinstance(part, str):
-                    parts.append(part)
-            return "".join(parts)
-
-    # Compatible with OpenAI-like delta chunks and plain dict payloads.
-    if hasattr(chunk, "choices"):
-        choices = getattr(chunk, "choices")
-        if isinstance(choices, list) and choices:
-            first = choices[0]
-            if hasattr(first, "delta"):
-                delta = getattr(first, "delta")
-                if hasattr(delta, "content"):
-                    content = getattr(delta, "content")
-                    if isinstance(content, str):
-                        return content
-                if isinstance(delta, dict):
-                    content = delta.get("content")
-                    if isinstance(content, str):
-                        return content
-            if hasattr(first, "message"):
-                message = getattr(first, "message")
-                text = _extract_message_text(message)
-                if text:
-                    return text
-
-    if isinstance(chunk, dict):
-        choices = chunk.get("choices")
-        if isinstance(choices, list) and choices:
-            first = choices[0]
-            if isinstance(first, dict):
-                delta = first.get("delta")
-                if isinstance(delta, dict):
-                    content = delta.get("content")
-                    if isinstance(content, str):
-                        return content
-                message = first.get("message")
-                if isinstance(message, dict):
-                    content = message.get("content")
-                    if isinstance(content, str):
-                        return content
 
     return ""
 

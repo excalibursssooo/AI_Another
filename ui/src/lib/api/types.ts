@@ -42,6 +42,44 @@ export interface ConversationTurnDto {
   created_at: string;
 }
 
+export interface PostItemDto {
+  id: string;
+  user_id: string;
+  agent_id: string;
+  agent_name: string;
+  content: string;
+  topic_seed: string;
+  post_type: "status" | "reflection" | "plan";
+  status: "published" | "archived";
+  source_task_id: string | null;
+  created_at: string;
+}
+
+export interface PostListDto {
+  items: PostItemDto[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface GeneratePostRequestDto {
+  user_id: string;
+  source_task_id?: string | null;
+}
+
+export interface GeneratePostResponseDto {
+  skipped: boolean;
+  reason: string;
+  post: PostItemDto | null;
+}
+
+export interface TriggerChatFromPostDto {
+  post_id: string;
+  user_id: string;
+  agent_id: string;
+  suggested_message: string;
+}
+
 export type ChatStreamEvent = ChatDeltaEvent | ChatDoneEvent;
 
 export interface AgentResponseDto {
