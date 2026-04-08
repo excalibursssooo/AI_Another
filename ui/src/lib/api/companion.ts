@@ -2,6 +2,8 @@ import { httpDelete, httpGet, httpPost, streamPost } from "@/lib/api/client";
 import {
   AgentLiveStateDto,
   AgentAICreateResponseDto,
+  AgentMemorySeedDebugRequestDto,
+  AgentMemorySeedDebugResponseDto,
   AgentCreateRequestDto,
   AgentResponseDto,
   ChatDoneEvent,
@@ -9,6 +11,7 @@ import {
   ConversationTurnDto,
   GeneratePostRequestDto,
   GeneratePostResponseDto,
+  InfraDebugDto,
   MemoryResponseDto,
   MemoryStatusRequestDto,
   PostListDto,
@@ -135,4 +138,18 @@ export async function generatePost(agentId: string, payload: GeneratePostRequest
 export async function triggerChatFromPost(postId: string, userId: string): Promise<TriggerChatFromPostDto> {
   const query = new URLSearchParams({ user_id: userId }).toString();
   return httpPost<Record<string, never>, TriggerChatFromPostDto>(`/posts/${postId}/trigger-chat?${query}`, {});
+}
+
+export async function getInfraDebug(): Promise<InfraDebugDto> {
+  return httpGet<InfraDebugDto>("/infra/debug");
+}
+
+export async function debugAgentMemorySeed(
+  agentId: string,
+  payload: AgentMemorySeedDebugRequestDto,
+): Promise<AgentMemorySeedDebugResponseDto> {
+  return httpPost<AgentMemorySeedDebugRequestDto, AgentMemorySeedDebugResponseDto>(
+    `/agents/${agentId}/memory-seed/debug`,
+    payload,
+  );
 }

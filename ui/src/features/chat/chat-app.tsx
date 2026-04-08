@@ -5,7 +5,9 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import {
   createAgent,
   createAgentByAi,
+  debugAgentMemorySeed,
   generatePost,
+  getInfraDebug,
   getAgentLiveState,
   listConversationTurns,
   listAgents,
@@ -92,6 +94,35 @@ function buildAssistantReply(agent: AiAgent, text: string): string {
   return `我听到了你说“${text.trim()}”。以${agent.name}的方式，我建议先做一个最小动作：把这件事拆成今天可以完成的第一步。你不用一次解决全部，我会陪你走完。`;
 }
 
+type CreationMode = "ai" | "manual";
+type CreationPhase = "idle" | "parsing" | "restructuring" | "memory" | "diagnose" | "complete" | "error";
+
+interface CreationOverlayState {
+  active: boolean;
+  mode: CreationMode;
+  phase: CreationPhase;
+  progress: number;
+  logs: string[];
+  message: string;
+  error: string;
+  signature: string;
+  memoryNodesLit: number;
+  exploding: boolean;
+}
+
+function creationLabel(phase: CreationPhase): string {
+  const map: Record<CreationPhase, string> = {
+    idle: "待机",
+    parsing: "解析阶段",
+    restructuring: "重组阶段",
+    memory: "记忆灌注",
+    diagnose: "诊断阶段",
+    complete: "定型完成",
+    error: "构建失败",
+  };
+  return map[phase];
+}
+
 export function ChatApp() {
   const [agents, setAgents] = useState<AiAgent[]>(seedAgents);
   const [selectedAgentId, setSelectedAgentId] = useState<string>(seedAgents[0].id);
@@ -109,6 +140,22 @@ export function ChatApp() {
   const [feedPosts, setFeedPosts] = useState<PostItemDto[]>([]);
   const [feedLoading, setFeedLoading] = useState<boolean>(false);
   const [isGeneratingPost, setIsGeneratingPost] = useState<boolean>(false);
+  const [creatingPlaceholder, setCreatingPlaceholder] = useState<{ active: boolean; name: string }>({
+    active: false,
+    name: "角色构建中...",
+  });
+  const [creationOverlay, setCreationOverlay] = useState<CreationOverlayState>({
+    active: false,
+    mode: "ai",
+    phase: "idle",
+    progress: 0,
+    logs: [],
+    message: "",
+    error: "",
+    signature: "",
+    memoryNodesLit: 0,
+    exploding: false,
+  });
 
   const [draftName, setDraftName] = useState<string>("");
   const [draftPersona, setDraftPersona] = useState<string>("");
@@ -116,6 +163,109 @@ export function ChatApp() {
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionIdRef = useRef<string>(uid("session"));
+
+  const pushCreationLog = useCallback((line: string) => {
+    setCreationOverlay((prev) => ({
+      ...prev,
+      logs: [...prev.logs, line].slice(-6),
+    }));
+  }, []);
+
+  const startCreationFlow = useCallback((mode: CreationMode, message: string) => {
+    setCreationOverlay({
+      active: true,
+      mode,
+      phase: mode === "ai" ? "parsing" : "memory",
+      progress: 8,
+      logs: ["[System] Booting persona forge kernel..."],
+      message,
+      error: "",
+      signature: "",
+      memoryNodesLit: 0,
+      exploding: false,
+    });
+  }, []);
+
+  const completeCreationFlow = useCallback(async (signature: string, nextMessage: string) => {
+    setCreationOverlay((prev) => ({
+      ...prev,
+      phase: "complete",
+      progress: 100,
+      message: nextMessage,
+      signature,
+      exploding: true,
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 620));
+    setCreationOverlay((prev) => ({ ...prev, active: false, exploding: false }));
+  }, []);
+
+  const failCreationFlow = useCallback(async (errorMessage: string) => {
+    setCreationOverlay((prev) => ({
+      ...prev,
+      phase: "error",
+      progress: Math.max(prev.progress, 38),
+      error: errorMessage,
+      message: "创建失败，系统核心断裂。",
+      logs: [...prev.logs, `[Error] ${errorMessage}`].slice(-6),
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    setCreationOverlay((prev) => ({ ...prev, active: false, exploding: false }));
+  }, []);
+
+  const runSeedAndInfraStages = useCallback(
+    async (agentId: string, mode: CreationMode) => {
+      if (mode === "manual") {
+        setCreationOverlay((prev) => ({
+          ...prev,
+          phase: "memory",
+          progress: Math.max(prev.progress, 32),
+          message: "正在初始化角色设定记忆...",
+        }));
+      } else {
+        setCreationOverlay((prev) => ({
+          ...prev,
+          phase: "restructuring",
+          progress: Math.max(prev.progress, 38),
+          message: "人格拼接矩阵重组中...",
+        }));
+      }
+      pushCreationLog("[Kernel] Injecting subject identifiers: user/agent...");
+
+      let seededCount = 0;
+      try {
+        const seedResult = await debugAgentMemorySeed(agentId, {
+          dry_run: false,
+          force_reextract: false,
+        });
+        seededCount = Math.max(seedResult.persisted_count, seedResult.candidate_count);
+        setCreationOverlay((prev) => ({
+          ...prev,
+          memoryNodesLit: Math.max(1, Math.min(8, seededCount)),
+          progress: Math.max(prev.progress, 72),
+        }));
+        pushCreationLog(`[System] memory-seed persisted=${seedResult.persisted_count}`);
+      } catch (error) {
+        pushCreationLog(`[System] memory-seed skipped: ${(error as Error).message}`);
+      }
+
+      setCreationOverlay((prev) => ({
+        ...prev,
+        phase: "diagnose",
+        progress: Math.max(prev.progress, 82),
+        message: "正在进行基础设施诊断...",
+      }));
+      pushCreationLog("[System] Retrieving shared-scope memory...");
+      try {
+        const infra = await getInfraDebug();
+        pushCreationLog(
+          `[Ready] infra postgres=${infra.postgres.reachable ? "ok" : "down"}, qdrant=${infra.qdrant.reachable ? "ok" : "down"}`,
+        );
+      } catch (error) {
+        pushCreationLog(`[System] infra-check degraded: ${(error as Error).message}`);
+      }
+    },
+    [pushCreationLog],
+  );
 
   const loadConversation = useCallback(async (agentId: string, agentName: string) => {
     if (USE_MOCK) {
@@ -412,6 +562,12 @@ export function ChatApp() {
       return;
     }
 
+    const customDelayMs = 1_400;
+    const flowStart = Date.now();
+    setCreatingPlaceholder({ active: true, name: `${name} (构建中)` });
+    startCreationFlow("manual", "记忆灌注引擎启动中...");
+    pushCreationLog("[System] Parsing manual profile payload...");
+
     if (!USE_MOCK) {
       try {
         const created = await createAgent({
@@ -421,6 +577,11 @@ export function ChatApp() {
           hobbies: ["散步", "音乐"],
           speaking_style: draftStyle.trim() || "温柔有边界",
         });
+        await runSeedAndInfraStages(created.id, "manual");
+        const elapsed = Date.now() - flowStart;
+        if (elapsed < customDelayMs) {
+          await new Promise((resolve) => setTimeout(resolve, customDelayMs - elapsed));
+        }
         const mapped = mapAgentFromApi(created, agents.length);
         setAgents((prev) => [mapped, ...prev]);
         setSelectedAgentId(mapped.id);
@@ -429,9 +590,19 @@ export function ChatApp() {
         setDraftStyle("");
         setShowCustomCreateForm(false);
         setShowAddFriendMenu(false);
+        setCreatingPlaceholder({ active: false, name: "角色构建中..." });
+        await completeCreationFlow(mapped.name, "神经连接稳定，角色上线。" );
         setNotice("角色创建成功");
         return;
       } catch (error) {
+        setCreatingPlaceholder({ active: false, name: "角色构建中..." });
+        await failCreationFlow((error as Error).message);
+        void reportFrontendError({
+          message: `manual-create failed: ${(error as Error).message}`,
+          page: window.location.pathname,
+          source: "createAgentHandle",
+          user_id: USER_ID,
+        });
         setNotice(`角色创建失败: ${(error as Error).message}`);
         return;
       }
@@ -467,19 +638,49 @@ export function ChatApp() {
     setDraftStyle("");
     setShowCustomCreateForm(false);
     setShowAddFriendMenu(false);
+    setCreatingPlaceholder({ active: false, name: "角色构建中..." });
+    await completeCreationFlow(newAgent.name, "记忆灌注完成，角色上线。" );
   };
 
   const aiCreateAgentHandle = async () => {
+    const aiDelayMs = 1_900;
+    const flowStart = Date.now();
+    setCreatingPlaceholder({ active: true, name: "数字人格孵化中..." });
+    startCreationFlow("ai", "数字降生引擎启动中...");
+    pushCreationLog("[System] Retrieving shared-scope memory...");
+
     if (!USE_MOCK) {
       try {
+        setCreationOverlay((prev) => ({
+          ...prev,
+          phase: "restructuring",
+          progress: 30,
+          message: "几何人格体重组中...",
+        }));
+        pushCreationLog("[Kernel] Reassembling persona lattice...");
         const created = await createAgentByAi();
+        await runSeedAndInfraStages(created.agent.id, "ai");
+        const elapsed = Date.now() - flowStart;
+        if (elapsed < aiDelayMs) {
+          await new Promise((resolve) => setTimeout(resolve, aiDelayMs - elapsed));
+        }
         const mapped = mapAgentFromApi(created.agent, agents.length);
         setAgents((prev) => [mapped, ...prev]);
         setSelectedAgentId(mapped.id);
         setShowAddFriendMenu(false);
+        setCreatingPlaceholder({ active: false, name: "角色构建中..." });
+        await completeCreationFlow(mapped.name, "数字人格已定型并接入会话链路。" );
         setNotice(`AI 建角成功（${created.model}）`);
         return;
       } catch (error) {
+        setCreatingPlaceholder({ active: false, name: "角色构建中..." });
+        await failCreationFlow((error as Error).message);
+        void reportFrontendError({
+          message: `ai-create failed: ${(error as Error).message}`,
+          page: window.location.pathname,
+          source: "aiCreateAgentHandle",
+          user_id: USER_ID,
+        });
         setNotice(`AI 建角失败: ${(error as Error).message}`);
         return;
       }
@@ -513,6 +714,8 @@ export function ChatApp() {
     }));
     setSelectedAgentId(generated.id);
     setShowAddFriendMenu(false);
+    setCreatingPlaceholder({ active: false, name: "角色构建中..." });
+    await completeCreationFlow(generated.name, "模拟人格生成完成。" );
   };
 
   const sendMessage = async (event: FormEvent) => {
@@ -723,6 +926,17 @@ export function ChatApp() {
             <h2 className="mt-2 text-2xl font-semibold text-[var(--text-main)]">联系人</h2>
           </div>
           <div className="flex-1 space-y-2 overflow-y-auto px-3 pb-6">
+            {creatingPlaceholder.active ? (
+              <div className="agent-placeholder-card rounded-2xl border px-3 py-3 text-left">
+                <div className="flex items-center gap-3">
+                  <span className="agent-placeholder-avatar h-9 w-9 rounded-full" aria-hidden />
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-[var(--text-main)]">{creatingPlaceholder.name}</p>
+                    <p className="truncate text-xs text-[var(--text-muted)]">正在建立神经连接...</p>
+                  </div>
+                </div>
+              </div>
+            ) : null}
             {agents.map((agent) => {
               const active = agent.id === selectedAgentId;
               return (
@@ -998,6 +1212,54 @@ export function ChatApp() {
           </div>
         </aside>
       </div>
+
+      {creationOverlay.active ? (
+        <div className={`creation-overlay ${creationOverlay.mode} ${creationOverlay.phase} ${creationOverlay.exploding ? "explode" : ""}`}>
+          <div className="creation-veil" />
+          <div className="creation-panel">
+            <div className="creation-core-wrap">
+              {creationOverlay.mode === "ai" ? (
+                <div className="digital-core" aria-hidden>
+                  <div className="dodeca dodeca-a" />
+                  <div className="dodeca dodeca-b" />
+                  <div className="arc-electric arc-1" />
+                  <div className="arc-electric arc-2" />
+                </div>
+              ) : (
+                <div className="memory-core" aria-hidden>
+                  <div className="memory-stream" />
+                  <div className="memory-stream delay" />
+                  <div className="neural-grid" />
+                </div>
+              )}
+            </div>
+
+            <p className="creation-mode">{creationOverlay.mode === "ai" ? "数字降生" : "记忆灌注"}</p>
+            <p className="creation-phase">{creationLabel(creationOverlay.phase)}</p>
+            <p className="creation-message">{creationOverlay.error || creationOverlay.message}</p>
+
+            <div className="neon-loading-track" role="progressbar" aria-valuenow={creationOverlay.progress}>
+              <div className="neon-loading-fill" style={{ width: `${creationOverlay.progress}%` }} />
+            </div>
+
+            {creationOverlay.mode === "manual" ? (
+              <div className="memory-nodes" aria-hidden>
+                {Array.from({ length: 8 }).map((_, idx) => (
+                  <span key={`node-${idx}`} className={`memory-node ${idx < creationOverlay.memoryNodesLit ? "lit" : ""}`} />
+                ))}
+              </div>
+            ) : null}
+
+            <div className="creation-logs">
+              {creationOverlay.logs.map((line, idx) => (
+                <p key={`${line}-${idx}`}>{line}</p>
+              ))}
+            </div>
+
+            {creationOverlay.signature ? <p className="creation-signature">#{creationOverlay.signature}</p> : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -7,6 +7,7 @@ from threading import Thread
 from typing import Iterator, Protocol
 
 from core.agents.models import AgentProfile
+from core.common.audit_logger import audit_log
 from core.memory.models import MemoryItem
 from core.memory.service import MemoryService
 from core.safety.service import SafetyService
@@ -310,7 +311,7 @@ class SessionOrchestrator:
     ) -> None:
         def worker() -> None:
             try:
-                self._persist_turn_memories_sync(
+                persisted_count = self._persist_turn_memories_sync(
                     user_id=user_id,
                     agent_id=agent_id,
                     user_message=user_message,
@@ -318,8 +319,21 @@ class SessionOrchestrator:
                     agent_name=agent_name,
                     historical_memories=historical_memories,
                 )
+                audit_log(
+                    "memory_async_persist",
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    outcome="ok",
+                    persisted_count=persisted_count,
+                )
             except Exception as exc:
-                print(f"[memory] async persist failed for {user_id}/{agent_id}: {exc}", flush=True)
+                audit_log(
+                    "memory_async_persist",
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    outcome="error",
+                    error=str(exc),
+                )
 
         Thread(target=worker, daemon=True).start()
 

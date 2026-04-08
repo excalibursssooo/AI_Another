@@ -80,6 +80,45 @@ export interface TriggerChatFromPostDto {
   suggested_message: string;
 }
 
+export interface InfraTargetStatusDto {
+  enabled: boolean;
+  configured: boolean;
+  reachable: boolean;
+  detail: string;
+}
+
+export interface InfraDebugDto {
+  memory_repository: string;
+  memory_vector: string;
+  emotion_backend: string;
+  emotion_model: string;
+  openrouter_api_key_present: boolean;
+  postgres: InfraTargetStatusDto;
+  qdrant: InfraTargetStatusDto;
+}
+
+export interface AgentMemorySeedDebugRequestDto {
+  dry_run?: boolean;
+  force_reextract?: boolean;
+}
+
+export interface AgentMemorySeedDebugResponseDto {
+  agent_id: string;
+  agent_name: string;
+  dry_run: boolean;
+  force_reextract: boolean;
+  skipped_existing: boolean;
+  existing_count: number;
+  used_fallback: boolean;
+  extraction_backend: string;
+  extraction_model: string;
+  extraction_is_llm: boolean;
+  extraction_reason: string;
+  raw_text: string;
+  candidate_count: number;
+  persisted_count: number;
+}
+
 export type ChatStreamEvent = ChatDeltaEvent | ChatDoneEvent;
 
 export interface AgentResponseDto {

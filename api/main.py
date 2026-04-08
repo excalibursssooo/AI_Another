@@ -5,6 +5,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from fastapi import FastAPI
 from fastapi import HTTPException
+from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
 import os
 from pathlib import Path
@@ -14,8 +15,11 @@ from starlette.responses import StreamingResponse
 from typing import Any, Iterator
 from urllib.parse import urlparse
 from urllib.request import urlopen
+from uuid import uuid4
+import time
 
 from core.agents.service import AgentAICreationError, AgentService
+from core.common.audit_logger import audit_log, get_audit_logger
 from core.emotion.service import EmotionService
 from core.memory.models import MemoryItem
 from core.memory.models import MemoryCandidate
@@ -62,6 +66,46 @@ orchestrator = SessionOrchestrator(
 
 _feed_scheduler_task: asyncio.Task[None] | None = None
 _last_feed_generated_at: dict[tuple[str, str], datetime] = {}
+
+
+@app.middleware("http")
+async def audit_http_requests(request: Request, call_next):  # type: ignore[no-untyped-def]
+    request_id = request.headers.get("x-request-id") or str(uuid4())
+    started_at = time.perf_counter()
+    query = request.url.query
+
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        audit_log(
+            "http_request",
+            request_id=request_id,
+            method=request.method,
+            path=request.url.path,
+            query=query,
+            client_ip=request.client.host if request.client else "unknown",
+            status_code=500,
+            duration_ms=elapsed_ms,
+            outcome="error",
+            error=str(exc),
+        )
+        raise
+
+    elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+    response.headers["x-request-id"] = request_id
+    audit_log(
+        "http_request",
+        request_id=request_id,
+        method=request.method,
+        path=request.url.path,
+        query=query,
+        client_ip=request.client.host if request.client else "unknown",
+        status_code=response.status_code,
+        duration_ms=elapsed_ms,
+        outcome="ok" if response.status_code < 400 else "error",
+    )
+    return response
 
 
 class ChatRequest(BaseModel):
@@ -382,6 +426,11 @@ class TriggerChatResponse(BaseModel):
 @app.on_event("startup")
 async def on_startup() -> None:
     global _feed_scheduler_task
+    audit_log(
+        "backend_lifecycle",
+        action="startup",
+        feed_scheduler_enabled=_is_feed_scheduler_enabled(),
+    )
     if _is_feed_scheduler_enabled():
         _feed_scheduler_task = asyncio.create_task(_run_feed_scheduler())
 
@@ -389,6 +438,7 @@ async def on_startup() -> None:
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
     global _feed_scheduler_task
+    audit_log("backend_lifecycle", action="shutdown")
     if _feed_scheduler_task is None:
         return
     _feed_scheduler_task.cancel()
@@ -436,6 +486,12 @@ class TelemetryOverviewResponse(BaseModel):
     latest_heartbeat: dict[str, object] | None
     latest_error: dict[str, object] | None
     latest_web_vital: dict[str, object] | None
+
+
+class AuditLogResponse(BaseModel):
+    enabled: bool
+    log_path: str
+    items: list[dict[str, object]]
 
 
 MAX_TELEMETRY_ITEMS = 500
@@ -618,6 +674,34 @@ def telemetry_overview() -> TelemetryOverviewResponse:
     )
 
 
+@app.get("/audit/logs", response_model=AuditLogResponse)
+def get_audit_logs(limit: int = 200) -> AuditLogResponse:
+    logger = get_audit_logger()
+    bounded_limit = max(1, min(limit, 1000))
+    items: list[dict[str, object]] = []
+
+    if logger.enabled and logger.log_path.exists():
+        with logger.log_path.open("r", encoding="utf-8") as file:
+            lines = file.readlines()[-bounded_limit:]
+        for raw in lines:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                parsed = json.loads(line)
+            except Exception:
+                parsed = {"raw": line}
+            if isinstance(parsed, dict):
+                normalized: dict[str, object] = {str(key): value for key, value in parsed.items()}
+                items.append(normalized)
+
+    return AuditLogResponse(
+        enabled=logger.enabled,
+        log_path=str(logger.log_path),
+        items=items,
+    )
+
+
 @app.post("/chat")
 def chat(req: ChatRequest) -> StreamingResponse:
     selected_agent = agent_service.get_agent(req.agent_id)
@@ -651,6 +735,13 @@ def chat(req: ChatRequest) -> StreamingResponse:
                     mood_intensity=_to_float(event.get("mood_intensity", 0.35), 0.35),
                     heartbeat_bpm=_to_int(event.get("heartbeat_bpm", 72), 72),
                     risk_level=str(event.get("risk_level", "low")),
+                )
+                audit_log(
+                    "chat_done",
+                    user_id=req.user_id,
+                    agent_id=str(event.get("agent_id", req.agent_id)),
+                    risk_level=str(event.get("risk_level", "low")),
+                    persisted_memory_count=_to_int(event.get("persisted_memory_count", 0), 0),
                 )
             yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
 
@@ -1409,7 +1500,13 @@ def _persist_post_as_memory(*, user_id: str, agent_id: str, published: object) -
             ],
         )
     except Exception as exc:
-        print(f"[feed] failed to persist post memory for {user_id}/{agent_id}: {exc}", flush=True)
+        audit_log(
+            "feed_post_memory_persist",
+            user_id=user_id,
+            agent_id=agent_id,
+            outcome="error",
+            error=str(exc),
+        )
 
 
 def _is_feed_scheduler_enabled() -> bool:
@@ -1474,10 +1571,26 @@ async def _run_feed_scheduler() -> None:
                                 agent_id=agent.id,
                             )
                             _mark_generated_now(user_id=user_id, agent_id=agent.id)
+                            audit_log(
+                                "feed_scheduler_generate",
+                                user_id=user_id,
+                                agent_id=agent.id,
+                                outcome="ok",
+                            )
                         except FeedGenerationUnavailableError as exc:
-                            print(f"[feed] generation skipped for {user_id}/{agent.id}: {exc}", flush=True)
+                            audit_log(
+                                "feed_scheduler_generate",
+                                user_id=user_id,
+                                agent_id=agent.id,
+                                outcome="skipped",
+                                reason=str(exc),
+                            )
         except Exception as exc:
-            print(f"[feed] scheduler loop error: {exc}", flush=True)
+            audit_log(
+                "feed_scheduler_loop",
+                outcome="error",
+                error=str(exc),
+            )
 
         await asyncio.sleep(interval)
 
