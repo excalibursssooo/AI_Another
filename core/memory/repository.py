@@ -12,22 +12,39 @@ class MemoryRepository(Protocol):
     def add(self, item: MemoryItem) -> MemoryItem:
         ...
 
-    def list_by_user(self, user_id: str, agent_id: str) -> list[MemoryItem]:
+    def list_by_user(self, user_id: str, agent_id: str, domain_id: str = "default") -> list[MemoryItem]:
         ...
 
-    def get_by_ids(self, user_id: str, agent_id: str, ids: list[str]) -> list[MemoryItem]:
+    def list_by_agent(self, agent_id: str, domain_id: str | None = None) -> list[MemoryItem]:
         ...
 
-    def get_by_id(self, user_id: str, agent_id: str, memory_id: str) -> MemoryItem | None:
+    def get_by_ids(self, user_id: str, agent_id: str, ids: list[str], domain_id: str = "default") -> list[MemoryItem]:
         ...
 
-    def set_status(self, user_id: str, agent_id: str, memory_id: str, status: str) -> MemoryItem | None:
+    def get_by_id(self, user_id: str, agent_id: str, memory_id: str, domain_id: str = "default") -> MemoryItem | None:
         ...
 
-    def touch(self, user_id: str, agent_id: str, memory_ids: list[str]) -> None:
+    def set_status(
+        self,
+        user_id: str,
+        agent_id: str,
+        memory_id: str,
+        status: str,
+        domain_id: str = "default",
+    ) -> MemoryItem | None:
         ...
 
-    def set_conflict_state(self, user_id: str, agent_id: str, memory_id: str, conflict_state: str) -> MemoryItem | None:
+    def touch(self, user_id: str, agent_id: str, memory_ids: list[str], domain_id: str = "default") -> None:
+        ...
+
+    def set_conflict_state(
+        self,
+        user_id: str,
+        agent_id: str,
+        memory_id: str,
+        conflict_state: str,
+        domain_id: str = "default",
+    ) -> MemoryItem | None:
         ...
 
     def replace(
@@ -41,6 +58,7 @@ class MemoryRepository(Protocol):
         importance: float,
         status: str,
         conflict_state: str,
+        domain_id: str = "default",
     ) -> MemoryItem | None:
         ...
 
@@ -49,36 +67,57 @@ class InMemoryMemoryRepository:
     """Default repository for local development and tests."""
 
     def __init__(self) -> None:
-        self._items_by_user_agent: dict[tuple[str, str], list[MemoryItem]] = {}
+        self._items_by_user_agent: dict[tuple[str, str, str], list[MemoryItem]] = {}
 
     @staticmethod
-    def _key(user_id: str, agent_id: str) -> tuple[str, str]:
-        return (user_id, agent_id)
+    def _key(user_id: str, agent_id: str, domain_id: str) -> tuple[str, str, str]:
+        return (user_id, agent_id, domain_id)
 
     def add(self, item: MemoryItem) -> MemoryItem:
-        key = self._key(item.user_id, item.agent_id)
+        key = self._key(item.user_id, item.agent_id, item.domain_id)
         if key not in self._items_by_user_agent:
             self._items_by_user_agent[key] = []
         self._items_by_user_agent[key].append(item)
         return item
 
-    def list_by_user(self, user_id: str, agent_id: str) -> list[MemoryItem]:
-        return list(self._items_by_user_agent.get(self._key(user_id, agent_id), []))
+    def list_by_user(self, user_id: str, agent_id: str, domain_id: str = "default") -> list[MemoryItem]:
+        return list(self._items_by_user_agent.get(self._key(user_id, agent_id, domain_id), []))
 
-    def get_by_ids(self, user_id: str, agent_id: str, ids: list[str]) -> list[MemoryItem]:
+    def list_by_agent(self, agent_id: str, domain_id: str | None = None) -> list[MemoryItem]:
+        items: list[MemoryItem] = []
+        for (_, agent_value, domain_value), bucket in self._items_by_user_agent.items():
+            if agent_value != agent_id:
+                continue
+            if domain_id is not None and domain_value != domain_id:
+                continue
+            items.extend(bucket)
+        return list(items)
+
+    def get_by_ids(self, user_id: str, agent_id: str, ids: list[str], domain_id: str = "default") -> list[MemoryItem]:
         if not ids:
             return []
         id_set = set(ids)
-        return [item for item in self._items_by_user_agent.get(self._key(user_id, agent_id), []) if item.id in id_set]
+        return [
+            item
+            for item in self._items_by_user_agent.get(self._key(user_id, agent_id, domain_id), [])
+            if item.id in id_set
+        ]
 
-    def get_by_id(self, user_id: str, agent_id: str, memory_id: str) -> MemoryItem | None:
-        for item in self._items_by_user_agent.get(self._key(user_id, agent_id), []):
+    def get_by_id(self, user_id: str, agent_id: str, memory_id: str, domain_id: str = "default") -> MemoryItem | None:
+        for item in self._items_by_user_agent.get(self._key(user_id, agent_id, domain_id), []):
             if item.id == memory_id:
                 return item
         return None
 
-    def set_status(self, user_id: str, agent_id: str, memory_id: str, status: str) -> MemoryItem | None:
-        items = self._items_by_user_agent.get(self._key(user_id, agent_id), [])
+    def set_status(
+        self,
+        user_id: str,
+        agent_id: str,
+        memory_id: str,
+        status: str,
+        domain_id: str = "default",
+    ) -> MemoryItem | None:
+        items = self._items_by_user_agent.get(self._key(user_id, agent_id, domain_id), [])
         for index, item in enumerate(items):
             if item.id != memory_id:
                 continue
@@ -87,6 +126,7 @@ class InMemoryMemoryRepository:
                 id=item.id,
                 user_id=item.user_id,
                 agent_id=item.agent_id,
+                domain_id=item.domain_id,
                 subject=item.subject,
                 memory_type=item.memory_type,
                 content=item.content,
@@ -103,13 +143,13 @@ class InMemoryMemoryRepository:
 
         return None
 
-    def touch(self, user_id: str, agent_id: str, memory_ids: list[str]) -> None:
+    def touch(self, user_id: str, agent_id: str, memory_ids: list[str], domain_id: str = "default") -> None:
         if not memory_ids:
             return
 
         id_set = set(memory_ids)
         now = datetime.now()
-        items = self._items_by_user_agent.get(self._key(user_id, agent_id), [])
+        items = self._items_by_user_agent.get(self._key(user_id, agent_id, domain_id), [])
         for index, item in enumerate(items):
             if item.id not in id_set:
                 continue
@@ -117,6 +157,7 @@ class InMemoryMemoryRepository:
                 id=item.id,
                 user_id=item.user_id,
                 agent_id=item.agent_id,
+                domain_id=item.domain_id,
                 subject=item.subject,
                 memory_type=item.memory_type,
                 content=item.content,
@@ -129,8 +170,15 @@ class InMemoryMemoryRepository:
                 last_accessed_at=now,
             )
 
-    def set_conflict_state(self, user_id: str, agent_id: str, memory_id: str, conflict_state: str) -> MemoryItem | None:
-        items = self._items_by_user_agent.get(self._key(user_id, agent_id), [])
+    def set_conflict_state(
+        self,
+        user_id: str,
+        agent_id: str,
+        memory_id: str,
+        conflict_state: str,
+        domain_id: str = "default",
+    ) -> MemoryItem | None:
+        items = self._items_by_user_agent.get(self._key(user_id, agent_id, domain_id), [])
         for index, item in enumerate(items):
             if item.id != memory_id:
                 continue
@@ -138,6 +186,7 @@ class InMemoryMemoryRepository:
                 id=item.id,
                 user_id=item.user_id,
                 agent_id=item.agent_id,
+                domain_id=item.domain_id,
                 subject=item.subject,
                 memory_type=item.memory_type,
                 content=item.content,
@@ -164,8 +213,9 @@ class InMemoryMemoryRepository:
         importance: float,
         status: str,
         conflict_state: str,
+        domain_id: str = "default",
     ) -> MemoryItem | None:
-        items = self._items_by_user_agent.get(self._key(user_id, agent_id), [])
+        items = self._items_by_user_agent.get(self._key(user_id, agent_id, domain_id), [])
         for index, item in enumerate(items):
             if item.id != memory_id:
                 continue
@@ -173,6 +223,7 @@ class InMemoryMemoryRepository:
                 id=item.id,
                 user_id=item.user_id,
                 agent_id=item.agent_id,
+                domain_id=item.domain_id,
                 subject=item.subject,
                 memory_type=item.memory_type,
                 content=content,
@@ -211,6 +262,7 @@ class PostgresMemoryRepository:
                         id TEXT PRIMARY KEY,
                         user_id TEXT NOT NULL,
                         agent_id TEXT NOT NULL DEFAULT 'default',
+                        domain_id TEXT NOT NULL DEFAULT 'default',
                         subject TEXT NOT NULL DEFAULT 'user',
                         memory_type TEXT NOT NULL,
                         content TEXT NOT NULL,
@@ -227,6 +279,8 @@ class PostgresMemoryRepository:
                     ALTER TABLE memory_item
                     ADD COLUMN IF NOT EXISTS agent_id TEXT NOT NULL DEFAULT 'default';
                     ALTER TABLE memory_item
+                    ADD COLUMN IF NOT EXISTS domain_id TEXT NOT NULL DEFAULT 'default';
+                    ALTER TABLE memory_item
                     ADD COLUMN IF NOT EXISTS subject TEXT NOT NULL DEFAULT 'user';
                     ALTER TABLE memory_item
                     ADD COLUMN IF NOT EXISTS access_count INTEGER NOT NULL DEFAULT 0;
@@ -235,7 +289,7 @@ class PostgresMemoryRepository:
                     ALTER TABLE memory_item
                     ADD COLUMN IF NOT EXISTS conflict_state TEXT NOT NULL DEFAULT 'none';
                     CREATE INDEX IF NOT EXISTS idx_memory_user_created
-                    ON memory_item (user_id, agent_id, created_at DESC);
+                    ON memory_item (user_id, agent_id, domain_id, created_at DESC);
                     """,
                 )
             conn.commit()
@@ -246,14 +300,15 @@ class PostgresMemoryRepository:
                 cur.execute(
                     """
                     INSERT INTO memory_item (
-                        id, user_id, agent_id, subject, memory_type, content, confidence, importance, status, conflict_state,
-                        created_at, access_count, last_accessed_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        id, user_id, agent_id, domain_id, subject, memory_type, content, confidence, importance, status,
+                        conflict_state, created_at, access_count, last_accessed_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         item.id,
                         item.user_id,
                         item.agent_id,
+                        item.domain_id,
                         item.subject,
                         item.memory_type,
                         item.content,
@@ -269,18 +324,19 @@ class PostgresMemoryRepository:
             conn.commit()
         return item
 
-    def list_by_user(self, user_id: str, agent_id: str) -> list[MemoryItem]:
+    def list_by_user(self, user_id: str, agent_id: str, domain_id: str = "default") -> list[MemoryItem]:
         with self._psycopg.connect(self._dsn) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, user_id, agent_id, subject, memory_type, content, confidence, importance, status, conflict_state,
+                    SELECT id, user_id, agent_id, domain_id, subject, memory_type, content, confidence, importance, status,
+                    conflict_state,
                     created_at, access_count, last_accessed_at
                     FROM memory_item
-                    WHERE user_id = %s AND agent_id = %s
+                    WHERE user_id = %s AND agent_id = %s AND domain_id = %s
                     ORDER BY created_at DESC
                     """,
-                    (user_id, agent_id),
+                    (user_id, agent_id, domain_id),
                 )
                 rows = cur.fetchall()
 
@@ -289,21 +345,71 @@ class PostgresMemoryRepository:
                 id=row[0],
                 user_id=row[1],
                 agent_id=row[2],
-                subject=row[3],
-                memory_type=row[4],
-                content=row[5],
-                confidence=float(row[6]),
-                importance=float(row[7]),
-                status=row[8],
-                conflict_state=row[9],
-                created_at=_ensure_datetime(row[10]),
-                access_count=int(row[11]),
-                last_accessed_at=_ensure_datetime_or_none(row[12]),
+                domain_id=row[3],
+                subject=row[4],
+                memory_type=row[5],
+                content=row[6],
+                confidence=float(row[7]),
+                importance=float(row[8]),
+                status=row[9],
+                conflict_state=row[10],
+                created_at=_ensure_datetime(row[11]),
+                access_count=int(row[12]),
+                last_accessed_at=_ensure_datetime_or_none(row[13]),
             )
             for row in rows
         ]
 
-    def get_by_ids(self, user_id: str, agent_id: str, ids: list[str]) -> list[MemoryItem]:
+    def list_by_agent(self, agent_id: str, domain_id: str | None = None) -> list[MemoryItem]:
+        with self._psycopg.connect(self._dsn) as conn:
+            with conn.cursor() as cur:
+                if domain_id is None:
+                    cur.execute(
+                        """
+                        SELECT id, user_id, agent_id, domain_id, subject, memory_type, content, confidence, importance, status,
+                        conflict_state,
+                        created_at, access_count, last_accessed_at
+                        FROM memory_item
+                        WHERE agent_id = %s
+                        ORDER BY created_at DESC
+                        """,
+                        (agent_id,),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT id, user_id, agent_id, domain_id, subject, memory_type, content, confidence, importance, status,
+                        conflict_state,
+                        created_at, access_count, last_accessed_at
+                        FROM memory_item
+                        WHERE agent_id = %s AND domain_id = %s
+                        ORDER BY created_at DESC
+                        """,
+                        (agent_id, domain_id),
+                    )
+                rows = cur.fetchall()
+
+        return [
+            MemoryItem(
+                id=row[0],
+                user_id=row[1],
+                agent_id=row[2],
+                domain_id=row[3],
+                subject=row[4],
+                memory_type=row[5],
+                content=row[6],
+                confidence=float(row[7]),
+                importance=float(row[8]),
+                status=row[9],
+                conflict_state=row[10],
+                created_at=_ensure_datetime(row[11]),
+                access_count=int(row[12]),
+                last_accessed_at=_ensure_datetime_or_none(row[13]),
+            )
+            for row in rows
+        ]
+
+    def get_by_ids(self, user_id: str, agent_id: str, ids: list[str], domain_id: str = "default") -> list[MemoryItem]:
         if not ids:
             return []
 
@@ -311,12 +417,13 @@ class PostgresMemoryRepository:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, user_id, agent_id, subject, memory_type, content, confidence, importance, status, conflict_state,
+                    SELECT id, user_id, agent_id, domain_id, subject, memory_type, content, confidence, importance, status,
+                    conflict_state,
                     created_at, access_count, last_accessed_at
                     FROM memory_item
-                    WHERE user_id = %s AND agent_id = %s AND id = ANY(%s)
+                    WHERE user_id = %s AND agent_id = %s AND domain_id = %s AND id = ANY(%s)
                     """,
-                    (user_id, agent_id, ids),
+                    (user_id, agent_id, domain_id, ids),
                 )
                 rows = cur.fetchall()
 
@@ -325,31 +432,33 @@ class PostgresMemoryRepository:
                 id=row[0],
                 user_id=row[1],
                 agent_id=row[2],
-                subject=row[3],
-                memory_type=row[4],
-                content=row[5],
-                confidence=float(row[6]),
-                importance=float(row[7]),
-                status=row[8],
-                conflict_state=row[9],
-                created_at=_ensure_datetime(row[10]),
-                access_count=int(row[11]),
-                last_accessed_at=_ensure_datetime_or_none(row[12]),
+                domain_id=row[3],
+                subject=row[4],
+                memory_type=row[5],
+                content=row[6],
+                confidence=float(row[7]),
+                importance=float(row[8]),
+                status=row[9],
+                conflict_state=row[10],
+                created_at=_ensure_datetime(row[11]),
+                access_count=int(row[12]),
+                last_accessed_at=_ensure_datetime_or_none(row[13]),
             )
             for row in rows
         ]
 
-    def get_by_id(self, user_id: str, agent_id: str, memory_id: str) -> MemoryItem | None:
+    def get_by_id(self, user_id: str, agent_id: str, memory_id: str, domain_id: str = "default") -> MemoryItem | None:
         with self._psycopg.connect(self._dsn) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, user_id, agent_id, subject, memory_type, content, confidence, importance, status, conflict_state,
+                    SELECT id, user_id, agent_id, domain_id, subject, memory_type, content, confidence, importance, status,
+                    conflict_state,
                     created_at, access_count, last_accessed_at
                     FROM memory_item
-                    WHERE user_id = %s AND agent_id = %s AND id = %s
+                    WHERE user_id = %s AND agent_id = %s AND domain_id = %s AND id = %s
                     """,
-                    (user_id, agent_id, memory_id),
+                    (user_id, agent_id, domain_id, memory_id),
                 )
                 row = cur.fetchone()
 
@@ -360,30 +469,39 @@ class PostgresMemoryRepository:
             id=row[0],
             user_id=row[1],
             agent_id=row[2],
-            subject=row[3],
-            memory_type=row[4],
-            content=row[5],
-            confidence=float(row[6]),
-            importance=float(row[7]),
-            status=row[8],
-            conflict_state=row[9],
-            created_at=_ensure_datetime(row[10]),
-            access_count=int(row[11]),
-            last_accessed_at=_ensure_datetime_or_none(row[12]),
+            domain_id=row[3],
+            subject=row[4],
+            memory_type=row[5],
+            content=row[6],
+            confidence=float(row[7]),
+            importance=float(row[8]),
+            status=row[9],
+            conflict_state=row[10],
+            created_at=_ensure_datetime(row[11]),
+            access_count=int(row[12]),
+            last_accessed_at=_ensure_datetime_or_none(row[13]),
         )
 
-    def set_status(self, user_id: str, agent_id: str, memory_id: str, status: str) -> MemoryItem | None:
+    def set_status(
+        self,
+        user_id: str,
+        agent_id: str,
+        memory_id: str,
+        status: str,
+        domain_id: str = "default",
+    ) -> MemoryItem | None:
         with self._psycopg.connect(self._dsn) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     UPDATE memory_item
                     SET status = %s
-                    WHERE user_id = %s AND agent_id = %s AND id = %s
-                    RETURNING id, user_id, agent_id, subject, memory_type, content, confidence, importance, status, conflict_state,
+                    WHERE user_id = %s AND agent_id = %s AND domain_id = %s AND id = %s
+                    RETURNING id, user_id, agent_id, domain_id, subject, memory_type, content, confidence, importance, status,
+                    conflict_state,
                     created_at, access_count, last_accessed_at
                     """,
-                    (status, user_id, agent_id, memory_id),
+                    (status, user_id, agent_id, domain_id, memory_id),
                 )
                 row = cur.fetchone()
             conn.commit()
@@ -395,30 +513,39 @@ class PostgresMemoryRepository:
             id=row[0],
             user_id=row[1],
             agent_id=row[2],
-            subject=row[3],
-            memory_type=row[4],
-            content=row[5],
-            confidence=float(row[6]),
-            importance=float(row[7]),
-            status=row[8],
-            conflict_state=row[9],
-            created_at=_ensure_datetime(row[10]),
-            access_count=int(row[11]),
-            last_accessed_at=_ensure_datetime_or_none(row[12]),
+            domain_id=row[3],
+            subject=row[4],
+            memory_type=row[5],
+            content=row[6],
+            confidence=float(row[7]),
+            importance=float(row[8]),
+            status=row[9],
+            conflict_state=row[10],
+            created_at=_ensure_datetime(row[11]),
+            access_count=int(row[12]),
+            last_accessed_at=_ensure_datetime_or_none(row[13]),
         )
 
-    def set_conflict_state(self, user_id: str, agent_id: str, memory_id: str, conflict_state: str) -> MemoryItem | None:
+    def set_conflict_state(
+        self,
+        user_id: str,
+        agent_id: str,
+        memory_id: str,
+        conflict_state: str,
+        domain_id: str = "default",
+    ) -> MemoryItem | None:
         with self._psycopg.connect(self._dsn) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     UPDATE memory_item
                     SET conflict_state = %s
-                    WHERE user_id = %s AND agent_id = %s AND id = %s
-                    RETURNING id, user_id, agent_id, subject, memory_type, content, confidence, importance, status, conflict_state,
+                    WHERE user_id = %s AND agent_id = %s AND domain_id = %s AND id = %s
+                    RETURNING id, user_id, agent_id, domain_id, subject, memory_type, content, confidence, importance, status,
+                    conflict_state,
                     created_at, access_count, last_accessed_at
                     """,
-                    (conflict_state, user_id, agent_id, memory_id),
+                    (conflict_state, user_id, agent_id, domain_id, memory_id),
                 )
                 row = cur.fetchone()
             conn.commit()
@@ -430,16 +557,17 @@ class PostgresMemoryRepository:
             id=row[0],
             user_id=row[1],
             agent_id=row[2],
-            subject=row[3],
-            memory_type=row[4],
-            content=row[5],
-            confidence=float(row[6]),
-            importance=float(row[7]),
-            status=row[8],
-            conflict_state=row[9],
-            created_at=_ensure_datetime(row[10]),
-            access_count=int(row[11]),
-            last_accessed_at=_ensure_datetime_or_none(row[12]),
+            domain_id=row[3],
+            subject=row[4],
+            memory_type=row[5],
+            content=row[6],
+            confidence=float(row[7]),
+            importance=float(row[8]),
+            status=row[9],
+            conflict_state=row[10],
+            created_at=_ensure_datetime(row[11]),
+            access_count=int(row[12]),
+            last_accessed_at=_ensure_datetime_or_none(row[13]),
         )
 
     def replace(
@@ -453,6 +581,7 @@ class PostgresMemoryRepository:
         importance: float,
         status: str,
         conflict_state: str,
+        domain_id: str = "default",
     ) -> MemoryItem | None:
         with self._psycopg.connect(self._dsn) as conn:
             with conn.cursor() as cur:
@@ -465,11 +594,12 @@ class PostgresMemoryRepository:
                         status = %s,
                         conflict_state = %s,
                         last_accessed_at = NOW()
-                    WHERE user_id = %s AND agent_id = %s AND id = %s
-                    RETURNING id, user_id, agent_id, subject, memory_type, content, confidence, importance, status, conflict_state,
+                    WHERE user_id = %s AND agent_id = %s AND domain_id = %s AND id = %s
+                    RETURNING id, user_id, agent_id, domain_id, subject, memory_type, content, confidence, importance, status,
+                    conflict_state,
                     created_at, access_count, last_accessed_at
                     """,
-                    (content, confidence, importance, status, conflict_state, user_id, agent_id, memory_id),
+                    (content, confidence, importance, status, conflict_state, user_id, agent_id, domain_id, memory_id),
                 )
                 row = cur.fetchone()
             conn.commit()
@@ -481,19 +611,20 @@ class PostgresMemoryRepository:
             id=row[0],
             user_id=row[1],
             agent_id=row[2],
-            subject=row[3],
-            memory_type=row[4],
-            content=row[5],
-            confidence=float(row[6]),
-            importance=float(row[7]),
-            status=row[8],
-            conflict_state=row[9],
-            created_at=_ensure_datetime(row[10]),
-            access_count=int(row[11]),
-            last_accessed_at=_ensure_datetime_or_none(row[12]),
+            domain_id=row[3],
+            subject=row[4],
+            memory_type=row[5],
+            content=row[6],
+            confidence=float(row[7]),
+            importance=float(row[8]),
+            status=row[9],
+            conflict_state=row[10],
+            created_at=_ensure_datetime(row[11]),
+            access_count=int(row[12]),
+            last_accessed_at=_ensure_datetime_or_none(row[13]),
         )
 
-    def touch(self, user_id: str, agent_id: str, memory_ids: list[str]) -> None:
+    def touch(self, user_id: str, agent_id: str, memory_ids: list[str], domain_id: str = "default") -> None:
         if not memory_ids:
             return
 
@@ -504,9 +635,9 @@ class PostgresMemoryRepository:
                     UPDATE memory_item
                     SET access_count = access_count + 1,
                         last_accessed_at = NOW()
-                    WHERE user_id = %s AND agent_id = %s AND id = ANY(%s)
+                    WHERE user_id = %s AND agent_id = %s AND domain_id = %s AND id = ANY(%s)
                     """,
-                    (user_id, agent_id, memory_ids),
+                    (user_id, agent_id, domain_id, memory_ids),
                 )
             conn.commit()
 

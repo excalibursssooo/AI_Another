@@ -9,7 +9,10 @@ class VectorStore(Protocol):
     def upsert(self, item_id: str, vector: list[float], payload: dict[str, str]) -> None:
         ...
 
-    def search(self, query_vector: list[float], user_id: str, agent_id: str, limit: int) -> list[str]:
+    def search(self, query_vector: list[float], user_id: str, agent_id: str, domain_id: str, limit: int) -> list[str]:
+        ...
+
+    def delete(self, item_id: str) -> None:
         ...
 
 
@@ -22,18 +25,24 @@ class InMemoryVectorStore:
     def upsert(self, item_id: str, vector: list[float], payload: dict[str, str]) -> None:
         self._entries[item_id] = (vector, payload)
 
-    def search(self, query_vector: list[float], user_id: str, agent_id: str, limit: int) -> list[str]:
+    def search(self, query_vector: list[float], user_id: str, agent_id: str, domain_id: str, limit: int) -> list[str]:
         scored: list[tuple[float, str]] = []
         for item_id, (vector, payload) in self._entries.items():
             if payload.get("user_id") != user_id:
                 continue
             if payload.get("agent_id") != agent_id:
                 continue
+            if payload.get("domain_id", "default") != domain_id:
+                continue
             score = _dot(query_vector, vector)
             scored.append((score, item_id))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [item_id for _, item_id in scored[:limit]]
+
+    def delete(self, item_id: str) -> None:
+        if item_id in self._entries:
+            del self._entries[item_id]
 
 
 class QdrantVectorStore:
@@ -76,7 +85,7 @@ class QdrantVectorStore:
             ],
         )
 
-    def search(self, query_vector: list[float], user_id: str, agent_id: str, limit: int) -> list[str]:
+    def search(self, query_vector: list[float], user_id: str, agent_id: str, domain_id: str, limit: int) -> list[str]:
         points = self._client.query_points(
             collection_name=self._collection_name,
             query=query_vector,
@@ -91,11 +100,21 @@ class QdrantVectorStore:
                         key="agent_id",
                         match=self._qmodels.MatchValue(value=agent_id),
                     ),
+                    self._qmodels.FieldCondition(
+                        key="domain_id",
+                        match=self._qmodels.MatchValue(value=domain_id),
+                    ),
                 ],
             ),
         ).points
 
         return [str(point.id) for point in points]
+
+    def delete(self, item_id: str) -> None:
+        self._client.delete(
+            collection_name=self._collection_name,
+            points_selector=self._qmodels.PointIdsList(points=[item_id]),
+        )
 
 
 def _dot(a: list[float], b: list[float]) -> float:

@@ -9,6 +9,7 @@ class MemoryItem:
     id: str
     user_id: str
     agent_id: str
+    domain_id: str
     subject: str
     memory_type: str
     content: str

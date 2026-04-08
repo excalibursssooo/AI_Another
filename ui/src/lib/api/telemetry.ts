@@ -3,7 +3,7 @@ import {
   FrontendErrorRequestDto,
   HeartbeatRequestDto,
   WebVitalRequestDto,
-} from "@/lib/api/types";
+} from "@/lib/api/types_api";
 
 const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION?.trim() || "dev";
 

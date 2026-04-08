@@ -20,6 +20,18 @@ import time
 
 from core.agents.service import AgentAICreationError, AgentService
 from core.common.audit_logger import audit_log, get_audit_logger
+from core.common.domain_loader import (
+    DomainConfig,
+    domain_is_enabled,
+    get_default_domain_id,
+    get_domain_config,
+    list_domain_configs,
+    list_domain_summaries,
+    load_domain_config,
+    normalize_domain_id,
+    save_domain_config,
+)
+from core.common.openrouter import OpenRouterError, get_env as get_common_env, get_openrouter_client
 from core.emotion.service import EmotionService
 from core.memory.models import MemoryItem
 from core.memory.models import MemoryCandidate
@@ -113,6 +125,7 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
     conversation_id: str | None = Field(default=None, min_length=1)
     agent_id: str = Field(default="default", min_length=1)
+    domain_id: str | None = Field(default=None, min_length=1, max_length=80)
 
 
 class ChatResponse(BaseModel):
@@ -151,6 +164,7 @@ class AgentCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=40)
     persona: str = Field(..., min_length=1, max_length=1000)
     background: str = Field(..., min_length=1, max_length=500)
+    domain_id: str = Field(default="default", min_length=1, max_length=80)
     hobbies: list[str] = Field(default_factory=list)
     speaking_style: str = Field(default="warm", min_length=1, max_length=400)
 
@@ -159,6 +173,7 @@ class AgentUpdateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=40)
     persona: str = Field(..., min_length=1, max_length=1000)
     background: str = Field(..., min_length=1, max_length=500)
+    domain_id: str | None = Field(default=None, min_length=1, max_length=80)
     hobbies: list[str] = Field(default_factory=list)
     speaking_style: str = Field(default="warm", min_length=1, max_length=400)
     status: str = Field(default="active", pattern="^(active|inactive)$")
@@ -168,8 +183,11 @@ class AgentResponse(BaseModel):
     id: str
     name: str
     display_name: str
+    greeting: str
     persona: str
     background: str
+    domain_id: str
+    world_context: str
     hobbies: list[str]
     speaking_style: str
     status: str
@@ -179,6 +197,7 @@ class AgentResponse(BaseModel):
 
 class AgentAICreateRequest(BaseModel):
     prompt: str | None = Field(default=None, min_length=5, max_length=1500)
+    domain_id: str = Field(default="default", min_length=1, max_length=80)
 
 
 class AgentAICreateResponse(BaseModel):
@@ -267,6 +286,7 @@ class MemoryResponse(BaseModel):
     id: str
     user_id: str
     agent_id: str
+    domain_id: str
     subject: str
     memory_type: str
     content: str
@@ -310,6 +330,7 @@ class MemoryExtractDebugResponse(BaseModel):
 class MemoryStatusRequest(BaseModel):
     user_id: str = Field(..., min_length=1)
     agent_id: str = Field(default="default", min_length=1)
+    domain_id: str = Field(default="default", min_length=1, max_length=80)
 
 
 class MemoryCompactResponse(BaseModel):
@@ -321,6 +342,7 @@ class MemoryCompactResponse(BaseModel):
 class MemoryRecallDebugRequest(BaseModel):
     user_id: str = Field(..., min_length=1)
     agent_id: str = Field(default="default", min_length=1)
+    domain_id: str = Field(default="default", min_length=1, max_length=80)
     query_text: str | None = Field(default=None, max_length=4000)
     limit: int = Field(default=5, ge=1, le=50)
 
@@ -330,6 +352,7 @@ class MemoryRecallScoreItem(BaseModel):
     memory_id: str
     user_id: str
     agent_id: str
+    domain_id: str
     subject: str
     memory_type: str
     content: str
@@ -492,6 +515,51 @@ class AuditLogResponse(BaseModel):
     enabled: bool
     log_path: str
     items: list[dict[str, object]]
+
+
+class WorldSummaryResponse(BaseModel):
+    id: str
+    name: str
+
+
+class WorldDetailResponse(BaseModel):
+    id: str
+    name: str
+    lore: str
+    tone: str
+    constraints: list[str]
+    seed_memories: list[str]
+
+
+class WorldUpsertRequest(BaseModel):
+    id: str | None = Field(default=None, min_length=1, max_length=80)
+    name: str = Field(..., min_length=1, max_length=80)
+    lore: str = Field(default="", max_length=6000)
+    tone: str = Field(default="", max_length=200)
+    constraints: list[str] = Field(default_factory=list)
+    seed_memories: list[str] = Field(default_factory=list)
+
+
+class WorldAICreateRequest(BaseModel):
+    prompt: str | None = Field(default=None, min_length=5, max_length=3000)
+    world_id: str | None = Field(default=None, min_length=1, max_length=80)
+    base_domain_id: str | None = Field(default=None, min_length=1, max_length=80)
+
+
+class WorldAICreateResponse(BaseModel):
+    world: WorldDetailResponse
+    backend: str
+    model: str
+    used_prompt: str
+    raw_text: str
+
+
+class WorldDebugResponse(BaseModel):
+    enabled: bool
+    default_domain_id: str
+    active_domain_id: str
+    active_domain_name: str
+    summaries: list[WorldSummaryResponse]
 
 
 MAX_TELEMETRY_ITEMS = 500
@@ -717,10 +785,13 @@ def chat(req: ChatRequest) -> StreamingResponse:
             detail="one agent must map to one conversation: conversation_id must equal agent_id",
         )
 
+    resolved_domain_id = req.domain_id or selected_agent.domain_id or "default"
+
     stream_iter = orchestrator.stream_handle_message(
         user_id=req.user_id,
         message=req.message,
         conversation_id=resolved_conversation_id,
+        domain_id=resolved_domain_id,
         agent_profile=selected_agent,
     )
 
@@ -740,6 +811,7 @@ def chat(req: ChatRequest) -> StreamingResponse:
                     "chat_done",
                     user_id=req.user_id,
                     agent_id=str(event.get("agent_id", req.agent_id)),
+                    domain_id=resolved_domain_id,
                     risk_level=str(event.get("risk_level", "low")),
                     persisted_memory_count=_to_int(event.get("persisted_memory_count", 0), 0),
                 )
@@ -798,16 +870,20 @@ def create_agent(req: AgentCreateRequest) -> AgentResponse:
         name=req.name,
         persona=req.persona,
         background=req.background,
+        domain_id=req.domain_id,
         hobbies=req.hobbies,
-        speaking_style=req.speaking_style,
+        speaking_style=req.speaking_style
     )
     _seed_agent_profile_memories(profile.id)
     return AgentResponse(
         id=profile.id,
         name=profile.name,
         display_name=profile.display_name or profile.name,
+        greeting=profile.greeting,
         persona=profile.persona,
         background=profile.background,
+        domain_id=profile.domain_id,
+        world_context=profile.world_context,
         hobbies=profile.hobbies,
         speaking_style=profile.speaking_style,
         status=profile.status,
@@ -819,7 +895,7 @@ def create_agent(req: AgentCreateRequest) -> AgentResponse:
 @app.post("/agents/ai-create", response_model=AgentAICreateResponse)
 def create_agent_by_ai(req: AgentAICreateRequest) -> AgentAICreateResponse:
     try:
-        profile, debug = agent_service.create_agent_by_ai_debug(req.prompt)
+        profile, debug = agent_service.create_agent_by_ai_debug(req.prompt, domain_id=req.domain_id)
     except AgentAICreationError as exc:
         debug = exc.debug_info
         raise HTTPException(
@@ -843,8 +919,11 @@ def create_agent_by_ai(req: AgentAICreateRequest) -> AgentAICreateResponse:
             id=profile.id,
             name=profile.name,
             display_name=profile.display_name or profile.name,
+            greeting=profile.greeting,
             persona=profile.persona,
             background=profile.background,
+            domain_id=profile.domain_id,
+            world_context=profile.world_context,
             hobbies=profile.hobbies,
             speaking_style=profile.speaking_style,
             status=profile.status,
@@ -916,15 +995,19 @@ def debug_agent_memory_seed(agent_id: str, req: AgentMemorySeedDebugRequest) -> 
 
 
 @app.get("/agents", response_model=list[AgentResponse])
-def list_agents(include_inactive: bool = False) -> list[AgentResponse]:
-    rows = agent_service.list_agents(include_inactive=include_inactive)
+def list_agents(include_inactive: bool = False, domain_id: str | None = None) -> list[AgentResponse]:
+    resolved_domain_id = (domain_id or get_default_domain_id()).strip() or "default"
+    rows = agent_service.list_agents(include_inactive=include_inactive, domain_id=resolved_domain_id)
     return [
         AgentResponse(
             id=item.id,
             name=item.name,
             display_name=item.display_name or item.name,
+            greeting=item.greeting,
             persona=item.persona,
             background=item.background,
+            domain_id=item.domain_id,
+            world_context=item.world_context,
             hobbies=item.hobbies,
             speaking_style=item.speaking_style,
             status=item.status,
@@ -945,8 +1028,11 @@ def get_agent(agent_id: str) -> AgentResponse:
         id=item.id,
         name=item.name,
         display_name=item.display_name or item.name,
+        greeting=item.greeting,
         persona=item.persona,
         background=item.background,
+        domain_id=item.domain_id,
+        world_context=item.world_context,
         hobbies=item.hobbies,
         speaking_style=item.speaking_style,
         status=item.status,
@@ -962,6 +1048,7 @@ def update_agent(agent_id: str, req: AgentUpdateRequest) -> AgentResponse:
         name=req.name,
         persona=req.persona,
         background=req.background,
+        domain_id=req.domain_id,
         hobbies=req.hobbies,
         speaking_style=req.speaking_style,
         status=req.status,
@@ -973,8 +1060,11 @@ def update_agent(agent_id: str, req: AgentUpdateRequest) -> AgentResponse:
         id=updated.id,
         name=updated.name,
         display_name=updated.display_name or updated.name,
+        greeting=updated.greeting,
         persona=updated.persona,
         background=updated.background,
+        domain_id=updated.domain_id,
+        world_context=updated.world_context,
         hobbies=updated.hobbies,
         speaking_style=updated.speaking_style,
         status=updated.status,
@@ -984,7 +1074,14 @@ def update_agent(agent_id: str, req: AgentUpdateRequest) -> AgentResponse:
 
 
 @app.delete("/agents/{agent_id}", response_model=AgentResponse)
-def delete_agent(agent_id: str) -> AgentResponse:
+def delete_agent(agent_id: str, purge_memories: bool = True) -> AgentResponse:
+    target = agent_service.get_agent(agent_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="agent not found")
+
+    if purge_memories:
+        memory_service.delete_memories_by_agent(agent_id=target.id, domain_id=target.domain_id)
+
     try:
         deleted = agent_service.delete_agent(agent_id)
     except RuntimeError as exc:
@@ -997,8 +1094,11 @@ def delete_agent(agent_id: str) -> AgentResponse:
         id=deleted.id,
         name=deleted.name,
         display_name=deleted.display_name or deleted.name,
+        greeting=deleted.greeting,
         persona=deleted.persona,
         background=deleted.background,
+        domain_id=deleted.domain_id,
+        world_context=deleted.world_context,
         hobbies=deleted.hobbies,
         speaking_style=deleted.speaking_style,
         status=deleted.status,
@@ -1060,6 +1160,258 @@ def infra_debug() -> InfraDebugResponse:
     )
 
 
+@app.get("/world/debug", response_model=WorldDebugResponse)
+def world_debug(domain_id: str | None = None) -> WorldDebugResponse:
+    active = load_domain_config(domain_id)
+    summaries = list_domain_summaries()
+    return WorldDebugResponse(
+        enabled=domain_is_enabled(),
+        default_domain_id=get_default_domain_id(),
+        active_domain_id=active.id,
+        active_domain_name=active.name,
+        summaries=[
+            WorldSummaryResponse(id=str(item.get("id", "")), name=str(item.get("name", "")))
+            for item in summaries
+            if str(item.get("id", "")).strip()
+        ],
+    )
+
+
+def _to_world_detail(config: DomainConfig) -> WorldDetailResponse:
+    return WorldDetailResponse(
+        id=config.id,
+        name=config.name,
+        lore=config.lore,
+        tone=config.tone,
+        constraints=config.constraints,
+        seed_memories=config.seed_memories,
+    )
+
+
+def _parse_json_object(raw_text: str) -> dict[str, object]:
+    text = raw_text.strip()
+    if not text:
+        raise RuntimeError("AI output is empty")
+
+    candidates = [text]
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        inner = "\n".join(lines).strip()
+        if inner:
+            candidates.append(inner)
+
+    left = text.find("{")
+    right = text.rfind("}")
+    if left >= 0 and right > left:
+        candidates.append(text[left : right + 1].strip())
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+
+    raise RuntimeError("AI output is not a valid JSON object")
+
+
+@app.get("/worlds", response_model=list[WorldDetailResponse])
+def list_worlds() -> list[WorldDetailResponse]:
+    rows = [
+        DomainConfig(
+            id="default",
+            name="默认陪伴域",
+            lore="默认陪伴模式，不启用异世界世界观约束。",
+            tone="温暖、现实、支持型",
+            constraints=[],
+            seed_memories=[],
+        ),
+        *list_domain_configs(),
+    ]
+    return [_to_world_detail(item) for item in rows]
+
+
+@app.get("/worlds/{domain_id}", response_model=WorldDetailResponse)
+def get_world(domain_id: str) -> WorldDetailResponse:
+    resolved = normalize_domain_id(domain_id)
+    if resolved == "default":
+        return _to_world_detail(
+            DomainConfig(
+                id="default",
+                name="默认陪伴域",
+                lore="默认陪伴模式，不启用异世界世界观约束。",
+                tone="温暖、现实、支持型",
+                constraints=[],
+                seed_memories=[],
+            ),
+        )
+
+    world = get_domain_config(resolved)
+    if world is None:
+        raise HTTPException(status_code=404, detail="world not found")
+    return _to_world_detail(world)
+
+
+@app.post("/worlds", response_model=WorldDetailResponse)
+def create_world(req: WorldUpsertRequest) -> WorldDetailResponse:
+    if not domain_is_enabled():
+        raise HTTPException(status_code=400, detail="domain feature is disabled")
+
+    candidate_id = normalize_domain_id(req.id or req.name)
+    if not candidate_id:
+        raise HTTPException(status_code=400, detail="world id is required")
+    if candidate_id == "default":
+        raise HTTPException(status_code=400, detail="default is reserved")
+    if get_domain_config(candidate_id) is not None:
+        raise HTTPException(status_code=409, detail="world id already exists")
+
+    saved = save_domain_config(
+        DomainConfig(
+            id=candidate_id,
+            name=req.name,
+            lore=req.lore,
+            tone=req.tone,
+            constraints=req.constraints,
+            seed_memories=req.seed_memories,
+        ),
+    )
+    return _to_world_detail(saved)
+
+
+@app.put("/worlds/{domain_id}", response_model=WorldDetailResponse)
+def update_world(domain_id: str, req: WorldUpsertRequest) -> WorldDetailResponse:
+    if not domain_is_enabled():
+        raise HTTPException(status_code=400, detail="domain feature is disabled")
+
+    resolved = normalize_domain_id(domain_id)
+    if not resolved:
+        raise HTTPException(status_code=400, detail="invalid world id")
+    if resolved == "default":
+        raise HTTPException(status_code=400, detail="default world cannot be edited")
+    if get_domain_config(resolved) is None:
+        raise HTTPException(status_code=404, detail="world not found")
+
+    saved = save_domain_config(
+        DomainConfig(
+            id=resolved,
+            name=req.name,
+            lore=req.lore,
+            tone=req.tone,
+            constraints=req.constraints,
+            seed_memories=req.seed_memories,
+        ),
+    )
+    return _to_world_detail(saved)
+
+
+@app.post("/worlds/ai-create", response_model=WorldAICreateResponse)
+def create_world_by_ai(req: WorldAICreateRequest) -> WorldAICreateResponse:
+    if not domain_is_enabled():
+        raise HTTPException(status_code=400, detail="domain feature is disabled")
+
+    try:
+        default_model = get_common_env("CHAT_MODEL_NAME", "openai/gpt-5.2")
+        client = get_openrouter_client("WORLD_CREATOR_MODEL_NAME", default_model)
+    except OpenRouterError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    base_domain: DomainConfig | None = None
+    if req.base_domain_id and req.base_domain_id.strip() and req.base_domain_id.strip() != "default":
+        base_domain = get_domain_config(req.base_domain_id)
+
+    base_hint = ""
+    if base_domain is not None:
+        constraints_text = "\n".join(f"- {item}" for item in base_domain.constraints[:8]) if base_domain.constraints else "- 无"
+        base_hint = (
+            f"参考世界ID: {base_domain.id}\n"
+            f"参考世界名: {base_domain.name}\n"
+            f"参考背景: {base_domain.lore}\n"
+            f"参考语气: {base_domain.tone}\n"
+            f"参考约束:\n{constraints_text}\n"
+        )
+
+    used_prompt = req.prompt.strip() if isinstance(req.prompt, str) and req.prompt.strip() else "请生成一个风格鲜明、可用于角色扮演聊天的新世界设定。"
+    id_hint = normalize_domain_id(req.world_id) if req.world_id else ""
+
+    try:
+        raw_text = client.chat_text(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "你是世界观设计师。只输出一个JSON对象，不要输出其他文本。"
+                        "JSON字段: id, name, lore, tone, constraints, seed_memories。"
+                        "约束: id仅小写字母数字下划线中划线；name<=40字；lore<=800字；"
+                        "constraints为1-8条字符串；seed_memories为2-8条字符串。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"{base_hint}"
+                        f"用户需求: {used_prompt}\n"
+                        f"若提供了建议id请优先使用: {id_hint or '无'}"
+                    ),
+                },
+            ],
+            max_tokens=4096,
+            temperature=0.7,
+        )
+    except OpenRouterError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    try:
+        payload = _parse_json_object(raw_text)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=f"AI output parse failed: {exc}") from exc
+
+    generated_id = normalize_domain_id(str(payload.get("id", "")).strip())
+    resolved_id = id_hint or generated_id or normalize_domain_id(str(payload.get("name", "")).strip())
+    if not resolved_id:
+        raise HTTPException(status_code=502, detail="AI output missing world id")
+    if resolved_id == "default":
+        raise HTTPException(status_code=400, detail="default is reserved")
+
+    base_id = resolved_id
+    suffix = 1
+    while get_domain_config(resolved_id) is not None:
+        suffix += 1
+        resolved_id = f"{base_id}_{suffix}"
+
+    constraints_obj = payload.get("constraints", [])
+    seed_obj = payload.get("seed_memories", [])
+    constraints = [str(item).strip() for item in constraints_obj if str(item).strip()] if isinstance(constraints_obj, list) else []
+    seed_memories = [str(item).strip() for item in seed_obj if str(item).strip()] if isinstance(seed_obj, list) else []
+
+    saved = save_domain_config(
+        DomainConfig(
+            id=resolved_id,
+            name=str(payload.get("name", resolved_id)).strip() or resolved_id,
+            lore=str(payload.get("lore", "")).strip(),
+            tone=str(payload.get("tone", "")).strip(),
+            constraints=constraints,
+            seed_memories=seed_memories,
+        ),
+    )
+
+    return WorldAICreateResponse(
+        world=_to_world_detail(saved),
+        backend="openrouter",
+        model=get_common_env("WORLD_CREATOR_MODEL_NAME", get_common_env("CHAT_MODEL_NAME", "openai/gpt-5.2")),
+        used_prompt=used_prompt,
+        raw_text=raw_text,
+    )
+
+
 @app.post("/tasks/draft", response_model=TaskDraftResponse)
 def draft_task(req: TaskDraftRequest) -> TaskDraftResponse:
     draft = task_service.draft_from_message(req.message)
@@ -1078,13 +1430,19 @@ def draft_task(req: TaskDraftRequest) -> TaskDraftResponse:
 
 
 @app.get("/memories", response_model=list[MemoryResponse])
-def list_memories(user_id: str, agent_id: str = "default", status: str = "all") -> list[MemoryResponse]:
-    memories = memory_service.list_memories(user_id=user_id, agent_id=agent_id, status=status)
+def list_memories(
+    user_id: str,
+    agent_id: str = "default",
+    domain_id: str = "default",
+    status: str = "all",
+) -> list[MemoryResponse]:
+    memories = memory_service.list_memories(user_id=user_id, agent_id=agent_id, domain_id=domain_id, status=status)
     return [
         MemoryResponse(
             id=item.id,
             user_id=item.user_id,
             agent_id=item.agent_id,
+            domain_id=item.domain_id,
             subject=item.subject,
             memory_type=item.memory_type,
             content=item.content,
@@ -1155,13 +1513,19 @@ def memory_extract_debug(req: MemoryExtractDebugRequest) -> MemoryExtractDebugRe
 
 @app.post("/memories/{memory_id}/freeze", response_model=MemoryResponse)
 def freeze_memory(memory_id: str, req: MemoryStatusRequest) -> MemoryResponse:
-    updated = memory_service.freeze_memory(user_id=req.user_id, agent_id=req.agent_id, memory_id=memory_id)
+    updated = memory_service.freeze_memory(
+        user_id=req.user_id,
+        agent_id=req.agent_id,
+        memory_id=memory_id,
+        domain_id=req.domain_id,
+    )
     if updated is None:
         raise HTTPException(status_code=404, detail="memory not found")
     return MemoryResponse(
         id=updated.id,
         user_id=updated.user_id,
         agent_id=updated.agent_id,
+        domain_id=updated.domain_id,
         subject=updated.subject,
         memory_type=updated.memory_type,
         content=updated.content,
@@ -1177,13 +1541,19 @@ def freeze_memory(memory_id: str, req: MemoryStatusRequest) -> MemoryResponse:
 
 @app.post("/memories/{memory_id}/activate", response_model=MemoryResponse)
 def activate_memory(memory_id: str, req: MemoryStatusRequest) -> MemoryResponse:
-    updated = memory_service.activate_memory(user_id=req.user_id, agent_id=req.agent_id, memory_id=memory_id)
+    updated = memory_service.activate_memory(
+        user_id=req.user_id,
+        agent_id=req.agent_id,
+        memory_id=memory_id,
+        domain_id=req.domain_id,
+    )
     if updated is None:
         raise HTTPException(status_code=404, detail="memory not found")
     return MemoryResponse(
         id=updated.id,
         user_id=updated.user_id,
         agent_id=updated.agent_id,
+        domain_id=updated.domain_id,
         subject=updated.subject,
         memory_type=updated.memory_type,
         content=updated.content,
@@ -1199,13 +1569,19 @@ def activate_memory(memory_id: str, req: MemoryStatusRequest) -> MemoryResponse:
 
 @app.delete("/memories/{memory_id}", response_model=MemoryResponse)
 def delete_memory(memory_id: str, req: MemoryStatusRequest) -> MemoryResponse:
-    updated = memory_service.delete_memory(user_id=req.user_id, agent_id=req.agent_id, memory_id=memory_id)
+    updated = memory_service.delete_memory(
+        user_id=req.user_id,
+        agent_id=req.agent_id,
+        memory_id=memory_id,
+        domain_id=req.domain_id,
+    )
     if updated is None:
         raise HTTPException(status_code=404, detail="memory not found")
     return MemoryResponse(
         id=updated.id,
         user_id=updated.user_id,
         agent_id=updated.agent_id,
+        domain_id=updated.domain_id,
         subject=updated.subject,
         memory_type=updated.memory_type,
         content=updated.content,
@@ -1221,7 +1597,11 @@ def delete_memory(memory_id: str, req: MemoryStatusRequest) -> MemoryResponse:
 
 @app.post("/memories/compact", response_model=MemoryCompactResponse)
 def compact_memories(req: MemoryStatusRequest) -> MemoryCompactResponse:
-    result = memory_service.compact_similar_memories(user_id=req.user_id, agent_id=req.agent_id)
+    result = memory_service.compact_similar_memories(
+        user_id=req.user_id,
+        agent_id=req.agent_id,
+        domain_id=req.domain_id,
+    )
     deleted_ids_obj = result.get("deleted_ids", [])
     deleted_ids = deleted_ids_obj if isinstance(deleted_ids_obj, list) else []
     return MemoryCompactResponse(
@@ -1236,6 +1616,7 @@ def debug_memory_recall(req: MemoryRecallDebugRequest) -> MemoryRecallDebugRespo
     scored = memory_service.debug_retrieval_scores(
         user_id=req.user_id,
         agent_id=req.agent_id,
+        domain_id=req.domain_id,
         query_text=req.query_text,
         limit=req.limit,
     )
@@ -1251,6 +1632,7 @@ def debug_memory_recall(req: MemoryRecallDebugRequest) -> MemoryRecallDebugRespo
                 memory_id=memory_obj.id,
                 user_id=memory_obj.user_id,
                 agent_id=memory_obj.agent_id,
+                domain_id=memory_obj.domain_id,
                 subject=memory_obj.subject,
                 memory_type=memory_obj.memory_type,
                 content=memory_obj.content,
@@ -1351,16 +1733,34 @@ def list_tasks(user_id: str) -> list[TaskResponse]:
 
 
 @app.get("/posts", response_model=PostListResponse)
-def list_posts(user_id: str, limit: int = 20, offset: int = 0, include_archived: bool = False) -> PostListResponse:
+def list_posts(
+    user_id: str,
+    limit: int = 20,
+    offset: int = 0,
+    include_archived: bool = False,
+    domain_id: str | None = None,
+) -> PostListResponse:
     listed = feed_service.list_posts(
         user_id=user_id,
         limit=limit,
         offset=offset,
         include_archived=include_archived,
     )
+
+    resolved_domain = (domain_id or get_default_domain_id()).strip() or "default"
+    scoped_items: list[FeedPost] = []
+    for item in listed.items:
+        profile = agent_service.get_agent(item.agent_id)
+        if profile is None:
+            continue
+        if (profile.domain_id or "default") != resolved_domain:
+            continue
+        scoped_items.append(item)
+    filtered_items = scoped_items
+
     return PostListResponse(
-        items=[_build_post_response(item) for item in listed.items],
-        total=listed.total,
+        items=[_build_post_response(item) for item in filtered_items],
+        total=len(filtered_items),
         limit=listed.limit,
         offset=listed.offset,
     )
@@ -1391,10 +1791,18 @@ def generate_post(agent_id: str, req: GeneratePostRequest) -> GeneratePostRespon
 
 
 @app.post("/posts/{post_id}/trigger-chat", response_model=TriggerChatResponse)
-def trigger_chat_from_post(post_id: str, user_id: str) -> TriggerChatResponse:
+def trigger_chat_from_post(post_id: str, user_id: str, domain_id: str | None = None) -> TriggerChatResponse:
     post = feed_service.get_post(user_id=user_id, post_id=post_id)
     if post is None:
         raise HTTPException(status_code=404, detail="post not found")
+
+    if domain_id is not None:
+        profile = agent_service.get_agent(post.agent_id)
+        if profile is None:
+            raise HTTPException(status_code=404, detail="agent not found")
+        resolved_domain = domain_id.strip() or "default"
+        if (profile.domain_id or "default") != resolved_domain:
+            raise HTTPException(status_code=404, detail="post not found in domain")
 
     return TriggerChatResponse(
         post_id=post.id,
@@ -1466,11 +1874,16 @@ def _generate_and_publish_post(
         post_type=generated.post_type,
         source_task_id=source_task_id,
     )
-    _persist_post_as_memory(user_id=user_id, agent_id=agent_id, published=published)
+    _persist_post_as_memory(
+        user_id=user_id,
+        agent_id=agent_id,
+        domain_id=profile.domain_id,
+        published=published,
+    )
     return published
 
 
-def _persist_post_as_memory(*, user_id: str, agent_id: str, published: object) -> None:
+def _persist_post_as_memory(*, user_id: str, agent_id: str, domain_id: str, published: object) -> None:
     post_obj = getattr(published, "post", None)
     skipped = bool(getattr(published, "skipped", False))
     if skipped or post_obj is None:
@@ -1489,6 +1902,7 @@ def _persist_post_as_memory(*, user_id: str, agent_id: str, published: object) -
         memory_service.persist_candidates(
             user_id=user_id,
             agent_id=agent_id,
+            domain_id=domain_id,
             candidates=[
                 MemoryCandidate(
                     subject="agent",

@@ -20,6 +20,11 @@ from core.memory.vector_store import InMemoryVectorStore, QdrantVectorStore, Vec
 AGENT_PROFILE_MEMORY_USER_ID = "__agent_profile__"
 
 
+def _resolve_domain_id(domain_id: str | None) -> str:
+    value = (domain_id or "default").strip()
+    return value if value else "default"
+
+
 @dataclass
 class MemoryBackendConfig:
     repository: str
@@ -315,7 +320,12 @@ class MemoryService:
         return self.extract_candidates(dialogue_text)
 
     def initialize_agent_profile_memories(self, profile: AgentProfile) -> list[MemoryItem]:
-        existing = self.repository.list_by_user(user_id=AGENT_PROFILE_MEMORY_USER_ID, agent_id=profile.id)
+        domain_id = _resolve_domain_id(profile.domain_id)
+        existing = self.repository.list_by_user(
+            user_id=AGENT_PROFILE_MEMORY_USER_ID,
+            agent_id=profile.id,
+            domain_id=domain_id,
+        )
         if existing:
             return existing
 
@@ -335,6 +345,7 @@ class MemoryService:
         return self.persist_candidates(
             user_id=AGENT_PROFILE_MEMORY_USER_ID,
             agent_id=profile.id,
+            domain_id=domain_id,
             candidates=agent_candidates,
         )
 
@@ -344,7 +355,12 @@ class MemoryService:
         dry_run: bool = True,
         force_reextract: bool = False,
     ) -> dict[str, object]:
-        existing = self.repository.list_by_user(user_id=AGENT_PROFILE_MEMORY_USER_ID, agent_id=profile.id)
+        domain_id = _resolve_domain_id(profile.domain_id)
+        existing = self.repository.list_by_user(
+            user_id=AGENT_PROFILE_MEMORY_USER_ID,
+            agent_id=profile.id,
+            domain_id=domain_id,
+        )
         skipped_existing = bool(existing) and not force_reextract and not dry_run
 
         extraction_debug: dict[str, object] = {}
@@ -397,6 +413,7 @@ class MemoryService:
             persisted = self.persist_candidates(
                 user_id=AGENT_PROFILE_MEMORY_USER_ID,
                 agent_id=profile.id,
+                domain_id=domain_id,
                 candidates=agent_candidates,
             )
 
@@ -437,11 +454,22 @@ class MemoryService:
                 "candidates": [],
             }
 
-    def persist_candidates(self, user_id: str, agent_id: str, candidates: list[MemoryCandidate]) -> list[MemoryItem]:
+    def persist_candidates(
+        self,
+        user_id: str,
+        agent_id: str,
+        domain_id: str,
+        candidates: list[MemoryCandidate],
+    ) -> list[MemoryItem]:
+        resolved_domain_id = _resolve_domain_id(domain_id)
         persisted: list[MemoryItem] = []
         existing_items = [
             item
-            for item in self.repository.list_by_user(user_id=user_id, agent_id=agent_id)
+            for item in self.repository.list_by_user(
+                user_id=user_id,
+                agent_id=agent_id,
+                domain_id=resolved_domain_id,
+            )
             if item.status != "deleted"
         ]
 
@@ -459,7 +487,12 @@ class MemoryService:
                 normalized_content=normalized_content,
             )
             if matched is not None and matched_score >= 0.88:
-                self.repository.touch(user_id=user_id, agent_id=agent_id, memory_ids=[matched.id])
+                self.repository.touch(
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    memory_ids=[matched.id],
+                    domain_id=resolved_domain_id,
+                )
                 continue
 
             if matched is not None and matched_score >= 0.62 and _is_conflict_content(
@@ -470,6 +503,7 @@ class MemoryService:
                     user_id=user_id,
                     agent_id=agent_id,
                     memory_id=matched.id,
+                    domain_id=resolved_domain_id,
                     content=candidate.content.strip(),
                     confidence=candidate.confidence,
                     importance=candidate.importance,
@@ -483,6 +517,7 @@ class MemoryService:
                         payload={
                             "user_id": updated.user_id,
                             "agent_id": updated.agent_id,
+                            "domain_id": updated.domain_id,
                             "memory_type": updated.memory_type,
                         },
                     )
@@ -500,6 +535,7 @@ class MemoryService:
                     user_id=user_id,
                     agent_id=agent_id,
                     memory_id=matched.id,
+                    domain_id=resolved_domain_id,
                     content=replacement_content,
                     confidence=merged_confidence,
                     importance=merged_importance,
@@ -513,6 +549,7 @@ class MemoryService:
                         payload={
                             "user_id": updated.user_id,
                             "agent_id": updated.agent_id,
+                            "domain_id": updated.domain_id,
                             "memory_type": updated.memory_type,
                         },
                     )
@@ -523,6 +560,7 @@ class MemoryService:
                 id=str(uuid4()),
                 user_id=user_id,
                 agent_id=agent_id,
+                domain_id=resolved_domain_id,
                 subject=normalized_subject,
                 memory_type=normalized_memory_type,
                 content=candidate.content.strip(),
@@ -539,6 +577,7 @@ class MemoryService:
                 payload={
                     "user_id": saved.user_id,
                     "agent_id": saved.agent_id,
+                    "domain_id": saved.domain_id,
                     "memory_type": saved.memory_type,
                 },
             )
@@ -550,12 +589,15 @@ class MemoryService:
         self,
         user_id: str,
         agent_id: str,
+        domain_id: str,
         query_text: str | None = None,
         limit: int = 5,
     ) -> list[MemoryItem]:
+        resolved_domain_id = _resolve_domain_id(domain_id)
         scored_entries = self.debug_retrieval_scores(
             user_id=user_id,
             agent_id=agent_id,
+            domain_id=resolved_domain_id,
             query_text=query_text,
             limit=limit,
         )
@@ -565,11 +607,17 @@ class MemoryService:
 
         user_ids = [item.id for item in selected if item.user_id == user_id]
         shared_profile_ids = [item.id for item in selected if item.user_id == AGENT_PROFILE_MEMORY_USER_ID]
-        self.repository.touch(user_id=user_id, agent_id=agent_id, memory_ids=user_ids)
+        self.repository.touch(
+            user_id=user_id,
+            agent_id=agent_id,
+            memory_ids=user_ids,
+            domain_id=resolved_domain_id,
+        )
         self.repository.touch(
             user_id=AGENT_PROFILE_MEMORY_USER_ID,
             agent_id=agent_id,
             memory_ids=shared_profile_ids,
+            domain_id=resolved_domain_id,
         )
         return selected
 
@@ -577,13 +625,19 @@ class MemoryService:
         self,
         user_id: str,
         agent_id: str,
+        domain_id: str,
         query_text: str | None = None,
         limit: int = 5,
     ) -> list[dict[str, object]]:
-        items = [item for item in self.repository.list_by_user(user_id, agent_id) if item.status == "active"]
+        resolved_domain_id = _resolve_domain_id(domain_id)
+        items = [
+            item
+            for item in self.repository.list_by_user(user_id, agent_id, resolved_domain_id)
+            if item.status == "active"
+        ]
         shared_items_all = [
             item
-            for item in self.repository.list_by_user(AGENT_PROFILE_MEMORY_USER_ID, agent_id)
+            for item in self.repository.list_by_user(AGENT_PROFILE_MEMORY_USER_ID, agent_id, resolved_domain_id)
             if item.status == "active"
         ]
         if not items and not shared_items_all:
@@ -600,19 +654,27 @@ class MemoryService:
             query_vector=query_vector,
             user_id=user_id,
             agent_id=agent_id,
+            domain_id=resolved_domain_id,
             limit=limit,
         )
         shared_ids = self.vector_store.search(
             query_vector=query_vector,
             user_id=AGENT_PROFILE_MEMORY_USER_ID,
             agent_id=agent_id,
+            domain_id=resolved_domain_id,
             limit=limit,
         )
-        semantic_items = self.repository.get_by_ids(user_id=user_id, agent_id=agent_id, ids=semantic_ids)
+        semantic_items = self.repository.get_by_ids(
+            user_id=user_id,
+            agent_id=agent_id,
+            ids=semantic_ids,
+            domain_id=resolved_domain_id,
+        )
         shared_items = self.repository.get_by_ids(
             user_id=AGENT_PROFILE_MEMORY_USER_ID,
             agent_id=agent_id,
             ids=shared_ids,
+            domain_id=resolved_domain_id,
         )
 
         semantic_score_map = _build_semantic_score_map(semantic_ids + shared_ids)
@@ -666,23 +728,67 @@ class MemoryService:
 
         return scored
 
-    def list_memories(self, user_id: str, agent_id: str, status: str = "all") -> list[MemoryItem]:
-        items = self.repository.list_by_user(user_id, agent_id)
+    def list_memories(self, user_id: str, agent_id: str, domain_id: str = "default", status: str = "all") -> list[MemoryItem]:
+        items = self.repository.list_by_user(user_id, agent_id, _resolve_domain_id(domain_id))
         if status == "all":
             return items
         return [item for item in items if item.status == status]
 
-    def freeze_memory(self, user_id: str, agent_id: str, memory_id: str) -> MemoryItem | None:
-        return self.repository.set_status(user_id=user_id, agent_id=agent_id, memory_id=memory_id, status="frozen")
+    def freeze_memory(self, user_id: str, agent_id: str, memory_id: str, domain_id: str = "default") -> MemoryItem | None:
+        return self.repository.set_status(
+            user_id=user_id,
+            agent_id=agent_id,
+            memory_id=memory_id,
+            status="frozen",
+            domain_id=_resolve_domain_id(domain_id),
+        )
 
-    def activate_memory(self, user_id: str, agent_id: str, memory_id: str) -> MemoryItem | None:
-        return self.repository.set_status(user_id=user_id, agent_id=agent_id, memory_id=memory_id, status="active")
+    def activate_memory(self, user_id: str, agent_id: str, memory_id: str, domain_id: str = "default") -> MemoryItem | None:
+        return self.repository.set_status(
+            user_id=user_id,
+            agent_id=agent_id,
+            memory_id=memory_id,
+            status="active",
+            domain_id=_resolve_domain_id(domain_id),
+        )
 
-    def delete_memory(self, user_id: str, agent_id: str, memory_id: str) -> MemoryItem | None:
-        return self.repository.set_status(user_id=user_id, agent_id=agent_id, memory_id=memory_id, status="deleted")
+    def delete_memory(self, user_id: str, agent_id: str, memory_id: str, domain_id: str = "default") -> MemoryItem | None:
+        return self.repository.set_status(
+            user_id=user_id,
+            agent_id=agent_id,
+            memory_id=memory_id,
+            status="deleted",
+            domain_id=_resolve_domain_id(domain_id),
+        )
 
-    def compact_similar_memories(self, user_id: str, agent_id: str) -> dict[str, object]:
-        items = [item for item in self.repository.list_by_user(user_id, agent_id) if item.status == "active"]
+    def delete_memories_by_agent(self, agent_id: str, domain_id: str | None = None) -> int:
+        resolved_domain_id = _resolve_domain_id(domain_id) if domain_id is not None else None
+        items = self.repository.list_by_agent(agent_id=agent_id, domain_id=resolved_domain_id)
+
+        deleted_count = 0
+        for item in items:
+            if item.status != "deleted":
+                updated = self.repository.set_status(
+                    user_id=item.user_id,
+                    agent_id=item.agent_id,
+                    memory_id=item.id,
+                    status="deleted",
+                    domain_id=item.domain_id,
+                )
+                if updated is not None:
+                    deleted_count += 1
+
+            try:
+                self.vector_store.delete(item.id)
+            except Exception:
+                # Keep agent deletion path resilient even if vector cleanup fails.
+                continue
+
+        return deleted_count
+
+    def compact_similar_memories(self, user_id: str, agent_id: str, domain_id: str = "default") -> dict[str, object]:
+        resolved_domain_id = _resolve_domain_id(domain_id)
+        items = [item for item in self.repository.list_by_user(user_id, agent_id, resolved_domain_id) if item.status == "active"]
         if len(items) <= 1:
             return {
                 "total": len(items),
@@ -722,6 +828,7 @@ class MemoryService:
                         agent_id=agent_id,
                         memory_id=item.id,
                         status="deleted",
+                        domain_id=resolved_domain_id,
                     )
                     if updated is not None:
                         deleted_ids.append(item.id)

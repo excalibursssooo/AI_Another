@@ -1,4 +1,4 @@
-import { httpDelete, httpGet, httpPost, streamPost } from "@/lib/api/client";
+import { httpDelete, httpGet, httpPost, httpPut, streamPost } from "@/lib/api/client";
 import {
   AgentLiveStateDto,
   AgentAICreateResponseDto,
@@ -16,20 +16,33 @@ import {
   MemoryStatusRequestDto,
   PostListDto,
   TriggerChatFromPostDto,
-} from "@/lib/api/types";
+  WorldAICreateRequestDto,
+  WorldAICreateResponseDto,
+  WorldDebugDto,
+  WorldDetailDto,
+  WorldUpsertRequestDto,
+} from "@/lib/api/types_api";
 
-export async function listAgents(includeInactive = false): Promise<AgentResponseDto[]> {
-  const query = includeInactive ? "?include_inactive=true" : "";
-  return httpGet<AgentResponseDto[]>(`/agents${query}`);
+export async function listAgents(includeInactive = false, domainId?: string): Promise<AgentResponseDto[]> {
+  const params = new URLSearchParams();
+  if (includeInactive) {
+    params.set("include_inactive", "true");
+  }
+  if (domainId && domainId.trim()) {
+    params.set("domain_id", domainId);
+  }
+  const query = params.toString();
+  return httpGet<AgentResponseDto[]>(query ? `/agents?${query}` : "/agents");
 }
 
 export async function createAgent(payload: AgentCreateRequestDto): Promise<AgentResponseDto> {
   return httpPost<AgentCreateRequestDto, AgentResponseDto>("/agents", payload);
 }
 
-export async function createAgentByAi(prompt?: string): Promise<AgentAICreateResponseDto> {
-  return httpPost<{ prompt: string | null }, AgentAICreateResponseDto>("/agents/ai-create", {
+export async function createAgentByAi(prompt?: string, domainId = "default"): Promise<AgentAICreateResponseDto> {
+  return httpPost<{ prompt: string | null; domain_id: string }, AgentAICreateResponseDto>("/agents/ai-create", {
     prompt: prompt?.trim() || null,
+    domain_id: domainId,
   });
 }
 
@@ -37,8 +50,18 @@ export async function deleteAgent(agentId: string): Promise<AgentResponseDto> {
   return httpDelete<Record<string, never>, AgentResponseDto>(`/agents/${agentId}`, {});
 }
 
-export async function listMemories(userId: string, agentId: string, status = "all"): Promise<MemoryResponseDto[]> {
-  const query = new URLSearchParams({ user_id: userId, agent_id: agentId, status }).toString();
+export async function listMemories(
+  userId: string,
+  agentId: string,
+  status = "all",
+  domainId = "default",
+): Promise<MemoryResponseDto[]> {
+  const query = new URLSearchParams({
+    user_id: userId,
+    agent_id: agentId,
+    domain_id: domainId,
+    status,
+  }).toString();
   return httpGet<MemoryResponseDto[]>(`/memories?${query}`);
 }
 
@@ -120,28 +143,60 @@ export async function getAgentLiveState(userId: string, agentId: string): Promis
 
 export async function listPosts(
   userId: string,
-  params?: { limit?: number; offset?: number; includeArchived?: boolean },
+  params?: { limit?: number; offset?: number; includeArchived?: boolean; domainId?: string; signal?: AbortSignal },
 ): Promise<PostListDto> {
-  const query = new URLSearchParams({
+  const queryParams = new URLSearchParams({
     user_id: userId,
     limit: String(params?.limit ?? 20),
     offset: String(params?.offset ?? 0),
     include_archived: String(Boolean(params?.includeArchived ?? false)),
-  }).toString();
-  return httpGet<PostListDto>(`/posts?${query}`);
+  });
+  if (params?.domainId?.trim()) {
+    queryParams.set("domain_id", params.domainId.trim());
+  }
+  return httpGet<PostListDto>(`/posts?${queryParams.toString()}`, { signal: params?.signal });
 }
 
 export async function generatePost(agentId: string, payload: GeneratePostRequestDto): Promise<GeneratePostResponseDto> {
   return httpPost<GeneratePostRequestDto, GeneratePostResponseDto>(`/agents/${agentId}/generate-post`, payload);
 }
 
-export async function triggerChatFromPost(postId: string, userId: string): Promise<TriggerChatFromPostDto> {
-  const query = new URLSearchParams({ user_id: userId }).toString();
+export async function triggerChatFromPost(postId: string, userId: string, domainId?: string): Promise<TriggerChatFromPostDto> {
+  const params = new URLSearchParams({ user_id: userId });
+  if (domainId && domainId.trim()) {
+    params.set("domain_id", domainId);
+  }
+  const query = params.toString();
   return httpPost<Record<string, never>, TriggerChatFromPostDto>(`/posts/${postId}/trigger-chat?${query}`, {});
 }
 
 export async function getInfraDebug(): Promise<InfraDebugDto> {
   return httpGet<InfraDebugDto>("/infra/debug");
+}
+
+export async function getWorldDebug(domainId?: string): Promise<WorldDebugDto> {
+  const query = domainId ? `?domain_id=${encodeURIComponent(domainId)}` : "";
+  return httpGet<WorldDebugDto>(`/world/debug${query}`);
+}
+
+export async function listWorlds(): Promise<WorldDetailDto[]> {
+  return httpGet<WorldDetailDto[]>("/worlds");
+}
+
+export async function getWorld(domainId: string): Promise<WorldDetailDto> {
+  return httpGet<WorldDetailDto>(`/worlds/${encodeURIComponent(domainId)}`);
+}
+
+export async function createWorld(payload: WorldUpsertRequestDto): Promise<WorldDetailDto> {
+  return httpPost<WorldUpsertRequestDto, WorldDetailDto>("/worlds", payload);
+}
+
+export async function updateWorld(domainId: string, payload: WorldUpsertRequestDto): Promise<WorldDetailDto> {
+  return httpPut<WorldUpsertRequestDto, WorldDetailDto>(`/worlds/${encodeURIComponent(domainId)}`, payload);
+}
+
+export async function createWorldByAi(payload: WorldAICreateRequestDto): Promise<WorldAICreateResponseDto> {
+  return httpPost<WorldAICreateRequestDto, WorldAICreateResponseDto>("/worlds/ai-create", payload);
 }
 
 export async function debugAgentMemorySeed(

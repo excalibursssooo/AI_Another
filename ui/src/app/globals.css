@@ -26,6 +26,32 @@
   --shadow-neon: 0 0 0 1px rgba(169, 120, 255, 0.28), 0 0 36px rgba(125, 66, 255, 0.22);
 }
 
+html[data-theme="dawn"] {
+  --surface-main: #17120f;
+  --surface-side: #241a15;
+  --surface-card: #2f221b;
+  --line-soft: rgba(255, 153, 107, 0.24);
+  --line-strong: rgba(255, 196, 143, 0.52);
+
+  --text-main: #fff2e8;
+  --text-muted: #d8bca8;
+
+  --brand-main: linear-gradient(120deg, #ff6f3c 0%, #ff8a3d 42%, #ffd166 100%);
+  --brand-text: #1f120b;
+
+  --bubble-user: linear-gradient(135deg, #ff6f3c 0%, #ff8a3d 58%, #ffbe55 100%);
+  --bubble-user-text: #20120a;
+  --bubble-ai: rgba(57, 40, 30, 0.78);
+
+  --agent-amber: #ff9b54;
+  --agent-coral: #ff6f61;
+  --agent-teal: #f7b267;
+  --agent-rose: #f4845f;
+
+  --shadow-main: 0 24px 68px rgba(24, 14, 8, 0.72);
+  --shadow-neon: 0 0 0 1px rgba(255, 155, 84, 0.24), 0 0 36px rgba(255, 111, 60, 0.2);
+}
+
 @theme inline {
   --font-sans: var(--font-body);
 }
@@ -39,6 +65,13 @@ body {
   color: var(--text-main);
   font-family: var(--font-body), sans-serif;
   min-height: 100vh;
+}
+
+html[data-theme="dawn"] body {
+  background:
+    radial-gradient(circle at 14% 14%, rgba(255, 111, 60, 0.2) 0%, rgba(23, 18, 15, 0) 42%),
+    radial-gradient(circle at 84% 18%, rgba(255, 209, 102, 0.15) 0%, rgba(23, 18, 15, 0) 48%),
+    linear-gradient(160deg, #120d0a 0%, #17120f 44%, #281d16 100%);
 }
 
 h1,

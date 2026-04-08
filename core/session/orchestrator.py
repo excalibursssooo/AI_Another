@@ -68,6 +68,7 @@ class SessionOrchestrator:
         user_id: str,
         message: str,
         conversation_id: str,
+        domain_id: str,
         agent_profile: AgentProfile | None = None,
     ) -> ChatResult:
         target_agent_id = agent_profile.id if agent_profile is not None else "default"
@@ -97,6 +98,7 @@ class SessionOrchestrator:
         recalled = self.memory_service.retrieve_relevant(
             user_id=user_id,
             agent_id=target_agent_id,
+            domain_id=domain_id,
             query_text=retrieval_query,
             limit=5,
         )
@@ -138,6 +140,7 @@ class SessionOrchestrator:
         persisted = self.memory_service.persist_candidates(
             user_id=user_id,
             agent_id=target_agent_id,
+            domain_id=domain_id,
             candidates=turn_candidates,
         )
 
@@ -165,6 +168,7 @@ class SessionOrchestrator:
         user_id: str,
         message: str,
         conversation_id: str,
+        domain_id: str,
         agent_profile: AgentProfile | None = None,
     ) -> Iterator[dict[str, object]]:
         target_agent_id = agent_profile.id if agent_profile is not None else "default"
@@ -197,6 +201,7 @@ class SessionOrchestrator:
         recalled = self.memory_service.retrieve_relevant(
             user_id=user_id,
             agent_id=target_agent_id,
+            domain_id=domain_id,
             query_text=retrieval_query,
             limit=5,
         )
@@ -238,6 +243,7 @@ class SessionOrchestrator:
             self._persist_turn_memories_async(
                 user_id=user_id,
                 agent_id=target_agent_id,
+                domain_id=domain_id,
                 user_message=message,
                 assistant_reply=reply,
                 agent_name=target_agent_name,
@@ -247,6 +253,7 @@ class SessionOrchestrator:
             persisted_count = self._persist_turn_memories_sync(
                 user_id=user_id,
                 agent_id=target_agent_id,
+                domain_id=domain_id,
                 user_message=message,
                 assistant_reply=reply,
                 agent_name=target_agent_name,
@@ -281,6 +288,7 @@ class SessionOrchestrator:
         *,
         user_id: str,
         agent_id: str,
+        domain_id: str,
         user_message: str,
         assistant_reply: str,
         agent_name: str,
@@ -295,6 +303,7 @@ class SessionOrchestrator:
         persisted = self.memory_service.persist_candidates(
             user_id=user_id,
             agent_id=agent_id,
+            domain_id=domain_id,
             candidates=turn_candidates,
         )
         return len(persisted)
@@ -304,6 +313,7 @@ class SessionOrchestrator:
         *,
         user_id: str,
         agent_id: str,
+        domain_id: str,
         user_message: str,
         assistant_reply: str,
         agent_name: str,
@@ -314,6 +324,7 @@ class SessionOrchestrator:
                 persisted_count = self._persist_turn_memories_sync(
                     user_id=user_id,
                     agent_id=agent_id,
+                    domain_id=domain_id,
                     user_message=user_message,
                     assistant_reply=assistant_reply,
                     agent_name=agent_name,
@@ -323,6 +334,7 @@ class SessionOrchestrator:
                     "memory_async_persist",
                     user_id=user_id,
                     agent_id=agent_id,
+                    domain_id=domain_id,
                     outcome="ok",
                     persisted_count=persisted_count,
                 )
@@ -331,6 +343,7 @@ class SessionOrchestrator:
                     "memory_async_persist",
                     user_id=user_id,
                     agent_id=agent_id,
+                    domain_id=domain_id,
                     outcome="error",
                     error=str(exc),
                 )

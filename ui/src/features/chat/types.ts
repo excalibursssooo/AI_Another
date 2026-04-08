@@ -12,32 +12,35 @@ export type MemoryType =
 export type ChatRole = "user" | "assistant";
 
 export interface AiAgent {
-  id: string;
-  name: string;
-  persona: string;
-  background: string;
-  hobbies: string[];
-  speakingStyle: string;
-  status: AgentStatus;
-  tagline: string;
-  avatarColor: string;
+  readonly id: string;
+  readonly name: string;
+  readonly greeting?: string;
+  readonly persona: string;
+  readonly background: string;
+  readonly domainId?: string;
+  readonly worldContext?: string;
+  readonly hobbies: ReadonlyArray<string>;
+  readonly speakingStyle: string;
+  readonly status: AgentStatus;
+  readonly tagline: string;
+  readonly avatarColor: string;
 }
 
 export interface ChatMessage {
-  id: string;
-  role: ChatRole;
-  content: string;
-  createdAt: string;
-  isStreaming?: boolean;
+  readonly id: string;
+  readonly role: ChatRole;
+  readonly content: string;
+  readonly createdAt: string;
+  readonly isStreaming?: boolean;
 }
 
 export interface MemoryRecord {
-  id: string;
-  agentId: string;
-  memoryType: MemoryType;
-  content: string;
-  confidence: number;
-  importance: number;
-  status: MemoryStatus;
-  createdAt: string;
+  readonly id: string;
+  readonly agentId: string;
+  readonly memoryType: MemoryType;
+  readonly content: string;
+  readonly confidence: number;
+  readonly importance: number;
+  readonly status: MemoryStatus;
+  readonly createdAt: string;
 }

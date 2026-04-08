@@ -1,80 +1,113 @@
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "http://127.0.0.1:8000";
+import axios, { AxiosError } from "axios";
+
+function getEnvBaseUrl(): string {
+  const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
+  if (!baseUrl && process.env.NODE_ENV === "production") {
+    throw new Error("FATAL: NEXT_PUBLIC_API_BASE_URL is not defined in production environment.");
+  }
+  return baseUrl || "http://127.0.0.1:8000";
+}
+
+const API_BASE_URL = getEnvBaseUrl();
+
+const http = axios.create({
+  baseURL: API_BASE_URL,
+  headers: {
+    "Content-Type": "application/json",
+  },
+});
+
+export class HttpError extends Error {
+  status: number;
+  statusText: string;
+  responseText: string;
+
+  constructor(message: string, status: number, statusText: string, responseText: string) {
+    super(message);
+    this.name = "HttpError";
+    this.status = status;
+    this.statusText = statusText;
+    this.responseText = responseText;
+  }
+}
 
 export function getApiBaseUrl(): string {
   return API_BASE_URL;
 }
 
-async function parseError(response: Response): Promise<Error> {
-  try {
-    const data: unknown = await response.json();
-    if (typeof data === "object" && data && "detail" in data) {
-      const detail = (data as { detail?: unknown }).detail;
-      if (typeof detail === "string") {
-        return new Error(detail);
-      }
-      return new Error(JSON.stringify(detail));
+function parseError(error: unknown): Error {
+  if (axios.isAxiosError(error)) {
+    const response = (error as AxiosError).response;
+    if (!response) {
+      return new Error(error.message || "Network request failed");
     }
-  } catch {
-    // Ignore JSON parse failure and fall back to status text.
+
+    const detail = typeof response.data === "object" && response.data && "detail" in response.data
+      ? (response.data as { detail?: unknown }).detail
+      : undefined;
+    if (typeof detail === "string") {
+      return new HttpError(detail, response.status, response.statusText, detail);
+    }
+
+    let responseText = "";
+    if (typeof response.data === "string") {
+      responseText = response.data.slice(0, 800);
+    } else if (response.data !== undefined) {
+      try {
+        responseText = JSON.stringify(response.data).slice(0, 800);
+      } catch {
+        responseText = String(response.data).slice(0, 800);
+      }
+    }
+
+    return new HttpError(
+      `HTTP ${response.status}: ${response.statusText}${responseText ? ` | ${responseText}` : ""}`,
+      response.status,
+      response.statusText,
+      responseText,
+    );
   }
 
-  return new Error(`HTTP ${response.status}: ${response.statusText}`);
+  return error instanceof Error ? error : new Error("Unknown request error");
 }
 
-export async function httpGet<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method: "GET",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-  });
-
-  if (!response.ok) {
-    throw await parseError(response);
+export async function httpGet<T>(path: string, options?: { signal?: AbortSignal }): Promise<T> {
+  try {
+    const response = await http.get<T>(path, {
+      headers: { "Cache-Control": "no-store" },
+      signal: options?.signal,
+    });
+    return response.data;
+  } catch (error) {
+    throw parseError(error);
   }
-
-  return (await response.json()) as T;
 }
 
 export async function httpPost<TReq, TResp>(path: string, body: TReq): Promise<TResp> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) {
-    throw await parseError(response);
+  try {
+    const response = await http.post<TResp>(path, body);
+    return response.data;
+  } catch (error) {
+    throw parseError(error);
   }
-
-  return (await response.json()) as TResp;
 }
 
 export async function httpPut<TReq, TResp>(path: string, body: TReq): Promise<TResp> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) {
-    throw await parseError(response);
+  try {
+    const response = await http.put<TResp>(path, body);
+    return response.data;
+  } catch (error) {
+    throw parseError(error);
   }
-
-  return (await response.json()) as TResp;
 }
 
 export async function httpDelete<TReq, TResp>(path: string, body: TReq): Promise<TResp> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) {
-    throw await parseError(response);
+  try {
+    const response = await http.delete<TResp>(path, { data: body });
+    return response.data;
+  } catch (error) {
+    throw parseError(error);
   }
-
-  return (await response.json()) as TResp;
 }
 
 export async function streamPost(
@@ -89,7 +122,18 @@ export async function streamPost(
   });
 
   if (!response.ok) {
-    throw await parseError(response);
+    let responseText = "";
+    try {
+      responseText = (await response.text()).slice(0, 800);
+    } catch {
+      responseText = "";
+    }
+    throw new HttpError(
+      `HTTP ${response.status}: ${response.statusText}${responseText ? ` | ${responseText}` : ""}`,
+      response.status,
+      response.statusText,
+      responseText,
+    );
   }
 
   if (!response.body) {
@@ -107,10 +151,15 @@ export async function streamPost(
     }
 
     buffer += decoder.decode(value, { stream: true });
+    const endsWithDelimiter = buffer.endsWith("\n\n");
     const blocks = buffer.split("\n\n");
-    buffer = blocks.pop() ?? "";
+    buffer = endsWithDelimiter ? "" : (blocks.pop() ?? "");
 
     for (const block of blocks) {
+      if (!block.trim()) {
+        continue;
+      }
+
       const line = block
         .split("\n")
         .map((item) => item.trim())

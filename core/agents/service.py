@@ -10,6 +10,7 @@ from typing import Any
 from typing import Protocol
 from uuid import uuid4
 
+from core.common.domain_loader import load_domain_config
 from core.common.openrouter import OpenRouterError, get_env as get_common_env, get_openrouter_client
 from core.agents.models import AgentProfile
 
@@ -63,10 +64,10 @@ class OpenRouterAgentAttributeGenerator:
                 {
                     "role": "system",
                     "content": (
-                        "你是一个专业的角色设计师，你需要构建一个角色，包括他/她的性格、背景、爱好和对话风格。"
-                        "只输出JSON对象，不要输出其他内容。"
-                        "JSON字段: name, display_name, persona, background, hobbies, speaking_style。"
-                        "其中name是角色内部名，display_name是展示给用户的名字，二者可以不同。"
+                        "你是一个专业的角色设计师，你需要构建一个角色，包括他/她的性格、背景、爱好和对话风格,以及见到一个新认识的人的开场白。"
+                        "只输出JSON对象, 不要输出其他内容。"
+                        "JSON字段: name, display_name, persona, background, hobbies, speaking_style, greeting。"
+                        "其中name是角色内部名, display_name是展示给用户的名字, 二者可以不同。"
                         "约束: name<=20字, display_name<=20字, persona<=1000字, background<=500字,"
                         "hobbies为1-6个字符串数组。"
                     ),
@@ -93,6 +94,32 @@ class OpenRouterAgentAttributeGenerator:
             "payload": normalized,
             "parse_error": parse_error,
         }
+
+    def expand_world_context(self, *, lore: str, tone: str, constraints: list[str]) -> str:
+        if not lore.strip():
+            return ""
+
+        constraints_text = "\n".join(f"- {item}" for item in constraints[:8]) if constraints else "- 无"
+        text = self._client.chat_text(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你是世界观编辑器。请把给定设定压缩成120-180字角色创建基底, 只输出纯文本。",
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"世界观原文:\n{lore}\n"
+                        f"语气风格: {tone or '中性'}\n"
+                        f"约束规则:\n{constraints_text}\n"
+                        "请输出可直接放进角色创建提示词的世界基底。"
+                    ),
+                },
+            ],
+            max_tokens=2048,
+            temperature=0.3,
+        )
+        return text.strip()
 
 
 class InMemoryAgentRepository:
@@ -187,7 +214,10 @@ class JsonFileAgentRepository:
                     name=str(row.get("name", "")).strip(),
                     persona=str(row.get("persona", "")).strip(),
                     background=str(row.get("background", "")).strip(),
+                    domain_id=str(row.get("domain_id", "default")).strip() or "default",
+                    world_context=str(row.get("world_context", "")).strip(),
                     display_name=str(row.get("display_name", row.get("name", ""))).strip(),
+                    greeting=str(row.get("greeting", f"你好, 我是{row.get('name')}")).strip(),
                     hobbies=[str(item) for item in row.get("hobbies", [])] if isinstance(row.get("hobbies"), list) else [],
                     speaking_style=str(row.get("speaking_style", "warm")).strip() or "warm",
                     status=str(row.get("status", "active")).strip() or "active",
@@ -211,6 +241,9 @@ class JsonFileAgentRepository:
                 "display_name": item.display_name,
                 "persona": item.persona,
                 "background": item.background,
+                "domain_id": item.domain_id,
+                "world_context": item.world_context,
+                "greeting": item.greeting,
                 "hobbies": item.hobbies,
                 "speaking_style": item.speaking_style,
                 "status": item.status,
@@ -272,6 +305,9 @@ class AgentService:
         hobbies: list[str],
         speaking_style: str,
         display_name: str | None = None,
+        domain_id: str = "default",
+        world_context: str = "",
+        greeting: str = ""
     ) -> AgentProfile:
         now = datetime.now(UTC)
         profile = AgentProfile(
@@ -279,6 +315,9 @@ class AgentService:
             name=name,
             persona=persona,
             background=background,
+            domain_id=domain_id,
+            world_context=world_context,
+            greeting=greeting or f"你好，我是{name}",
             display_name=(display_name or name),
             hobbies=hobbies,
             speaking_style=speaking_style,
@@ -288,20 +327,53 @@ class AgentService:
         )
         return self.repository.create(profile)
 
-    def create_agent_by_ai(self, prompt: str) -> AgentProfile:
-        profile, _ = self.create_agent_by_ai_debug(prompt)
+    def create_agent_by_ai(self, prompt: str, domain_id: str = "default") -> AgentProfile:
+        profile, _ = self.create_agent_by_ai_debug(prompt, domain_id=domain_id)
         return profile
 
-    def create_agent_by_ai_debug(self, prompt: str | None = None) -> tuple[AgentProfile, dict[str, object]]:
+    def create_agent_by_ai_debug(
+        self,
+        prompt: str | None = None,
+        domain_id: str = "default",
+    ) -> tuple[AgentProfile, dict[str, object]]:
         if self.generator is None:
             raise RuntimeError("AI agent creator unavailable: missing api key or model client")
 
+        domain = load_domain_config(domain_id)
+        world_context = domain.lore
+        if isinstance(self.generator, OpenRouterAgentAttributeGenerator) and domain.id != "default":
+            try:
+                expanded = self.generator.expand_world_context(
+                    lore=domain.lore,
+                    tone=domain.tone,
+                    constraints=domain.constraints,
+                )
+                if expanded:
+                    world_context = expanded
+            except Exception:
+                world_context = domain.lore
+
+        constraints_text = "\n".join(f"- {item}" for item in domain.constraints[:8]) if domain.constraints else "- 无"
         resolved_prompt = (
             prompt.strip()
             if isinstance(prompt, str) and prompt.strip()
-            else "请你自行随机创建一个角色，他可以与众不同，也可以跟随主流，角色的姓名、性格、背景、爱好和说话方式全部由你自行决定，要求真实、多样、可长期对话。你不许调用缓存，角色需要有独特性，不能和之前创建过的角色重复。"
+            else "请你在给定世界观的情况下自行随机创建一个角色，角色的姓名、性格、背景、爱好和说话方式全部由你自行决定。"
         )
-        debug_info = self.generator.generate_debug(resolved_prompt)
+
+        prompt_with_domain = resolved_prompt
+        if domain.id != "default":
+            prompt_with_domain = (
+                f"[世界域]{domain.id}({domain.name})[/世界域]\n"
+                f"[世界背景]{world_context}[/世界背景]\n"
+                f"[世界语气]{domain.tone}[/世界语气]\n"
+                f"[世界约束]\n{constraints_text}\n[/世界约束]\n"
+                f"[角色需求]{resolved_prompt}[/角色需求]"
+            )
+
+        debug_info = self.generator.generate_debug(prompt_with_domain)
+        debug_info["domain_id"] = domain.id
+        debug_info["domain_name"] = domain.name
+        debug_info["world_context"] = world_context
 
         payload_obj = debug_info.get("payload", {})
         if not isinstance(payload_obj, dict):
@@ -325,12 +397,20 @@ class AgentService:
             background=str(payload["background"]),
             hobbies=hobbies,
             speaking_style=str(payload["speaking_style"]),
+            greeting=str(payload.get("greeting", f"你好，我是{payload['name']}")).strip(),
             display_name=str(payload.get("display_name", payload["name"])),
+            domain_id=domain.id,
+            world_context=world_context,
         )
         return profile, debug_info
 
-    def list_agents(self, include_inactive: bool = False) -> list[AgentProfile]:
-        return self.repository.list_all(include_inactive=include_inactive)
+    def list_agents(self, include_inactive: bool = False, domain_id: str | None = None) -> list[AgentProfile]:
+        rows = self.repository.list_all(include_inactive=include_inactive)
+        if domain_id is None:
+            return rows
+
+        resolved_domain = domain_id.strip() or "default"
+        return [item for item in rows if (item.domain_id or "default") == resolved_domain]
 
     def get_agent(self, agent_id: str) -> AgentProfile | None:
         return self.repository.get(agent_id)
@@ -344,6 +424,7 @@ class AgentService:
         hobbies: list[str],
         speaking_style: str,
         status: str,
+        domain_id: str | None = None,
     ) -> AgentProfile | None:
         current = self.repository.get(agent_id)
         if current is None:
@@ -357,6 +438,7 @@ class AgentService:
             hobbies=hobbies,
             speaking_style=speaking_style,
             status=status,
+            domain_id=domain_id or current.domain_id,
             updated_at=datetime.now(UTC),
         )
         return self.repository.update(agent_id=agent_id, profile=updated)
@@ -379,7 +461,10 @@ class AgentService:
                 display_name="小伴",
                 persona="温暖、耐心、稳定",
                 background="长期陪伴型AI助手，擅长倾听与共情",
+                domain_id="default",
+                world_context="",
                 hobbies=["阅读", "散步", "写日记"],
+                greeting="你好，我是小伴，很高兴认识你！",
                 speaking_style="warm",
                 status="active",
                 created_at=now,
@@ -470,6 +555,7 @@ def _normalize_agent_payload(payload: dict[str, object]) -> dict[str, object]:
         hobbies = ["阅读", "散步"]
 
     style = str(payload.get("speaking_style", "warm")).strip().lower()
+    greeting = str(payload.get("greeting", f"你好，我是{display_name or name or 'AI角色'}")).strip()[:200]
 
 
     return {
@@ -477,6 +563,7 @@ def _normalize_agent_payload(payload: dict[str, object]) -> dict[str, object]:
         "display_name": display_name or name or "AI角色",
         "persona": persona or "温暖、耐心、稳定",
         "background": background or "长期陪伴型AI助手",
+        "greeting": greeting or f"你好，我是{display_name or name or 'AI角色'}",
         "hobbies": hobbies,
         "speaking_style": style,
     }
