@@ -175,6 +175,7 @@ npm run lint
 4. 记忆向量索引：Qdrant
 
 ## 界面展示
+<<<<<<< HEAD
 ![UI](figures/UI_v0.2.jpg)
 
 
@@ -186,4 +187,3 @@ npm run lint
 * [ ] 多api接入
 * [ ] 选角广场
 * [ ] ？助手类功能（toolcalling）
-
