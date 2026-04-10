@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
-import os
-from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, TypeVar
 
-import requests
+import httpx
+from threading import Lock
+
+from core.common.settings import get_env
 
 
 class OpenRouterError(RuntimeError):
@@ -32,7 +34,7 @@ class OpenRouterClient:
         self._site_name = (site_name or "").strip() or None
         self._timeout_seconds = max(5, timeout_seconds)
 
-    def chat_text(
+    async def chat_text_async(
         self,
         *,
         messages: list[dict[str, str]],
@@ -40,7 +42,7 @@ class OpenRouterClient:
         temperature: float,
         model_name: str | None = None,
     ) -> str:
-        payload = self.chat_json(
+        payload = await self.chat_json_async(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -75,6 +77,58 @@ class OpenRouterClient:
 
         raise OpenRouterError("OpenRouter response content is empty")
 
+    async def chat_json_async(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        temperature: float,
+        model_name: str | None = None,
+    ) -> dict[str, Any]:
+        if not messages:
+            raise OpenRouterError("messages cannot be empty")
+
+        headers: dict[str, str] = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        if self._site_url:
+            headers["HTTP-Referer"] = self._site_url
+        if self._site_name:
+            headers["X-OpenRouter-Title"] = self._site_name
+
+        payload = {
+            "model": model_name or self._model_name,
+            "messages": messages,
+            "max_tokens": max(1, int(max_tokens)),
+            "temperature": float(temperature),
+        }
+
+        try:
+            client = await _get_async_client(timeout_seconds=self._timeout_seconds)
+            response = await client.post(
+                url="https://openrouter.ai/api/v1/chat/completions",
+                headers=headers,
+                content=json.dumps(payload, ensure_ascii=False),
+            )
+        except Exception as exc:
+            raise OpenRouterError(f"OpenRouter request failed: {exc}") from exc
+
+        if response.status_code >= 400:
+            body = response.text.strip()
+            detail = body[:500] if body else "no response body"
+            raise OpenRouterError(f"OpenRouter HTTP {response.status_code}: {detail}")
+
+        try:
+            parsed = response.json()
+        except Exception as exc:
+            raise OpenRouterError("OpenRouter returned non-JSON response") from exc
+
+        if not isinstance(parsed, dict):
+            raise OpenRouterError("OpenRouter JSON payload must be an object")
+
+        return parsed
+
     def chat_json(
         self,
         *,
@@ -103,11 +157,11 @@ class OpenRouterClient:
         }
 
         try:
-            response = requests.post(
+            client = _get_sync_client(timeout_seconds=self._timeout_seconds)
+            response = client.post(
                 url="https://openrouter.ai/api/v1/chat/completions",
                 headers=headers,
-                data=json.dumps(payload, ensure_ascii=False),
-                timeout=self._timeout_seconds,
+                content=json.dumps(payload, ensure_ascii=False),
             )
         except Exception as exc:
             raise OpenRouterError(f"OpenRouter request failed: {exc}") from exc
@@ -124,29 +178,24 @@ class OpenRouterClient:
 
         if not isinstance(parsed, dict):
             raise OpenRouterError("OpenRouter JSON payload must be an object")
-
         return parsed
 
-
-def get_env(key: str, default: str) -> str:
-    value = os.getenv(key)
-    if value:
-        return value
-
-    dotenv_path = Path(__file__).resolve().parents[2] / ".env"
-    if not dotenv_path.exists():
-        return default
-
-    with dotenv_path.open("r", encoding="utf-8") as file:
-        for raw_line in file:
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            env_key, env_value = line.split("=", 1)
-            if env_key.strip() == key:
-                return env_value.strip().strip('"').strip("'")
-
-    return default
+    def chat_text(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        temperature: float,
+        model_name: str | None = None,
+    ) -> str:
+        return _run_async(
+            self.chat_text_async(
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                model_name=model_name,
+            ),
+        )
 
 
 def get_openrouter_client(model_env_key: str, default_model: str) -> OpenRouterClient:
@@ -162,3 +211,54 @@ def get_openrouter_client(model_env_key: str, default_model: str) -> OpenRouterC
         site_url=site_url,
         site_name=site_name,
     )
+
+
+T = TypeVar("T")
+
+
+_CLIENT_LOCK = Lock()
+_SYNC_CLIENT: httpx.Client | None = None
+_ASYNC_CLIENT: httpx.AsyncClient | None = None
+
+
+def _get_sync_client(timeout_seconds: int) -> httpx.Client:
+    global _SYNC_CLIENT
+    with _CLIENT_LOCK:
+        if _SYNC_CLIENT is None:
+            _SYNC_CLIENT = httpx.Client(timeout=max(5, int(timeout_seconds)))
+    return _SYNC_CLIENT
+
+
+async def _get_async_client(timeout_seconds: int) -> httpx.AsyncClient:
+    global _ASYNC_CLIENT
+    with _CLIENT_LOCK:
+        if _ASYNC_CLIENT is None:
+            _ASYNC_CLIENT = httpx.AsyncClient(timeout=max(5, int(timeout_seconds)))
+    return _ASYNC_CLIENT
+
+
+async def close_openrouter_clients() -> None:
+    global _SYNC_CLIENT, _ASYNC_CLIENT
+    sync_client: httpx.Client | None = None
+    async_client: httpx.AsyncClient | None = None
+    with _CLIENT_LOCK:
+        sync_client = _SYNC_CLIENT
+        async_client = _ASYNC_CLIENT
+        _SYNC_CLIENT = None
+        _ASYNC_CLIENT = None
+
+    if sync_client is not None:
+        sync_client.close()
+    if async_client is not None:
+        await async_client.aclose()
+
+
+def _run_async(awaitable: Awaitable[T]) -> T:
+    try:
+        loop = asyncio.get_running_loop()
+        if loop.is_running():
+            raise OpenRouterError("Synchronous OpenRouter call inside running event loop is not allowed")
+    except RuntimeError:
+        pass
+
+    return asyncio.run(awaitable)

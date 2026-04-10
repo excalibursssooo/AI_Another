@@ -2,19 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from difflib import SequenceMatcher
 import json
-import os
-from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 from core.agents.models import AgentProfile
 from core.common.openrouter import OpenRouterError, get_openrouter_client
+from core.common.settings import get_env
 from core.memory.embedding import SimpleEmbeddingModel
 from core.memory.models import MemoryCandidate, MemoryItem
-from core.memory.repository import InMemoryMemoryRepository, MemoryRepository, PostgresMemoryRepository
-from core.memory.vector_store import InMemoryVectorStore, QdrantVectorStore, VectorStore
+from core.memory.repository import MemoryRepository, PostgresMemoryRepository
+from core.memory.vector_store import QdrantVectorStore, VectorStore
 
 
 AGENT_PROFILE_MEMORY_USER_ID = "__agent_profile__"
@@ -35,10 +33,10 @@ class MemoryBackendConfig:
     @staticmethod
     def from_env() -> "MemoryBackendConfig":
         return MemoryBackendConfig(
-            repository=_get_env("MEMORY_REPOSITORY", "memory"),
-            vector=_get_env("MEMORY_VECTOR", "memory"),
-            extraction_backend=_get_env("MEMORY_EXTRACTION_BACKEND", "openrouter"),
-            extraction_model_name=_get_env("MEMORY_EXTRACTION_MODEL_NAME", "openai/gpt-5.2"),
+            repository=get_env("MEMORY_REPOSITORY", "postgres"),
+            vector=get_env("MEMORY_VECTOR", "qdrant"),
+            extraction_backend=get_env("MEMORY_EXTRACTION_BACKEND", "openrouter"),
+            extraction_model_name=get_env("MEMORY_EXTRACTION_MODEL_NAME", "openai/gpt-5.2"),
         )
 
 
@@ -245,29 +243,29 @@ class MemoryService:
         repository: MemoryRepository
         vector_store: VectorStore
 
-        if config.repository == "postgres":
-            dsn = _get_env("POSTGRES_DSN", "")
-            if not dsn:
-                raise RuntimeError("POSTGRES_DSN is required when MEMORY_REPOSITORY=postgres")
-            repository = PostgresMemoryRepository(dsn=dsn)
-        else:
-            repository = InMemoryMemoryRepository()
+        if config.repository != "postgres":
+            raise RuntimeError("MEMORY_REPOSITORY must be postgres")
 
-        if config.vector == "qdrant":
-            qdrant_url = _get_env("QDRANT_URL", "http://localhost:6333")
-            qdrant_collection = _get_env("QDRANT_COLLECTION", "companion_memory")
-            vector_store = QdrantVectorStore(
-                url=qdrant_url,
-                collection_name=qdrant_collection,
-                vector_size=16,
-            )
-        else:
-            vector_store = InMemoryVectorStore()
+        dsn = get_env("POSTGRES_DSN", "")
+        if not dsn:
+            raise RuntimeError("POSTGRES_DSN is required when MEMORY_REPOSITORY=postgres")
+        repository = PostgresMemoryRepository(dsn=dsn)
+
+        if config.vector != "qdrant":
+            raise RuntimeError("MEMORY_VECTOR must be qdrant")
+
+        qdrant_url = get_env("QDRANT_URL", "http://localhost:6333")
+        qdrant_collection = get_env("QDRANT_COLLECTION", "companion_memory")
+        vector_store = QdrantVectorStore(
+            url=qdrant_url,
+            collection_name=qdrant_collection,
+            vector_size=16,
+        )
 
         extractor: MemoryExtractor
         extraction_reason = "configured to use local rule extractor"
         if config.extraction_backend == "openrouter":
-            api_key = _get_env("OPENROUTER_API_KEY", "")
+            api_key = get_env("OPENROUTER_API_KEY", "")
             if not api_key:
                 extractor = RuleMemoryExtractor()
                 extraction_reason = "fallback to rule: OPENROUTER_API_KEY missing"
@@ -474,19 +472,34 @@ class MemoryService:
         ]
 
         for candidate in candidates:
+            embedding_cache: dict[str, list[float]] = {}
             normalized_subject = _normalize_subject(candidate.subject)
             normalized_memory_type = _normalize_memory_type(candidate.memory_type)
             normalized_content = _normalize_memory_content(candidate.content)
             if not normalized_content:
                 continue
 
-            matched, matched_score = _find_best_related_memory(
+            related_pool = _prefilter_related_items(
                 existing_items=existing_items,
+                vector_store=self.vector_store,
+                embedding_model=self.embedding_model,
+                user_id=user_id,
+                agent_id=agent_id,
+                domain_id=resolved_domain_id,
+                normalized_content=normalized_content,
+                subject=normalized_subject,
+                memory_type=normalized_memory_type,
+            )
+
+            matched, matched_score = _find_best_related_memory(
+                existing_items=related_pool,
                 subject=normalized_subject,
                 memory_type=normalized_memory_type,
                 normalized_content=normalized_content,
+                embedding_model=self.embedding_model,
+                embedding_cache=embedding_cache,
             )
-            if matched is not None and matched_score >= 0.88:
+            if matched is not None and matched_score >= 0.92:
                 self.repository.touch(
                     user_id=user_id,
                     agent_id=agent_id,
@@ -495,9 +508,11 @@ class MemoryService:
                 )
                 continue
 
-            if matched is not None and matched_score >= 0.62 and _is_conflict_content(
+            if matched is not None and matched_score >= 0.75 and _is_conflict_content(
                 old_text=matched.content,
                 new_text=candidate.content,
+                embedding_model=self.embedding_model,
+                embedding_cache=embedding_cache,
             ):
                 updated = self.repository.replace(
                     user_id=user_id,
@@ -511,20 +526,26 @@ class MemoryService:
                     conflict_state="resolved_conflict",
                 )
                 if updated is not None:
-                    self.vector_store.upsert(
-                        item_id=updated.id,
-                        vector=self.embedding_model.embed(updated.content),
-                        payload={
-                            "user_id": updated.user_id,
-                            "agent_id": updated.agent_id,
-                            "domain_id": updated.domain_id,
-                            "memory_type": updated.memory_type,
-                        },
-                    )
-                    existing_items = [updated if item.id == updated.id else item for item in existing_items]
+                    if _safe_upsert_with_compensation(
+                        vector_store=self.vector_store,
+                        embedding_model=self.embedding_model,
+                        item=updated,
+                        rollback=lambda: self.repository.replace(
+                            user_id=user_id,
+                            agent_id=agent_id,
+                            memory_id=matched.id,
+                            domain_id=resolved_domain_id,
+                            content=matched.content,
+                            confidence=matched.confidence,
+                            importance=matched.importance,
+                            status=matched.status,
+                            conflict_state=matched.conflict_state,
+                        ),
+                    ):
+                        existing_items = [updated if item.id == updated.id else item for item in existing_items]
                 continue
 
-            if matched is not None and matched_score >= 0.62:
+            if matched is not None and matched_score >= 0.75:
                 merged_confidence = max(matched.confidence, candidate.confidence)
                 merged_importance = max(matched.importance, candidate.importance)
                 replacement_content = matched.content
@@ -543,17 +564,23 @@ class MemoryService:
                     conflict_state="none",
                 )
                 if updated is not None:
-                    self.vector_store.upsert(
-                        item_id=updated.id,
-                        vector=self.embedding_model.embed(updated.content),
-                        payload={
-                            "user_id": updated.user_id,
-                            "agent_id": updated.agent_id,
-                            "domain_id": updated.domain_id,
-                            "memory_type": updated.memory_type,
-                        },
-                    )
-                    existing_items = [updated if item.id == updated.id else item for item in existing_items]
+                    if _safe_upsert_with_compensation(
+                        vector_store=self.vector_store,
+                        embedding_model=self.embedding_model,
+                        item=updated,
+                        rollback=lambda: self.repository.replace(
+                            user_id=user_id,
+                            agent_id=agent_id,
+                            memory_id=matched.id,
+                            domain_id=resolved_domain_id,
+                            content=matched.content,
+                            confidence=matched.confidence,
+                            importance=matched.importance,
+                            status=matched.status,
+                            conflict_state=matched.conflict_state,
+                        ),
+                    ):
+                        existing_items = [updated if item.id == updated.id else item for item in existing_items]
                 continue
 
             item = MemoryItem(
@@ -571,16 +598,19 @@ class MemoryService:
                 created_at=datetime.now(UTC),
             )
             saved = self.repository.add(item)
-            self.vector_store.upsert(
-                item_id=saved.id,
-                vector=self.embedding_model.embed(saved.content),
-                payload={
-                    "user_id": saved.user_id,
-                    "agent_id": saved.agent_id,
-                    "domain_id": saved.domain_id,
-                    "memory_type": saved.memory_type,
-                },
-            )
+            if not _safe_upsert_with_compensation(
+                vector_store=self.vector_store,
+                embedding_model=self.embedding_model,
+                item=saved,
+                rollback=lambda: self.repository.set_status(
+                    user_id=saved.user_id,
+                    agent_id=saved.agent_id,
+                    memory_id=saved.id,
+                    status="deleted",
+                    domain_id=saved.domain_id,
+                ),
+            ):
+                continue
             persisted.append(saved)
             existing_items.append(saved)
         return persisted
@@ -810,6 +840,7 @@ class MemoryService:
             if len(group_items) <= 1:
                 continue
 
+            embedding_cache: dict[str, list[float]] = {}
             ordered = sorted(
                 group_items,
                 key=lambda item: (_metabolism_score(item, now), item.created_at.timestamp()),
@@ -819,7 +850,12 @@ class MemoryService:
             for item in ordered:
                 normalized_content = _normalize_memory_content(item.content)
                 is_duplicate = any(
-                    _content_similarity(normalized_content, _normalize_memory_content(existing.content)) >= 0.88
+                    _semantic_similarity(
+                        normalized_content,
+                        _normalize_memory_content(existing.content),
+                        embedding_model=self.embedding_model,
+                        embedding_cache=embedding_cache,
+                    ) >= 0.92
                     for existing in kept
                 )
                 if is_duplicate:
@@ -1063,27 +1099,6 @@ def _fallback_agent_profile_candidates(profile: AgentProfile) -> list[MemoryCand
     ]
 
 
-def _get_env(key: str, default: str) -> str:
-    value = os.getenv(key)
-    if value:
-        return value
-
-    dotenv_path = Path(__file__).resolve().parents[2] / ".env"
-    if not dotenv_path.exists():
-        return default
-
-    with dotenv_path.open("r", encoding="utf-8") as file:
-        for raw_line in file:
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            env_key, env_value = line.split("=", 1)
-            if env_key.strip() == key:
-                return env_value.strip().strip('"').strip("'")
-
-    return default
-
-
 def _metabolism_score(item: MemoryItem, now: datetime) -> float:
     base_score = 0.6 * item.importance + 0.4 * item.confidence
     reference_time = item.last_accessed_at or item.created_at
@@ -1161,11 +1176,79 @@ def _build_semantic_score_map(ordered_ids: list[str]) -> dict[str, float]:
     return score_map
 
 
+def _prefilter_related_items(
+    *,
+    existing_items: list[MemoryItem],
+    vector_store: VectorStore,
+    embedding_model: SimpleEmbeddingModel,
+    user_id: str,
+    agent_id: str,
+    domain_id: str,
+    normalized_content: str,
+    subject: str,
+    memory_type: str,
+) -> list[MemoryItem]:
+    scoped_items = [
+        item
+        for item in existing_items
+        if item.status != "deleted" and item.subject == subject and item.memory_type == memory_type
+    ]
+    if len(scoped_items) <= 5:
+        return scoped_items
+
+    try:
+        candidate_ids = vector_store.search(
+            query_vector=embedding_model.embed(normalized_content),
+            user_id=user_id,
+            agent_id=agent_id,
+            domain_id=domain_id,
+            limit=5,
+        )
+    except Exception:
+        return scoped_items[:5]
+
+    if not candidate_ids:
+        return scoped_items[:5]
+
+    id_set = set(candidate_ids)
+    shortlisted = [item for item in scoped_items if item.id in id_set]
+    return shortlisted if shortlisted else scoped_items[:5]
+
+
+def _safe_upsert_with_compensation(
+    *,
+    vector_store: VectorStore,
+    embedding_model: SimpleEmbeddingModel,
+    item: MemoryItem,
+    rollback: Callable[[], object],
+) -> bool:
+    try:
+        vector_store.upsert(
+            item_id=item.id,
+            vector=embedding_model.embed(item.content),
+            payload={
+                "user_id": item.user_id,
+                "agent_id": item.agent_id,
+                "domain_id": item.domain_id,
+                "memory_type": item.memory_type,
+            },
+        )
+        return True
+    except Exception:
+        try:
+            rollback()
+        except Exception:
+            pass
+        return False
+
+
 def _find_best_related_memory(
     existing_items: list[MemoryItem],
     subject: str,
     memory_type: str,
     normalized_content: str,
+    embedding_model: SimpleEmbeddingModel,
+    embedding_cache: dict[str, list[float]],
 ) -> tuple[MemoryItem | None, float]:
     best_item: MemoryItem | None = None
     best_score = 0.0
@@ -1179,7 +1262,12 @@ def _find_best_related_memory(
             continue
 
         existing_content = _normalize_memory_content(item.content)
-        score = _content_similarity(normalized_content, existing_content)
+        score = _semantic_similarity(
+            normalized_content,
+            existing_content,
+            embedding_model=embedding_model,
+            embedding_cache=embedding_cache,
+        )
         if score > best_score:
             best_score = score
             best_item = item
@@ -1187,20 +1275,56 @@ def _find_best_related_memory(
     return best_item, best_score
 
 
-def _content_similarity(a: str, b: str) -> float:
+def _semantic_similarity(
+    a: str,
+    b: str,
+    *,
+    embedding_model: SimpleEmbeddingModel,
+    embedding_cache: dict[str, list[float]],
+) -> float:
     if not a or not b:
         return 0.0
     if a == b:
         return 1.0
 
-    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
-    if len(shorter) >= 6 and shorter in longer:
-        return 0.93
-
-    return float(SequenceMatcher(None, a, b).ratio())
+    a_vec = _embed_cached(embedding_model=embedding_model, embedding_cache=embedding_cache, text=a)
+    b_vec = _embed_cached(embedding_model=embedding_model, embedding_cache=embedding_cache, text=b)
+    return _cosine_similarity(a_vec, b_vec)
 
 
-def _is_conflict_content(old_text: str, new_text: str) -> bool:
+def _embed_cached(
+    *,
+    embedding_model: SimpleEmbeddingModel,
+    embedding_cache: dict[str, list[float]],
+    text: str,
+) -> list[float]:
+    cached = embedding_cache.get(text)
+    if cached is not None:
+        return cached
+    vector = embedding_model.embed(text)
+    embedding_cache[text] = vector
+    return vector
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(y * y for y in b) ** 0.5
+    if norm_a <= 1e-12 or norm_b <= 1e-12:
+        return 0.0
+    return max(-1.0, min(1.0, dot / (norm_a * norm_b)))
+
+
+def _is_conflict_content(
+    old_text: str,
+    new_text: str,
+    *,
+    embedding_model: SimpleEmbeddingModel,
+    embedding_cache: dict[str, list[float]],
+) -> bool:
     old_norm = _normalize_memory_content(old_text)
     new_norm = _normalize_memory_content(new_text)
     if not old_norm or not new_norm:
@@ -1212,4 +1336,9 @@ def _is_conflict_content(old_text: str, new_text: str) -> bool:
     if old_negative == new_negative:
         return False
 
-    return _content_similarity(old_norm, new_norm) >= 0.55
+    return _semantic_similarity(
+        old_norm,
+        new_norm,
+        embedding_model=embedding_model,
+        embedding_cache=embedding_cache,
+    ) >= 0.75

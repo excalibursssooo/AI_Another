@@ -2,29 +2,40 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import json
-from pathlib import Path
-import os
+from typing import Any
 from uuid import uuid4
 
+from core.common.settings import get_env
 from core.tasks.models import TaskDraft, TaskItem
 
 
 class TaskService:
     """Task draft and confirmation flow for MVP."""
 
-    def __init__(self, persist_path: Path | None = None) -> None:
-        self._tasks_by_user: dict[str, list[TaskItem]] = {}
-        self._persist_path = persist_path
-        self._load()
+    def __init__(self, dsn: str) -> None:
+        self._dsn = dsn
+        try:
+            import psycopg  # type: ignore
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError("psycopg is required for TaskService") from exc
+
+        self._psycopg = psycopg
+        self._init_schema()
 
     @staticmethod
     def build_from_env() -> "TaskService":
-        repository = _get_env("TASK_REPOSITORY", "json")
-        if repository != "json":
-            return TaskService()
+        dsn = get_env("POSTGRES_DSN", "")
+        if not dsn:
+            raise RuntimeError("POSTGRES_DSN is required for TaskService")
+        return TaskService(dsn=dsn)
 
-        path_value = _get_env("TASK_JSON_PATH", "data/tasks.json")
-        return TaskService(persist_path=_resolve_project_path(path_value))
+    def _init_schema(self) -> None:
+        try:
+            with self._psycopg.connect(self._dsn) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1 FROM task_item LIMIT 1")
+        except Exception as exc:
+            raise RuntimeError("task_item table missing; run Alembic migrations first") from exc
 
     def draft_from_message(self, message: str) -> TaskDraft | None:
         trigger_words = ["帮我", "提醒", "计划", "安排", "任务", "todo", "to-do"]
@@ -55,115 +66,76 @@ class TaskService:
             source_message=source_message,
             created_at=datetime.now(UTC),
         )
-        if user_id not in self._tasks_by_user:
-            self._tasks_by_user[user_id] = []
-        self._tasks_by_user[user_id].append(task)
-        self._save()
+
+        with self._psycopg.connect(self._dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO task_item (
+                        id, user_id, title, status, priority, deadline, subtasks_json, source_message, created_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        task.id,
+                        task.user_id,
+                        task.title,
+                        task.status,
+                        task.priority,
+                        task.deadline,
+                        json.dumps(task.subtasks, ensure_ascii=False),
+                        task.source_message,
+                        task.created_at,
+                    ),
+                )
+            conn.commit()
         return task
 
     def list_tasks(self, user_id: str) -> list[TaskItem]:
-        return self._tasks_by_user.get(user_id, [])
+        with self._psycopg.connect(self._dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, user_id, title, status, priority, deadline, subtasks_json, source_message, created_at
+                    FROM task_item
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC
+                    """,
+                    (user_id,),
+                )
+                rows = cur.fetchall()
 
-    def _load(self) -> None:
-        if self._persist_path is None or not self._persist_path.exists():
-            return
-
-        with self._persist_path.open("r", encoding="utf-8") as file:
-            raw = json.load(file)
-
-        if not isinstance(raw, dict):
-            return
-
-        loaded: dict[str, list[TaskItem]] = {}
-        for user_id, rows in raw.items():
-            if not isinstance(user_id, str) or not isinstance(rows, list):
-                continue
-
-            tasks: list[TaskItem] = []
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                try:
-                    tasks.append(
-                        TaskItem(
-                            id=str(row.get("id", "")).strip(),
-                            user_id=str(row.get("user_id", user_id)).strip(),
-                            title=str(row.get("title", "")).strip(),
-                            status=str(row.get("status", "pending")).strip() or "pending",
-                            priority=str(row.get("priority", "medium")).strip() or "medium",
-                            deadline=str(row.get("deadline", "")).strip() or None,
-                            subtasks=[str(item) for item in row.get("subtasks", [])]
-                            if isinstance(row.get("subtasks"), list)
-                            else [],
-                            source_message=str(row.get("source_message", "")).strip(),
-                            created_at=_parse_datetime(str(row.get("created_at", ""))),
-                        ),
-                    )
-                except Exception:
-                    continue
-
-            loaded[user_id] = tasks
-
-        self._tasks_by_user = loaded
-
-    def _save(self) -> None:
-        if self._persist_path is None:
-            return
-
-        self._persist_path.parent.mkdir(parents=True, exist_ok=True)
-        payload: dict[str, list[dict[str, object]]] = {}
-        for user_id, tasks in self._tasks_by_user.items():
-            payload[user_id] = [
-                {
-                    "id": item.id,
-                    "user_id": item.user_id,
-                    "title": item.title,
-                    "status": item.status,
-                    "priority": item.priority,
-                    "deadline": item.deadline,
-                    "subtasks": item.subtasks,
-                    "source_message": item.source_message,
-                    "created_at": item.created_at.isoformat(),
-                }
-                for item in tasks
-            ]
-
-        with self._persist_path.open("w", encoding="utf-8") as file:
-            json.dump(payload, file, ensure_ascii=False, indent=2)
+        return [_row_to_task_item(row) for row in rows]
 
 
-def _get_env(key: str, default: str) -> str:
-    value = os.getenv(key)
-    if value:
-        return value
+def _row_to_task_item(row: tuple[Any, ...]) -> TaskItem:
+    subtasks: list[str] = []
+    subtasks_value = row[6]
+    if isinstance(subtasks_value, str) and subtasks_value.strip():
+        try:
+            decoded = json.loads(subtasks_value)
+            if isinstance(decoded, list):
+                subtasks = [str(item) for item in decoded if str(item).strip()]
+        except Exception:
+            subtasks = []
 
-    dotenv_path = Path(__file__).resolve().parents[2] / ".env"
-    if not dotenv_path.exists():
-        return default
+    created_at = row[8]
+    if isinstance(created_at, datetime):
+        created_at_value = created_at.astimezone(UTC) if created_at.tzinfo else created_at.replace(tzinfo=UTC)
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(created_at))
+            created_at_value = parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        except Exception:
+            created_at_value = datetime.now(UTC)
 
-    with dotenv_path.open("r", encoding="utf-8") as file:
-        for raw_line in file:
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            env_key, env_value = line.split("=", 1)
-            if env_key.strip() == key:
-                return env_value.strip().strip('"').strip("'")
-
-    return default
-
-
-def _resolve_project_path(path_value: str) -> Path:
-    raw_path = Path(path_value)
-    if raw_path.is_absolute():
-        return raw_path
-    return Path(__file__).resolve().parents[2] / raw_path
-
-
-def _parse_datetime(value: str) -> datetime:
-    if not value:
-        return datetime.now(UTC)
-    try:
-        return datetime.fromisoformat(value)
-    except Exception:
-        return datetime.now(UTC)
+    return TaskItem(
+        id=str(row[0]),
+        user_id=str(row[1]),
+        title=str(row[2]),
+        status=str(row[3]),
+        priority=str(row[4]),
+        deadline=str(row[5]) if row[5] is not None else None,
+        subtasks=subtasks,
+        source_message=str(row[7]),
+        created_at=created_at_value,
+    )

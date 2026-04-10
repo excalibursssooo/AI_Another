@@ -1,30 +1,46 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import json
-import os
-from pathlib import Path
+from typing import Any
+from typing import Mapping
 from uuid import uuid4
 
+from core.common.settings import get_env
 from core.posts.models import FeedListResult, FeedPost, FeedPublishResult
 
 
 class FeedService:
-    """Stores and manages agent feed posts for each user."""
+    """Stores and manages agent feed posts in PostgreSQL."""
 
-    def __init__(self, persist_path: Path | None = None) -> None:
-        self._posts_by_user: dict[str, list[FeedPost]] = {}
-        self._persist_path = persist_path
-        self._load()
+    def __init__(self, dsn: str) -> None:
+        self._dsn = dsn
+        try:
+            import psycopg  # type: ignore
+            from psycopg.rows import dict_row  # type: ignore
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError("psycopg is required for FeedService") from exc
+
+        self._psycopg = psycopg
+        self._dict_row = dict_row
+        self._init_schema()
+
+    def _connect(self):  # type: ignore[no-untyped-def]
+        return self._psycopg.connect(self._dsn, row_factory=self._dict_row)
 
     @staticmethod
     def build_from_env() -> "FeedService":
-        repository = _get_env("FEED_REPOSITORY", "json")
-        if repository != "json":
-            return FeedService()
+        dsn = get_env("POSTGRES_DSN", "")
+        if not dsn:
+            raise RuntimeError("POSTGRES_DSN is required for FeedService")
+        return FeedService(dsn=dsn)
 
-        path_value = _get_env("FEED_JSON_PATH", "data/posts.json")
-        return FeedService(persist_path=_resolve_project_path(path_value))
+    def _init_schema(self) -> None:
+        try:
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1 FROM feed_post LIMIT 1")
+        except Exception as exc:
+            raise RuntimeError("feed_post table missing; run Alembic migrations first") from exc
 
     def list_posts(
         self,
@@ -36,13 +52,33 @@ class FeedService:
         bounded_limit = max(1, min(limit, 100))
         safe_offset = max(0, offset)
 
-        rows = list(self._posts_by_user.get(user_id, []))
+        where_clause = "WHERE user_id = %s"
+        params: list[object] = [user_id]
         if not include_archived:
-            rows = [item for item in rows if item.status == "published"]
+            where_clause += " AND status = 'published'"
 
-        rows.sort(key=lambda item: item.created_at, reverse=True)
-        total = len(rows)
-        sliced = rows[safe_offset : safe_offset + bounded_limit]
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT COUNT(*) AS total_count FROM feed_post {where_clause}",
+                    tuple(params),
+                )
+                count_row = cur.fetchone()
+                total = int(count_row["total_count"]) if count_row and count_row.get("total_count") is not None else 0
+
+                cur.execute(
+                    f"""
+                    SELECT id, user_id, agent_id, content, topic_seed, post_type, status, source_task_id, created_at
+                    FROM feed_post
+                    {where_clause}
+                    ORDER BY created_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    tuple(params + [bounded_limit, safe_offset]),
+                )
+                rows = cur.fetchall()
+
+        sliced = [_row_to_feed_post(row) for row in rows]
         return FeedListResult(
             items=sliced,
             total=total,
@@ -51,11 +87,18 @@ class FeedService:
         )
 
     def get_post(self, user_id: str, post_id: str) -> FeedPost | None:
-        rows = self._posts_by_user.get(user_id, [])
-        for item in rows:
-            if item.id == post_id:
-                return item
-        return None
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, user_id, agent_id, content, topic_seed, post_type, status, source_task_id, created_at
+                    FROM feed_post
+                    WHERE user_id = %s AND id = %s
+                    """,
+                    (user_id, post_id),
+                )
+                row = cur.fetchone()
+        return _row_to_feed_post(row) if row else None
 
     def publish_post(
         self,
@@ -83,136 +126,66 @@ class FeedService:
             source_task_id=source_task_id,
             created_at=datetime.now(UTC),
         )
-        if user_id not in self._posts_by_user:
-            self._posts_by_user[user_id] = []
-        self._posts_by_user[user_id].append(post)
-        self._save()
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO feed_post (
+                        id, user_id, agent_id, content, topic_seed, post_type, status, source_task_id, created_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        post.id,
+                        post.user_id,
+                        post.agent_id,
+                        post.content,
+                        post.topic_seed,
+                        post.post_type,
+                        post.status,
+                        post.source_task_id,
+                        post.created_at,
+                    ),
+                )
+            conn.commit()
         return FeedPublishResult(post=post, skipped=False, reason="published")
 
     def archive_post(self, user_id: str, post_id: str) -> FeedPost | None:
-        rows = self._posts_by_user.get(user_id, [])
-        for index, item in enumerate(rows):
-            if item.id != post_id:
-                continue
-            if item.status == "archived":
-                return item
-            rows[index] = FeedPost(
-                id=item.id,
-                user_id=item.user_id,
-                agent_id=item.agent_id,
-                content=item.content,
-                topic_seed=item.topic_seed,
-                post_type=item.post_type,
-                status="archived",
-                source_task_id=item.source_task_id,
-                created_at=item.created_at,
-            )
-            self._save()
-            return rows[index]
-        return None
-
-    def _load(self) -> None:
-        if self._persist_path is None or not self._persist_path.exists():
-            return
-
-        with self._persist_path.open("r", encoding="utf-8") as file:
-            raw = json.load(file)
-
-        if not isinstance(raw, dict):
-            return
-
-        loaded: dict[str, list[FeedPost]] = {}
-        for user_id, rows in raw.items():
-            if not isinstance(user_id, str) or not isinstance(rows, list):
-                continue
-
-            posts: list[FeedPost] = []
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                try:
-                    content = str(row.get("content", "")).strip()
-                    if not content:
-                        continue
-                    agent_id = str(row.get("agent_id", "")).strip() or "default"
-                    posts.append(
-                        FeedPost(
-                            id=str(row.get("id", "")).strip() or str(uuid4()),
-                            user_id=str(row.get("user_id", user_id)).strip() or user_id,
-                            agent_id=agent_id,
-                            content=content,
-                            topic_seed=str(row.get("topic_seed", content)).strip() or content,
-                            post_type=str(row.get("post_type", "status")).strip() or "status",
-                            status=str(row.get("status", "published")).strip() or "published",
-                            source_task_id=str(row.get("source_task_id", "")).strip() or None,
-                            created_at=_parse_datetime(str(row.get("created_at", ""))),
-                        ),
-                    )
-                except Exception:
-                    continue
-
-            loaded[user_id] = posts
-
-        self._posts_by_user = loaded
-
-    def _save(self) -> None:
-        if self._persist_path is None:
-            return
-
-        self._persist_path.parent.mkdir(parents=True, exist_ok=True)
-        payload: dict[str, list[dict[str, object]]] = {}
-        for user_id, posts in self._posts_by_user.items():
-            payload[user_id] = [
-                {
-                    "id": item.id,
-                    "user_id": item.user_id,
-                    "agent_id": item.agent_id,
-                    "content": item.content,
-                    "topic_seed": item.topic_seed,
-                    "post_type": item.post_type,
-                    "status": item.status,
-                    "source_task_id": item.source_task_id,
-                    "created_at": item.created_at.isoformat(),
-                }
-                for item in posts
-            ]
-
-        with self._persist_path.open("w", encoding="utf-8") as file:
-            json.dump(payload, file, ensure_ascii=False, indent=2)
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE feed_post
+                    SET status = 'archived'
+                    WHERE user_id = %s AND id = %s
+                    RETURNING id, user_id, agent_id, content, topic_seed, post_type, status, source_task_id, created_at
+                    """,
+                    (user_id, post_id),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        return _row_to_feed_post(row) if row else None
 
 
-def _get_env(key: str, default: str) -> str:
-    value = os.getenv(key)
-    if value:
-        return value
+def _row_to_feed_post(row: Mapping[str, Any]) -> FeedPost:
+    created_at = row.get("created_at")
+    if isinstance(created_at, datetime):
+        created_at_value = created_at.astimezone(UTC) if created_at.tzinfo else created_at.replace(tzinfo=UTC)
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(created_at))
+            created_at_value = parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        except Exception:
+            created_at_value = datetime.now(UTC)
 
-    dotenv_path = Path(__file__).resolve().parents[2] / ".env"
-    if not dotenv_path.exists():
-        return default
-
-    with dotenv_path.open("r", encoding="utf-8") as file:
-        for raw_line in file:
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            env_key, env_value = line.split("=", 1)
-            if env_key.strip() == key:
-                return env_value.strip().strip('"').strip("'")
-
-    return default
-
-
-def _resolve_project_path(path_value: str) -> Path:
-    raw_path = Path(path_value)
-    if raw_path.is_absolute():
-        return raw_path
-    return Path(__file__).resolve().parents[2] / raw_path
-
-
-def _parse_datetime(value: str) -> datetime:
-    if not value:
-        return datetime.now(UTC)
-    try:
-        return datetime.fromisoformat(value)
-    except Exception:
-        return datetime.now(UTC)
+    return FeedPost(
+        id=str(row.get("id", "")),
+        user_id=str(row.get("user_id", "")),
+        agent_id=str(row.get("agent_id", "")),
+        content=str(row.get("content", "")),
+        topic_seed=str(row.get("topic_seed", "")),
+        post_type=str(row.get("post_type", "")),
+        status=str(row.get("status", "")),
+        source_task_id=str(row.get("source_task_id")) if row.get("source_task_id") is not None else None,
+        created_at=created_at_value,
+    )

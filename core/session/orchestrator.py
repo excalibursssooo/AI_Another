@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict, dataclass
-import os
-from pathlib import Path
-from threading import Thread
 from typing import Iterator, Protocol
 
 from core.agents.models import AgentProfile
 from core.common.audit_logger import audit_log
+from core.common.settings import get_env
 from core.memory.models import MemoryItem
 from core.memory.service import MemoryService
 from core.safety.service import SafetyService
@@ -319,9 +318,10 @@ class SessionOrchestrator:
         agent_name: str,
         historical_memories: list[MemoryItem],
     ) -> None:
-        def worker() -> None:
+        async def worker() -> None:
             try:
-                persisted_count = self._persist_turn_memories_sync(
+                persisted_count = await asyncio.to_thread(
+                    self._persist_turn_memories_sync,
                     user_id=user_id,
                     agent_id=agent_id,
                     domain_id=domain_id,
@@ -348,7 +348,22 @@ class SessionOrchestrator:
                     error=str(exc),
                 )
 
-        Thread(target=worker, daemon=True).start()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Fallback when no event loop is available in the current execution context.
+            self._persist_turn_memories_sync(
+                user_id=user_id,
+                agent_id=agent_id,
+                domain_id=domain_id,
+                user_message=user_message,
+                assistant_reply=assistant_reply,
+                agent_name=agent_name,
+                historical_memories=historical_memories,
+            )
+            return
+
+        loop.create_task(worker())
 
 
 def _build_recent_turns_summary(recent_turns: list[ConversationTurn], max_turns: int = 4) -> str:
@@ -363,26 +378,5 @@ def _build_recent_turns_summary(recent_turns: list[ConversationTurn], max_turns:
 
 
 def _is_memory_async_write_enabled() -> bool:
-    raw = _get_env("MEMORY_ASYNC_WRITE", "true").strip().lower()
+    raw = get_env("MEMORY_ASYNC_WRITE", "true").strip().lower()
     return raw in {"1", "true", "yes", "on"}
-
-
-def _get_env(key: str, default: str) -> str:
-    value = os.getenv(key)
-    if value:
-        return value
-
-    dotenv_path = Path(__file__).resolve().parents[2] / ".env"
-    if not dotenv_path.exists():
-        return default
-
-    with dotenv_path.open("r", encoding="utf-8") as file:
-        for raw_line in file:
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            env_key, env_value = line.split("=", 1)
-            if env_key.strip() == key:
-                return env_value.strip().strip('"').strip("'")
-
-    return default

@@ -52,7 +52,7 @@ if (-not $qdrantReady) {
     throw "qdrant startup timeout"
 }
 
-Write-Host "infra up: applying schema" -ForegroundColor Cyan
+Write-Host "infra up: applying migrations" -ForegroundColor Cyan
 & "$PSScriptRoot/local_infra_init.ps1" -ComposeFile $ComposeFile
 
 Write-Host "infra up: done" -ForegroundColor Green

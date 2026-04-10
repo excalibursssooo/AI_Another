@@ -62,7 +62,43 @@ class FeedGenerator:
 
         if not text:
             raise FeedGenerationUnavailableError("动态生成模型返回为空，请稍后重试。")
-        return _parse_generated_post(text)
+        try:
+            return _parse_generated_post(text)
+        except FeedGenerationUnavailableError:
+            repaired = self._repair_json_output(text)
+            return _parse_generated_post(repaired)
+
+    def _repair_json_output(self, raw_text: str) -> str:
+        if self._client is None:
+            raise FeedGenerationUnavailableError("动态生成模型不可用，请先配置 OPENROUTER_API_KEY。")
+
+        repair_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是JSON修复器。"
+                    "只输出一个合法JSON对象，不要输出其他内容。"
+                    "目标格式: "
+                    '{"content":"动态正文","topic_seed":"可直接发给AI的开场问题","post_type":"status|reflection|plan"}'
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"请将以下输出修复为目标JSON对象:\n{raw_text}",
+            },
+        ]
+        try:
+            repaired = self._client.chat_text(
+                messages=repair_messages,
+                max_tokens=512,
+                temperature=0.0,
+            )
+        except OpenRouterError as exc:
+            raise FeedGenerationUnavailableError("动态生成模型返回格式错误，请稍后重试。") from exc
+
+        if not repaired:
+            raise FeedGenerationUnavailableError("动态生成模型返回格式错误，请稍后重试。")
+        return repaired
 
 
 def _build_messages(

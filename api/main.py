@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
+from functools import lru_cache
 import json
 from datetime import UTC, datetime, timedelta
+import os
 from fastapi import FastAPI
+from fastapi import Depends
 from fastapi import HTTPException
 from fastapi import Request
+from fastapi import status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
-import os
 from pathlib import Path
 from pydantic import BaseModel, Field
 import socket
+import jwt
+from jwt import InvalidTokenError
 from starlette.responses import StreamingResponse
 from typing import Any, Iterator
 from urllib.parse import urlparse
@@ -18,6 +25,7 @@ from urllib.request import urlopen
 from uuid import uuid4
 import time
 
+from core.agents.models import AgentProfile
 from core.agents.service import AgentAICreationError, AgentService
 from core.common.audit_logger import audit_log, get_audit_logger
 from core.common.domain_loader import (
@@ -31,7 +39,13 @@ from core.common.domain_loader import (
     normalize_domain_id,
     save_domain_config,
 )
-from core.common.openrouter import OpenRouterError, get_env as get_common_env, get_openrouter_client
+from core.common.openrouter import (
+    OpenRouterError,
+    close_openrouter_clients,
+    get_env as get_common_env,
+    get_openrouter_client,
+)
+from core.common.settings import get_settings
 from core.emotion.service import EmotionService
 from core.memory.models import MemoryItem
 from core.memory.models import MemoryCandidate
@@ -47,7 +61,97 @@ from core.tasks.models import TaskDraft
 from core.tasks.service import TaskService
 
 
-app = FastAPI(title="Companion Agent MVP", version="0.1.0")
+class _LazyService:
+    def __init__(self, factory):  # type: ignore[no-untyped-def]
+        self._factory = factory
+
+    def _resolve(self):  # type: ignore[no-untyped-def]
+        return self._factory()
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._resolve(), name)
+
+
+@lru_cache(maxsize=1)
+def _get_memory_service() -> MemoryService:
+    return MemoryService.build_from_env()
+
+
+@lru_cache(maxsize=1)
+def _get_emotion_service() -> EmotionService:
+    return EmotionService.build_from_env()
+
+
+@lru_cache(maxsize=1)
+def _get_safety_service() -> SafetyService:
+    return SafetyService()
+
+
+@lru_cache(maxsize=1)
+def _get_reply_generator() -> ReplyGenerator:
+    return ReplyGenerator.build_from_env()
+
+
+@lru_cache(maxsize=1)
+def _get_conversation_store() -> ConversationStore:
+    return ConversationStore.build_from_env()
+
+
+@lru_cache(maxsize=1)
+def _get_agent_service() -> AgentService:
+    return AgentService.build_from_env()
+
+
+@lru_cache(maxsize=1)
+def _get_task_service() -> TaskService:
+    return TaskService.build_from_env()
+
+
+@lru_cache(maxsize=1)
+def _get_feed_service() -> FeedService:
+    return FeedService.build_from_env()
+
+
+@lru_cache(maxsize=1)
+def _get_feed_generator() -> FeedGenerator:
+    return FeedGenerator.build_from_env()
+
+
+@lru_cache(maxsize=1)
+def _get_orchestrator() -> SessionOrchestrator:
+    return SessionOrchestrator(
+        memory_service=_get_memory_service(),
+        safety_service=_get_safety_service(),
+        reply_generator=_get_reply_generator(),
+        conversation_store=_get_conversation_store(),
+    )
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):  # type: ignore[no-untyped-def]
+    global _feed_scheduler_task
+    audit_log(
+        "backend_lifecycle",
+        action="startup",
+        feed_scheduler_enabled=_is_feed_scheduler_enabled(),
+    )
+    if _is_feed_scheduler_enabled():
+        _feed_scheduler_task = asyncio.create_task(_run_feed_scheduler())
+    try:
+        yield
+    finally:
+        audit_log("backend_lifecycle", action="shutdown")
+        if _feed_scheduler_task is not None:
+            _feed_scheduler_task.cancel()
+            try:
+                await _feed_scheduler_task
+            except asyncio.CancelledError:
+                pass
+            _feed_scheduler_task = None
+        await close_openrouter_clients()
+
+
+app = FastAPI(title="Companion Agent MVP", version="0.1.0", lifespan=_lifespan)
 
 _cors_origins_raw = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 _cors_origins = [item.strip() for item in _cors_origins_raw.split(",") if item.strip()]
@@ -60,24 +164,58 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-memory_service = MemoryService.build_from_env()
-emotion_service = EmotionService.build_from_env()
-safety_service = SafetyService()
-reply_generator = ReplyGenerator.build_from_env()
-conversation_store = ConversationStore.build_from_env()
-agent_service = AgentService.build_from_env()
-task_service = TaskService.build_from_env()
-feed_service = FeedService.build_from_env()
-feed_generator = FeedGenerator.build_from_env()
-orchestrator = SessionOrchestrator(
-    memory_service=memory_service,
-    safety_service=safety_service,
-    reply_generator=reply_generator,
-    conversation_store=conversation_store,
-)
+memory_service = _LazyService(_get_memory_service)
+emotion_service = _LazyService(_get_emotion_service)
+safety_service = _LazyService(_get_safety_service)
+reply_generator = _LazyService(_get_reply_generator)
+conversation_store = _LazyService(_get_conversation_store)
+agent_service = _LazyService(_get_agent_service)
+task_service = _LazyService(_get_task_service)
+feed_service = _LazyService(_get_feed_service)
+feed_generator = _LazyService(_get_feed_generator)
+orchestrator = _LazyService(_get_orchestrator)
 
 _feed_scheduler_task: asyncio.Task[None] | None = None
 _last_feed_generated_at: dict[tuple[str, str], datetime] = {}
+_auth_scheme = HTTPBearer(auto_error=False)
+
+
+def get_current_user_id(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_auth_scheme),
+) -> str:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing bearer token")
+
+    settings = get_settings()
+    jwt_secret = settings.auth_jwt_secret.strip()
+    if not jwt_secret:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="auth is not configured")
+
+    jwt_algorithm = settings.auth_jwt_algorithm.strip() or "HS256"
+    jwt_audience = settings.auth_jwt_audience.strip()
+
+    try:
+        if jwt_audience:
+            payload = jwt.decode(
+                credentials.credentials,
+                jwt_secret,
+                algorithms=[jwt_algorithm],
+                audience=jwt_audience,
+            )
+        else:
+            payload = jwt.decode(
+                credentials.credentials,
+                jwt_secret,
+                algorithms=[jwt_algorithm],
+                options={"verify_aud": False},
+            )
+    except InvalidTokenError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token") from exc
+
+    user_id = str(payload.get("sub") or payload.get("user_id") or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="token missing user id")
+    return user_id
 
 
 @app.middleware("http")
@@ -121,7 +259,7 @@ async def audit_http_requests(request: Request, call_next):  # type: ignore[no-u
 
 
 class ChatRequest(BaseModel):
-    user_id: str = Field(..., min_length=1)
+    user_id: str | None = Field(default=None, min_length=1)
     message: str = Field(..., min_length=1, max_length=2000)
     conversation_id: str | None = Field(default=None, min_length=1)
     agent_id: str = Field(default="default", min_length=1)
@@ -328,7 +466,7 @@ class MemoryExtractDebugResponse(BaseModel):
 
 
 class MemoryStatusRequest(BaseModel):
-    user_id: str = Field(..., min_length=1)
+    user_id: str | None = Field(default=None, min_length=1)
     agent_id: str = Field(default="default", min_length=1)
     domain_id: str = Field(default="default", min_length=1, max_length=80)
 
@@ -340,7 +478,7 @@ class MemoryCompactResponse(BaseModel):
 
 
 class MemoryRecallDebugRequest(BaseModel):
-    user_id: str = Field(..., min_length=1)
+    user_id: str | None = Field(default=None, min_length=1)
     agent_id: str = Field(default="default", min_length=1)
     domain_id: str = Field(default="default", min_length=1, max_length=80)
     query_text: str | None = Field(default=None, max_length=4000)
@@ -388,7 +526,7 @@ class MemoryRecallWeightsUpdateRequest(BaseModel):
 
 
 class TaskConfirmRequest(BaseModel):
-    user_id: str = Field(..., min_length=1)
+    user_id: str | None = Field(default=None, min_length=1)
     source_message: str = Field(..., min_length=1, max_length=2000)
     title: str = Field(..., min_length=1, max_length=120)
     priority: str = Field(default="medium")
@@ -429,7 +567,7 @@ class PostListResponse(BaseModel):
 
 
 class GeneratePostRequest(BaseModel):
-    user_id: str = Field(..., min_length=1)
+    user_id: str | None = Field(default=None, min_length=1)
     source_task_id: str | None = Field(default=None, max_length=120)
 
 
@@ -444,32 +582,6 @@ class TriggerChatResponse(BaseModel):
     user_id: str
     agent_id: str
     suggested_message: str
-
-
-@app.on_event("startup")
-async def on_startup() -> None:
-    global _feed_scheduler_task
-    audit_log(
-        "backend_lifecycle",
-        action="startup",
-        feed_scheduler_enabled=_is_feed_scheduler_enabled(),
-    )
-    if _is_feed_scheduler_enabled():
-        _feed_scheduler_task = asyncio.create_task(_run_feed_scheduler())
-
-
-@app.on_event("shutdown")
-async def on_shutdown() -> None:
-    global _feed_scheduler_task
-    audit_log("backend_lifecycle", action="shutdown")
-    if _feed_scheduler_task is None:
-        return
-    _feed_scheduler_task.cancel()
-    try:
-        await _feed_scheduler_task
-    except asyncio.CancelledError:
-        pass
-    _feed_scheduler_task = None
 
 
 class TelemetryAckResponse(BaseModel):
@@ -746,22 +858,7 @@ def telemetry_overview() -> TelemetryOverviewResponse:
 def get_audit_logs(limit: int = 200) -> AuditLogResponse:
     logger = get_audit_logger()
     bounded_limit = max(1, min(limit, 1000))
-    items: list[dict[str, object]] = []
-
-    if logger.enabled and logger.log_path.exists():
-        with logger.log_path.open("r", encoding="utf-8") as file:
-            lines = file.readlines()[-bounded_limit:]
-        for raw in lines:
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                parsed = json.loads(line)
-            except Exception:
-                parsed = {"raw": line}
-            if isinstance(parsed, dict):
-                normalized: dict[str, object] = {str(key): value for key, value in parsed.items()}
-                items.append(normalized)
+    items: list[dict[str, object]] = logger.list_recent(bounded_limit) if logger.enabled else []
 
     return AuditLogResponse(
         enabled=logger.enabled,
@@ -771,10 +868,8 @@ def get_audit_logs(limit: int = 200) -> AuditLogResponse:
 
 
 @app.post("/chat")
-def chat(req: ChatRequest) -> StreamingResponse:
-    selected_agent = agent_service.get_agent(req.agent_id)
-    if selected_agent is None:
-        raise HTTPException(status_code=404, detail="agent not found")
+def chat(req: ChatRequest, current_user_id: str = Depends(get_current_user_id)) -> StreamingResponse:
+    selected_agent = _require_agent(req.agent_id)
     if selected_agent.status != "active":
         raise HTTPException(status_code=400, detail="agent is not active")
 
@@ -788,7 +883,7 @@ def chat(req: ChatRequest) -> StreamingResponse:
     resolved_domain_id = req.domain_id or selected_agent.domain_id or "default"
 
     stream_iter = orchestrator.stream_handle_message(
-        user_id=req.user_id,
+        user_id=current_user_id,
         message=req.message,
         conversation_id=resolved_conversation_id,
         domain_id=resolved_domain_id,
@@ -799,7 +894,7 @@ def chat(req: ChatRequest) -> StreamingResponse:
         for event in stream_iter:
             if event.get("type") == "done":
                 _update_agent_live_state(
-                    user_id=req.user_id,
+                    user_id=current_user_id,
                     agent_id=str(event.get("agent_id", req.agent_id)),
                     agent_name=str(event.get("agent_name", selected_agent.display_name or selected_agent.name)),
                     mood_label=str(event.get("emotion_label", "calm")),
@@ -809,7 +904,7 @@ def chat(req: ChatRequest) -> StreamingResponse:
                 )
                 audit_log(
                     "chat_done",
-                    user_id=req.user_id,
+                    user_id=current_user_id,
                     agent_id=str(event.get("agent_id", req.agent_id)),
                     domain_id=resolved_domain_id,
                     risk_level=str(event.get("risk_level", "low")),
@@ -821,13 +916,11 @@ def chat(req: ChatRequest) -> StreamingResponse:
 
 
 @app.get("/agents/{agent_id}/state/live", response_model=AgentLiveStateResponse)
-def get_agent_live_state(agent_id: str, user_id: str) -> AgentLiveStateResponse:
-    selected_agent = agent_service.get_agent(agent_id)
-    if selected_agent is None:
-        raise HTTPException(status_code=404, detail="agent not found")
+def get_agent_live_state(agent_id: str, current_user_id: str = Depends(get_current_user_id)) -> AgentLiveStateResponse:
+    selected_agent = _require_agent(agent_id)
 
     state = _get_agent_live_state(
-        user_id=user_id,
+        user_id=current_user_id,
         agent_id=agent_id,
         agent_name=selected_agent.display_name or selected_agent.name,
     )
@@ -847,12 +940,16 @@ def get_agent_live_state(agent_id: str, user_id: str) -> AgentLiveStateResponse:
 
 
 @app.get("/conversations", response_model=list[ConversationTurnResponse])
-def list_conversation_turns(user_id: str, agent_id: str, limit: int = 100) -> list[ConversationTurnResponse]:
+def list_conversation_turns(
+    agent_id: str,
+    limit: int = 100,
+    current_user_id: str = Depends(get_current_user_id),
+) -> list[ConversationTurnResponse]:
     if limit <= 0:
         return []
 
     bounded_limit = min(limit, 500)
-    conversation_key = f"{user_id}:{agent_id}"
+    conversation_key = f"{current_user_id}:{agent_id}"
     turns = conversation_store.recent(user_id=conversation_key, limit=bounded_limit)
     return [
         ConversationTurnResponse(
@@ -875,21 +972,7 @@ def create_agent(req: AgentCreateRequest) -> AgentResponse:
         speaking_style=req.speaking_style
     )
     _seed_agent_profile_memories(profile.id)
-    return AgentResponse(
-        id=profile.id,
-        name=profile.name,
-        display_name=profile.display_name or profile.name,
-        greeting=profile.greeting,
-        persona=profile.persona,
-        background=profile.background,
-        domain_id=profile.domain_id,
-        world_context=profile.world_context,
-        hobbies=profile.hobbies,
-        speaking_style=profile.speaking_style,
-        status=profile.status,
-        created_at=profile.created_at.isoformat(),
-        updated_at=profile.updated_at.isoformat(),
-    )
+    return _to_agent_response(profile)
 
 
 @app.post("/agents/ai-create", response_model=AgentAICreateResponse)
@@ -915,21 +998,7 @@ def create_agent_by_ai(req: AgentAICreateRequest) -> AgentAICreateResponse:
     _seed_agent_profile_memories(profile.id)
 
     return AgentAICreateResponse(
-        agent=AgentResponse(
-            id=profile.id,
-            name=profile.name,
-            display_name=profile.display_name or profile.name,
-            greeting=profile.greeting,
-            persona=profile.persona,
-            background=profile.background,
-            domain_id=profile.domain_id,
-            world_context=profile.world_context,
-            hobbies=profile.hobbies,
-            speaking_style=profile.speaking_style,
-            status=profile.status,
-            created_at=profile.created_at.isoformat(),
-            updated_at=profile.updated_at.isoformat(),
-        ),
+        agent=_to_agent_response(profile),
         backend=str(debug.get("backend", "unknown")),
         model=str(debug.get("model", "unknown")),
         used_prompt=str(debug.get("prompt", "")),
@@ -939,9 +1008,7 @@ def create_agent_by_ai(req: AgentAICreateRequest) -> AgentAICreateResponse:
 
 @app.post("/agents/{agent_id}/memory-seed/debug", response_model=AgentMemorySeedDebugResponse)
 def debug_agent_memory_seed(agent_id: str, req: AgentMemorySeedDebugRequest) -> AgentMemorySeedDebugResponse:
-    profile = agent_service.get_agent(agent_id)
-    if profile is None:
-        raise HTTPException(status_code=404, detail="agent not found")
+    profile = _require_agent(agent_id)
 
     debug = memory_service.debug_agent_profile_memory_seed(
         profile=profile,
@@ -998,47 +1065,13 @@ def debug_agent_memory_seed(agent_id: str, req: AgentMemorySeedDebugRequest) -> 
 def list_agents(include_inactive: bool = False, domain_id: str | None = None) -> list[AgentResponse]:
     resolved_domain_id = (domain_id or get_default_domain_id()).strip() or "default"
     rows = agent_service.list_agents(include_inactive=include_inactive, domain_id=resolved_domain_id)
-    return [
-        AgentResponse(
-            id=item.id,
-            name=item.name,
-            display_name=item.display_name or item.name,
-            greeting=item.greeting,
-            persona=item.persona,
-            background=item.background,
-            domain_id=item.domain_id,
-            world_context=item.world_context,
-            hobbies=item.hobbies,
-            speaking_style=item.speaking_style,
-            status=item.status,
-            created_at=item.created_at.isoformat(),
-            updated_at=item.updated_at.isoformat(),
-        )
-        for item in rows
-    ]
+    return [_to_agent_response(item) for item in rows]
 
 
 @app.get("/agents/{agent_id}", response_model=AgentResponse)
 def get_agent(agent_id: str) -> AgentResponse:
-    item = agent_service.get_agent(agent_id)
-    if item is None:
-        raise HTTPException(status_code=404, detail="agent not found")
-
-    return AgentResponse(
-        id=item.id,
-        name=item.name,
-        display_name=item.display_name or item.name,
-        greeting=item.greeting,
-        persona=item.persona,
-        background=item.background,
-        domain_id=item.domain_id,
-        world_context=item.world_context,
-        hobbies=item.hobbies,
-        speaking_style=item.speaking_style,
-        status=item.status,
-        created_at=item.created_at.isoformat(),
-        updated_at=item.updated_at.isoformat(),
-    )
+    item = _require_agent(agent_id)
+    return _to_agent_response(item)
 
 
 @app.put("/agents/{agent_id}", response_model=AgentResponse)
@@ -1056,28 +1089,12 @@ def update_agent(agent_id: str, req: AgentUpdateRequest) -> AgentResponse:
     if updated is None:
         raise HTTPException(status_code=404, detail="agent not found")
 
-    return AgentResponse(
-        id=updated.id,
-        name=updated.name,
-        display_name=updated.display_name or updated.name,
-        greeting=updated.greeting,
-        persona=updated.persona,
-        background=updated.background,
-        domain_id=updated.domain_id,
-        world_context=updated.world_context,
-        hobbies=updated.hobbies,
-        speaking_style=updated.speaking_style,
-        status=updated.status,
-        created_at=updated.created_at.isoformat(),
-        updated_at=updated.updated_at.isoformat(),
-    )
+    return _to_agent_response(updated)
 
 
 @app.delete("/agents/{agent_id}", response_model=AgentResponse)
 def delete_agent(agent_id: str, purge_memories: bool = True) -> AgentResponse:
-    target = agent_service.get_agent(agent_id)
-    if target is None:
-        raise HTTPException(status_code=404, detail="agent not found")
+    target = _require_agent(agent_id)
 
     if purge_memories:
         memory_service.delete_memories_by_agent(agent_id=target.id, domain_id=target.domain_id)
@@ -1090,21 +1107,7 @@ def delete_agent(agent_id: str, purge_memories: bool = True) -> AgentResponse:
     if deleted is None:
         raise HTTPException(status_code=404, detail="agent not found")
 
-    return AgentResponse(
-        id=deleted.id,
-        name=deleted.name,
-        display_name=deleted.display_name or deleted.name,
-        greeting=deleted.greeting,
-        persona=deleted.persona,
-        background=deleted.background,
-        domain_id=deleted.domain_id,
-        world_context=deleted.world_context,
-        hobbies=deleted.hobbies,
-        speaking_style=deleted.speaking_style,
-        status=deleted.status,
-        created_at=deleted.created_at.isoformat(),
-        updated_at=deleted.updated_at.isoformat(),
-    )
+    return _to_agent_response(deleted)
 
 
 @app.post("/emotion/debug", response_model=EmotionDebugResponse)
@@ -1186,6 +1189,50 @@ def _to_world_detail(config: DomainConfig) -> WorldDetailResponse:
         constraints=config.constraints,
         seed_memories=config.seed_memories,
     )
+
+
+def _to_agent_response(profile: AgentProfile) -> AgentResponse:
+    return AgentResponse(
+        id=profile.id,
+        name=profile.name,
+        display_name=profile.display_name or profile.name,
+        greeting=profile.greeting,
+        persona=profile.persona,
+        background=profile.background,
+        domain_id=profile.domain_id,
+        world_context=profile.world_context,
+        hobbies=profile.hobbies,
+        speaking_style=profile.speaking_style,
+        status=profile.status,
+        created_at=profile.created_at.isoformat(),
+        updated_at=profile.updated_at.isoformat(),
+    )
+
+
+def _to_memory_response(item: MemoryItem) -> MemoryResponse:
+    return MemoryResponse(
+        id=item.id,
+        user_id=item.user_id,
+        agent_id=item.agent_id,
+        domain_id=item.domain_id,
+        subject=item.subject,
+        memory_type=item.memory_type,
+        content=item.content,
+        confidence=item.confidence,
+        importance=item.importance,
+        status=item.status,
+        conflict_state=item.conflict_state,
+        created_at=item.created_at.isoformat(),
+        access_count=item.access_count,
+        last_accessed_at=item.last_accessed_at.isoformat() if item.last_accessed_at else None,
+    )
+
+
+def _require_agent(agent_id: str) -> AgentProfile:
+    profile = agent_service.get_agent(agent_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="agent not found")
+    return profile
 
 
 def _parse_json_object(raw_text: str) -> dict[str, object]:
@@ -1431,31 +1478,18 @@ def draft_task(req: TaskDraftRequest) -> TaskDraftResponse:
 
 @app.get("/memories", response_model=list[MemoryResponse])
 def list_memories(
-    user_id: str,
     agent_id: str = "default",
     domain_id: str = "default",
     status: str = "all",
+    current_user_id: str = Depends(get_current_user_id),
 ) -> list[MemoryResponse]:
-    memories = memory_service.list_memories(user_id=user_id, agent_id=agent_id, domain_id=domain_id, status=status)
-    return [
-        MemoryResponse(
-            id=item.id,
-            user_id=item.user_id,
-            agent_id=item.agent_id,
-            domain_id=item.domain_id,
-            subject=item.subject,
-            memory_type=item.memory_type,
-            content=item.content,
-            confidence=item.confidence,
-            importance=item.importance,
-            status=item.status,
-            conflict_state=item.conflict_state,
-            created_at=item.created_at.isoformat(),
-            access_count=item.access_count,
-            last_accessed_at=item.last_accessed_at.isoformat() if item.last_accessed_at else None,
-        )
-        for item in memories
-    ]
+    memories = memory_service.list_memories(
+        user_id=current_user_id,
+        agent_id=agent_id,
+        domain_id=domain_id,
+        status=status,
+    )
+    return [_to_memory_response(item) for item in memories]
 
 
 @app.post("/memory/extract/debug", response_model=MemoryExtractDebugResponse)
@@ -1512,93 +1546,60 @@ def memory_extract_debug(req: MemoryExtractDebugRequest) -> MemoryExtractDebugRe
 
 
 @app.post("/memories/{memory_id}/freeze", response_model=MemoryResponse)
-def freeze_memory(memory_id: str, req: MemoryStatusRequest) -> MemoryResponse:
+def freeze_memory(
+    memory_id: str,
+    req: MemoryStatusRequest,
+    current_user_id: str = Depends(get_current_user_id),
+) -> MemoryResponse:
     updated = memory_service.freeze_memory(
-        user_id=req.user_id,
+        user_id=current_user_id,
         agent_id=req.agent_id,
         memory_id=memory_id,
         domain_id=req.domain_id,
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="memory not found")
-    return MemoryResponse(
-        id=updated.id,
-        user_id=updated.user_id,
-        agent_id=updated.agent_id,
-        domain_id=updated.domain_id,
-        subject=updated.subject,
-        memory_type=updated.memory_type,
-        content=updated.content,
-        confidence=updated.confidence,
-        importance=updated.importance,
-        status=updated.status,
-        conflict_state=updated.conflict_state,
-        created_at=updated.created_at.isoformat(),
-        access_count=updated.access_count,
-        last_accessed_at=updated.last_accessed_at.isoformat() if updated.last_accessed_at else None,
-    )
+    return _to_memory_response(updated)
 
 
 @app.post("/memories/{memory_id}/activate", response_model=MemoryResponse)
-def activate_memory(memory_id: str, req: MemoryStatusRequest) -> MemoryResponse:
+def activate_memory(
+    memory_id: str,
+    req: MemoryStatusRequest,
+    current_user_id: str = Depends(get_current_user_id),
+) -> MemoryResponse:
     updated = memory_service.activate_memory(
-        user_id=req.user_id,
+        user_id=current_user_id,
         agent_id=req.agent_id,
         memory_id=memory_id,
         domain_id=req.domain_id,
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="memory not found")
-    return MemoryResponse(
-        id=updated.id,
-        user_id=updated.user_id,
-        agent_id=updated.agent_id,
-        domain_id=updated.domain_id,
-        subject=updated.subject,
-        memory_type=updated.memory_type,
-        content=updated.content,
-        confidence=updated.confidence,
-        importance=updated.importance,
-        status=updated.status,
-        conflict_state=updated.conflict_state,
-        created_at=updated.created_at.isoformat(),
-        access_count=updated.access_count,
-        last_accessed_at=updated.last_accessed_at.isoformat() if updated.last_accessed_at else None,
-    )
+    return _to_memory_response(updated)
 
 
 @app.delete("/memories/{memory_id}", response_model=MemoryResponse)
-def delete_memory(memory_id: str, req: MemoryStatusRequest) -> MemoryResponse:
+def delete_memory(
+    memory_id: str,
+    req: MemoryStatusRequest,
+    current_user_id: str = Depends(get_current_user_id),
+) -> MemoryResponse:
     updated = memory_service.delete_memory(
-        user_id=req.user_id,
+        user_id=current_user_id,
         agent_id=req.agent_id,
         memory_id=memory_id,
         domain_id=req.domain_id,
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="memory not found")
-    return MemoryResponse(
-        id=updated.id,
-        user_id=updated.user_id,
-        agent_id=updated.agent_id,
-        domain_id=updated.domain_id,
-        subject=updated.subject,
-        memory_type=updated.memory_type,
-        content=updated.content,
-        confidence=updated.confidence,
-        importance=updated.importance,
-        status=updated.status,
-        conflict_state=updated.conflict_state,
-        created_at=updated.created_at.isoformat(),
-        access_count=updated.access_count,
-        last_accessed_at=updated.last_accessed_at.isoformat() if updated.last_accessed_at else None,
-    )
+    return _to_memory_response(updated)
 
 
 @app.post("/memories/compact", response_model=MemoryCompactResponse)
-def compact_memories(req: MemoryStatusRequest) -> MemoryCompactResponse:
+def compact_memories(req: MemoryStatusRequest, current_user_id: str = Depends(get_current_user_id)) -> MemoryCompactResponse:
     result = memory_service.compact_similar_memories(
-        user_id=req.user_id,
+        user_id=current_user_id,
         agent_id=req.agent_id,
         domain_id=req.domain_id,
     )
@@ -1612,9 +1613,12 @@ def compact_memories(req: MemoryStatusRequest) -> MemoryCompactResponse:
 
 
 @app.post("/memories/recall/debug", response_model=MemoryRecallDebugResponse)
-def debug_memory_recall(req: MemoryRecallDebugRequest) -> MemoryRecallDebugResponse:
+def debug_memory_recall(
+    req: MemoryRecallDebugRequest,
+    current_user_id: str = Depends(get_current_user_id),
+) -> MemoryRecallDebugResponse:
     scored = memory_service.debug_retrieval_scores(
-        user_id=req.user_id,
+        user_id=current_user_id,
         agent_id=req.agent_id,
         domain_id=req.domain_id,
         query_text=req.query_text,
@@ -1688,7 +1692,7 @@ def update_memory_recall_weights(req: MemoryRecallWeightsUpdateRequest) -> Memor
 
 
 @app.post("/tasks/confirm", response_model=TaskResponse)
-def confirm_task(req: TaskConfirmRequest) -> TaskResponse:
+def confirm_task(req: TaskConfirmRequest, current_user_id: str = Depends(get_current_user_id)) -> TaskResponse:
     draft = TaskDraft(
         title=req.title,
         priority=req.priority,
@@ -1696,7 +1700,7 @@ def confirm_task(req: TaskConfirmRequest) -> TaskResponse:
         subtasks=req.subtasks,
     )
     task = task_service.confirm_create(
-        user_id=req.user_id,
+        user_id=current_user_id,
         draft=draft,
         source_message=req.source_message,
     )
@@ -1714,8 +1718,8 @@ def confirm_task(req: TaskConfirmRequest) -> TaskResponse:
 
 
 @app.get("/tasks", response_model=list[TaskResponse])
-def list_tasks(user_id: str) -> list[TaskResponse]:
-    tasks = task_service.list_tasks(user_id=user_id)
+def list_tasks(current_user_id: str = Depends(get_current_user_id)) -> list[TaskResponse]:
+    tasks = task_service.list_tasks(user_id=current_user_id)
     return [
         TaskResponse(
             id=task.id,
@@ -1734,14 +1738,14 @@ def list_tasks(user_id: str) -> list[TaskResponse]:
 
 @app.get("/posts", response_model=PostListResponse)
 def list_posts(
-    user_id: str,
     limit: int = 20,
     offset: int = 0,
     include_archived: bool = False,
     domain_id: str | None = None,
+    current_user_id: str = Depends(get_current_user_id),
 ) -> PostListResponse:
     listed = feed_service.list_posts(
-        user_id=user_id,
+        user_id=current_user_id,
         limit=limit,
         offset=offset,
         include_archived=include_archived,
@@ -1767,16 +1771,18 @@ def list_posts(
 
 
 @app.post("/agents/{agent_id}/generate-post", response_model=GeneratePostResponse)
-def generate_post(agent_id: str, req: GeneratePostRequest) -> GeneratePostResponse:
-    profile = agent_service.get_agent(agent_id)
-    if profile is None:
-        raise HTTPException(status_code=404, detail="agent not found")
+def generate_post(
+    agent_id: str,
+    req: GeneratePostRequest,
+    current_user_id: str = Depends(get_current_user_id),
+) -> GeneratePostResponse:
+    profile = _require_agent(agent_id)
     if profile.status != "active":
         raise HTTPException(status_code=400, detail="agent is not active")
 
     try:
         published = _generate_and_publish_post(
-            user_id=req.user_id,
+            user_id=current_user_id,
             agent_id=profile.id,
             source_task_id=req.source_task_id,
         )
@@ -1791,8 +1797,12 @@ def generate_post(agent_id: str, req: GeneratePostRequest) -> GeneratePostRespon
 
 
 @app.post("/posts/{post_id}/trigger-chat", response_model=TriggerChatResponse)
-def trigger_chat_from_post(post_id: str, user_id: str, domain_id: str | None = None) -> TriggerChatResponse:
-    post = feed_service.get_post(user_id=user_id, post_id=post_id)
+def trigger_chat_from_post(
+    post_id: str,
+    domain_id: str | None = None,
+    current_user_id: str = Depends(get_current_user_id),
+) -> TriggerChatResponse:
+    post = feed_service.get_post(user_id=current_user_id, post_id=post_id)
     if post is None:
         raise HTTPException(status_code=404, detail="post not found")
 
@@ -1806,7 +1816,7 @@ def trigger_chat_from_post(post_id: str, user_id: str, domain_id: str | None = N
 
     return TriggerChatResponse(
         post_id=post.id,
-        user_id=user_id,
+        user_id=current_user_id,
         agent_id=post.agent_id,
         suggested_message=post.topic_seed,
     )

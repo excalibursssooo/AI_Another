@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import json
-import os
-from pathlib import Path
+from typing import Any
+
+from core.common.settings import get_env
 
 
 @dataclass
@@ -15,141 +15,101 @@ class ConversationTurn:
 
 
 class ConversationStore:
-    """Stores multi-turn conversation history per user."""
+    """Stores multi-turn conversation history in PostgreSQL."""
 
-    def __init__(self, persist_path: Path | None = None) -> None:
-        self._turns_by_user: dict[str, list[ConversationTurn]] = {}
-        self._persist_path = persist_path
-        self._load()
+    def __init__(self, dsn: str) -> None:
+        self._dsn = dsn
+        try:
+            import psycopg  # type: ignore
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError("psycopg is required for ConversationStore") from exc
+
+        self._psycopg = psycopg
+        self._init_schema()
 
     @staticmethod
     def build_from_env() -> "ConversationStore":
-        repository = _get_env("CONVERSATION_REPOSITORY", "json")
-        if repository != "json":
-            return ConversationStore()
+        dsn = get_env("POSTGRES_DSN", "")
+        if not dsn:
+            raise RuntimeError("POSTGRES_DSN is required for ConversationStore")
+        return ConversationStore(dsn=dsn)
 
-        path_value = _get_env("CONVERSATION_JSON_PATH", "data/conversations.json")
-        return ConversationStore(persist_path=_resolve_project_path(path_value))
+    def _init_schema(self) -> None:
+        try:
+            with self._psycopg.connect(self._dsn) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1 FROM conversation_turn LIMIT 1")
+        except Exception as exc:
+            raise RuntimeError("conversation_turn table missing; run Alembic migrations first") from exc
 
     def append(self, user_id: str, role: str, content: str) -> None:
-        if user_id not in self._turns_by_user:
-            self._turns_by_user[user_id] = []
-
-        self._turns_by_user[user_id].append(
-            ConversationTurn(
-                role=role,
-                content=content,
-                created_at=datetime.now(UTC),
-            ),
-        )
-        self._save()
+        with self._psycopg.connect(self._dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO conversation_turn (user_id, role, content, created_at)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (user_id, role, content, datetime.now(UTC)),
+                )
+            conn.commit()
 
     def recent(self, user_id: str, limit: int = 8) -> list[ConversationTurn]:
-        turns = self._turns_by_user.get(user_id, [])
         if limit <= 0:
             return []
-        return turns[-limit:]
+
+        bounded = min(limit, 200)
+        with self._psycopg.connect(self._dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT role, content, created_at
+                    FROM conversation_turn
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (user_id, bounded),
+                )
+                rows = cur.fetchall()
+
+        turns = [
+            ConversationTurn(
+                role=str(row[0]),
+                content=str(row[1]),
+                created_at=_parse_datetime_value(row[2]),
+            )
+            for row in rows
+        ]
+        turns.reverse()
+        return turns
 
     def known_user_ids(self) -> list[str]:
-        users: set[str] = set()
-        for key in self._turns_by_user:
-            if not key:
-                continue
-            if ":" in key:
-                user_id, _ = key.split(":", 1)
-                if user_id:
-                    users.add(user_id)
-                continue
-            users.add(key)
-        return sorted(users)
-
-    def _load(self) -> None:
-        if self._persist_path is None or not self._persist_path.exists():
-            return
-
-        with self._persist_path.open("r", encoding="utf-8") as file:
-            raw = json.load(file)
-
-        if not isinstance(raw, dict):
-            return
-
-        loaded: dict[str, list[ConversationTurn]] = {}
-        for user_id, rows in raw.items():
-            if not isinstance(user_id, str) or not isinstance(rows, list):
-                continue
-
-            turns: list[ConversationTurn] = []
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                role = str(row.get("role", "")).strip()
-                content = str(row.get("content", "")).strip()
-                if not role:
-                    continue
-                turns.append(
-                    ConversationTurn(
-                        role=role,
-                        content=content,
-                        created_at=_parse_datetime(str(row.get("created_at", ""))),
-                    ),
+        with self._psycopg.connect(self._dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT split_part(user_id, ':', 1) AS principal
+                    FROM conversation_turn
+                    WHERE split_part(user_id, ':', 1) <> ''
+                    ORDER BY principal ASC
+                    """,
                 )
-
-            loaded[user_id] = turns
-
-        self._turns_by_user = loaded
-
-    def _save(self) -> None:
-        if self._persist_path is None:
-            return
-
-        self._persist_path.parent.mkdir(parents=True, exist_ok=True)
-        payload: dict[str, list[dict[str, str]]] = {}
-        for user_id, turns in self._turns_by_user.items():
-            payload[user_id] = [
-                {
-                    "role": item.role,
-                    "content": item.content,
-                    "created_at": item.created_at.isoformat(),
-                }
-                for item in turns
-            ]
-
-        with self._persist_path.open("w", encoding="utf-8") as file:
-            json.dump(payload, file, ensure_ascii=False, indent=2)
+                rows = cur.fetchall()
+        return [str(row[0]) for row in rows if row and row[0]]
 
 
-def _get_env(key: str, default: str) -> str:
-    value = os.getenv(key)
-    if value:
-        return value
-
-    dotenv_path = Path(__file__).resolve().parents[2] / ".env"
-    if not dotenv_path.exists():
-        return default
-
-    with dotenv_path.open("r", encoding="utf-8") as file:
-        for raw_line in file:
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            env_key, env_value = line.split("=", 1)
-            if env_key.strip() == key:
-                return env_value.strip().strip('"').strip("'")
-
-    return default
-
-
-def _resolve_project_path(path_value: str) -> Path:
-    raw_path = Path(path_value)
-    if raw_path.is_absolute():
-        return raw_path
-    return Path(__file__).resolve().parents[2] / raw_path
-
-
-def _parse_datetime(value: str) -> datetime:
+def _parse_datetime_value(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
     if not value:
         return datetime.now(UTC)
     try:
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(str(value))
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
     except Exception:
         return datetime.now(UTC)

@@ -63,7 +63,11 @@ class ReplyGenerator:
 
         if not text:
             raise LLMUnavailableError("llm returned empty content")
-        return _parse_generated_reply(text)
+        try:
+            return _parse_generated_reply(text)
+        except LLMUnavailableError:
+            repaired = self._repair_json_output(text)
+            return _parse_generated_reply(repaired)
 
     def stream_generate(
         self,
@@ -84,6 +88,38 @@ class ReplyGenerator:
         chunk_size = 24
         for index in range(0, len(text), chunk_size):
             yield text[index : index + chunk_size]
+
+    def _repair_json_output(self, raw_text: str) -> str:
+        if self._client is None:
+            raise LLMUnavailableError("model client unavailable")
+
+        repair_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是JSON修复器。"
+                    "只输出一个合法JSON对象，不要输出其他文字。"
+                    "目标格式: "
+                    '{"reply":"2-5句自然中文","agent_mood":{"label":"calm|happy|sad|anxious|angry|focused","intensity":0-1,"heartbeat_bpm":55-130}}'
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"请修复以下模型输出为合法JSON对象:\n{raw_text}",
+            },
+        ]
+        try:
+            repaired = self._client.chat_text(
+                messages=repair_messages,
+                max_tokens=1024,
+                temperature=0.0,
+            )
+        except OpenRouterError as exc:
+            raise LLMUnavailableError("failed to repair llm json") from exc
+
+        if not repaired:
+            raise LLMUnavailableError("llm json repair returned empty content")
+        return repaired
 
 
 def _build_messages(

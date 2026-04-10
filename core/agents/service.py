@@ -4,14 +4,15 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime
 import json
-import os
 from pathlib import Path
 from typing import Any
+from typing import Mapping
 from typing import Protocol
 from uuid import uuid4
 
 from core.common.domain_loader import load_domain_config
 from core.common.openrouter import OpenRouterError, get_env as get_common_env, get_openrouter_client
+from core.common.settings import get_env
 from core.agents.models import AgentProfile
 
 
@@ -155,105 +156,163 @@ class InMemoryAgentRepository:
         return deepcopy(existing)
 
 
-class JsonFileAgentRepository:
-    """JSON-backed repository so agent data survives process restarts."""
+class PostgresAgentRepository:
+    """PostgreSQL-backed repository for agent profiles."""
 
-    def __init__(self, file_path: Path) -> None:
-        self._file_path = file_path
-        self._agents: dict[str, AgentProfile] = {}
-        self._load()
+    def __init__(self, dsn: str) -> None:
+        self._dsn = dsn
+        try:
+            import psycopg  # type: ignore
+            from psycopg.rows import dict_row  # type: ignore
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError("psycopg is required for PostgresAgentRepository") from exc
+
+        self._psycopg = psycopg
+        self._dict_row = dict_row
+        self._init_schema()
+
+    def _connect(self):  # type: ignore[no-untyped-def]
+        return self._psycopg.connect(self._dsn, row_factory=self._dict_row)
+
+    def _init_schema(self) -> None:
+        try:
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1 FROM agent_profile LIMIT 1")
+        except Exception as exc:
+            raise RuntimeError("agent_profile table missing; run Alembic migrations first") from exc
+
 
     def create(self, profile: AgentProfile) -> AgentProfile:
-        self._agents[profile.id] = deepcopy(profile)
-        self._save()
-        return deepcopy(profile)
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO agent_profile (
+                        id, name, display_name, persona, background, domain_id, world_context,
+                        greeting, hobbies_json, speaking_style, status, created_at, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO UPDATE SET
+                        name = EXCLUDED.name,
+                        display_name = EXCLUDED.display_name,
+                        persona = EXCLUDED.persona,
+                        background = EXCLUDED.background,
+                        domain_id = EXCLUDED.domain_id,
+                        world_context = EXCLUDED.world_context,
+                        greeting = EXCLUDED.greeting,
+                        hobbies_json = EXCLUDED.hobbies_json,
+                        speaking_style = EXCLUDED.speaking_style,
+                        status = EXCLUDED.status,
+                        updated_at = EXCLUDED.updated_at
+                    """,
+                    (
+                        profile.id,
+                        profile.name,
+                        profile.display_name or profile.name,
+                        profile.persona,
+                        profile.background,
+                        profile.domain_id,
+                        profile.world_context,
+                        profile.greeting,
+                        json.dumps(profile.hobbies, ensure_ascii=False),
+                        profile.speaking_style,
+                        profile.status,
+                        profile.created_at,
+                        profile.updated_at,
+                    ),
+                )
+            conn.commit()
+        return self.get(profile.id) or profile
 
     def list_all(self, include_inactive: bool = False) -> list[AgentProfile]:
-        rows = list(self._agents.values())
-        if not include_inactive:
-            rows = [item for item in rows if item.status == "active"]
-        rows.sort(key=lambda item: item.updated_at, reverse=True)
-        return [deepcopy(item) for item in rows]
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                if include_inactive:
+                    cur.execute(
+                        """
+                        SELECT id, name, display_name, persona, background, domain_id, world_context,
+                               greeting, hobbies_json, speaking_style, status, created_at, updated_at
+                        FROM agent_profile
+                        ORDER BY updated_at DESC
+                        """,
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT id, name, display_name, persona, background, domain_id, world_context,
+                               greeting, hobbies_json, speaking_style, status, created_at, updated_at
+                        FROM agent_profile
+                        WHERE status = 'active'
+                        ORDER BY updated_at DESC
+                        """,
+                    )
+                rows = cur.fetchall()
+        return [_row_to_agent_profile(row) for row in rows]
 
     def get(self, agent_id: str) -> AgentProfile | None:
-        item = self._agents.get(agent_id)
-        return deepcopy(item) if item else None
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, name, display_name, persona, background, domain_id, world_context,
+                           greeting, hobbies_json, speaking_style, status, created_at, updated_at
+                    FROM agent_profile
+                    WHERE id = %s
+                    """,
+                    (agent_id,),
+                )
+                row = cur.fetchone()
+        return _row_to_agent_profile(row) if row else None
 
     def update(self, agent_id: str, profile: AgentProfile) -> AgentProfile | None:
-        if agent_id not in self._agents:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE agent_profile
+                    SET name = %s,
+                        display_name = %s,
+                        persona = %s,
+                        background = %s,
+                        domain_id = %s,
+                        world_context = %s,
+                        greeting = %s,
+                        hobbies_json = %s,
+                        speaking_style = %s,
+                        status = %s,
+                        updated_at = %s
+                    WHERE id = %s
+                    """,
+                    (
+                        profile.name,
+                        profile.display_name or profile.name,
+                        profile.persona,
+                        profile.background,
+                        profile.domain_id,
+                        profile.world_context,
+                        profile.greeting,
+                        json.dumps(profile.hobbies, ensure_ascii=False),
+                        profile.speaking_style,
+                        profile.status,
+                        profile.updated_at,
+                        agent_id,
+                    ),
+                )
+                changed = cur.rowcount
+            conn.commit()
+        if changed <= 0:
             return None
-        self._agents[agent_id] = deepcopy(profile)
-        self._save()
-        return deepcopy(profile)
+        return self.get(agent_id)
 
     def delete(self, agent_id: str) -> AgentProfile | None:
-        existing = self._agents.get(agent_id)
+        existing = self.get(agent_id)
         if existing is None:
             return None
-        del self._agents[agent_id]
-        self._save()
-        return deepcopy(existing)
-
-    def _load(self) -> None:
-        if not self._file_path.exists():
-            return
-
-        with self._file_path.open("r", encoding="utf-8") as file:
-            raw = json.load(file)
-
-        if not isinstance(raw, list):
-            return
-
-        loaded: dict[str, AgentProfile] = {}
-        for row in raw:
-            if not isinstance(row, dict):
-                continue
-            try:
-                profile = AgentProfile(
-                    id=str(row.get("id", "")).strip(),
-                    name=str(row.get("name", "")).strip(),
-                    persona=str(row.get("persona", "")).strip(),
-                    background=str(row.get("background", "")).strip(),
-                    domain_id=str(row.get("domain_id", "default")).strip() or "default",
-                    world_context=str(row.get("world_context", "")).strip(),
-                    display_name=str(row.get("display_name", row.get("name", ""))).strip(),
-                    greeting=str(row.get("greeting", f"你好, 我是{row.get('name')}")).strip(),
-                    hobbies=[str(item) for item in row.get("hobbies", [])] if isinstance(row.get("hobbies"), list) else [],
-                    speaking_style=str(row.get("speaking_style", "warm")).strip() or "warm",
-                    status=str(row.get("status", "active")).strip() or "active",
-                    created_at=_parse_datetime(str(row.get("created_at", ""))),
-                    updated_at=_parse_datetime(str(row.get("updated_at", ""))),
-                )
-            except Exception:
-                continue
-
-            if profile.id:
-                loaded[profile.id] = profile
-
-        self._agents = loaded
-
-    def _save(self) -> None:
-        self._file_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = [
-            {
-                "id": item.id,
-                "name": item.name,
-                "display_name": item.display_name,
-                "persona": item.persona,
-                "background": item.background,
-                "domain_id": item.domain_id,
-                "world_context": item.world_context,
-                "greeting": item.greeting,
-                "hobbies": item.hobbies,
-                "speaking_style": item.speaking_style,
-                "status": item.status,
-                "created_at": item.created_at.isoformat(),
-                "updated_at": item.updated_at.isoformat(),
-            }
-            for item in self._agents.values()
-        ]
-        with self._file_path.open("w", encoding="utf-8") as file:
-            json.dump(payload, file, ensure_ascii=False, indent=2)
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM agent_profile WHERE id = %s", (agent_id,))
+            conn.commit()
+        return existing
 
 
 class AgentService:
@@ -266,8 +325,8 @@ class AgentService:
 
     @staticmethod
     def build_default() -> "AgentService":
-        api_key = _get_env("OPENROUTER_API_KEY", "")
-        model_name = _get_env("AGENT_CREATOR_MODEL_NAME", _get_env("CHAT_MODEL_NAME", "openai/gpt-5.2"))
+        api_key = get_env("OPENROUTER_API_KEY", "")
+        model_name = get_env("AGENT_CREATOR_MODEL_NAME", get_env("CHAT_MODEL_NAME", "openai/gpt-5.2"))
         generator: AgentAttributeGenerator | None = None
         if api_key:
             try:
@@ -278,8 +337,8 @@ class AgentService:
 
     @staticmethod
     def build_from_env() -> "AgentService":
-        api_key = _get_env("OPENROUTER_API_KEY", "")
-        model_name = _get_env("AGENT_CREATOR_MODEL_NAME", _get_env("CHAT_MODEL_NAME", "openai/gpt-5.2"))
+        api_key = get_env("OPENROUTER_API_KEY", "")
+        model_name = get_env("AGENT_CREATOR_MODEL_NAME", get_env("CHAT_MODEL_NAME", "openai/gpt-5.2"))
         generator: AgentAttributeGenerator | None = None
         if api_key:
             try:
@@ -287,13 +346,10 @@ class AgentService:
             except Exception:
                 generator = None
 
-        repository_kind = _get_env("AGENT_REPOSITORY", "json")
-        if repository_kind == "json":
-            path_value = _get_env("AGENT_JSON_PATH", "data/agents.json")
-            file_path = _resolve_project_path(path_value)
-            repository: AgentRepository = JsonFileAgentRepository(file_path=file_path)
-        else:
-            repository = InMemoryAgentRepository()
+        dsn = get_env("POSTGRES_DSN", "")
+        if not dsn:
+            raise RuntimeError("POSTGRES_DSN is required for AgentService")
+        repository: AgentRepository = PostgresAgentRepository(dsn=dsn)
 
         return AgentService(repository=repository, generator=generator)
 
@@ -569,25 +625,35 @@ def _normalize_agent_payload(payload: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _get_env(key: str, default: str) -> str:
-    value = os.getenv(key)
-    if value:
-        return value
+def _row_to_agent_profile(row: Mapping[str, Any]) -> AgentProfile:
+    hobbies_value = row.get("hobbies_json")
+    hobbies: list[str] = []
+    if isinstance(hobbies_value, str) and hobbies_value.strip():
+        try:
+            decoded = json.loads(hobbies_value)
+            if isinstance(decoded, list):
+                hobbies = [str(item) for item in decoded if str(item).strip()]
+        except Exception:
+            hobbies = []
 
-    dotenv_path = Path(__file__).resolve().parents[2] / ".env"
-    if not dotenv_path.exists():
-        return default
+    row_name = str(row.get("name", ""))
+    row_display_name = str(row.get("display_name", ""))
 
-    with dotenv_path.open("r", encoding="utf-8") as file:
-        for raw_line in file:
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            env_key, env_value = line.split("=", 1)
-            if env_key.strip() == key:
-                return env_value.strip().strip('"').strip("'")
-
-    return default
+    return AgentProfile(
+        id=str(row.get("id", "")),
+        name=row_name,
+        display_name=row_display_name or row_name,
+        persona=str(row.get("persona", "")),
+        background=str(row.get("background", "")),
+        domain_id=str(row.get("domain_id", "default")) or "default",
+        world_context=str(row.get("world_context") or ""),
+        greeting=str(row.get("greeting") or "").strip() or f"你好，我是{row_display_name or row_name}",
+        hobbies=hobbies,
+        speaking_style=str(row.get("speaking_style") or "warm"),
+        status=str(row.get("status") or "active"),
+        created_at=_parse_datetime(str(row.get("created_at"))) if row.get("created_at") is not None else datetime.now(UTC),
+        updated_at=_parse_datetime(str(row.get("updated_at"))) if row.get("updated_at") is not None else datetime.now(UTC),
+    )
 
 
 def _resolve_project_path(path_value: str) -> Path:

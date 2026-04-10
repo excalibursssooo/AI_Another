@@ -79,6 +79,7 @@ uvicorn api.main:app --reload --port 8000
 1. 安装依赖
 
 ```powershell
+cd ui
 npm install
 ```
 
