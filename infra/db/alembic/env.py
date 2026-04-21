@@ -12,7 +12,14 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-postgres_dsn = os.getenv("POSTGRES_DSN", "").strip()
+postgres_dsn = ""
+try:
+    from core.common.settings import get_env
+
+    postgres_dsn = get_env("POSTGRES_DSN", "").strip()
+except Exception:
+    postgres_dsn = os.getenv("POSTGRES_DSN", "").strip()
+
 if postgres_dsn:
     config.set_main_option("sqlalchemy.url", postgres_dsn)
 

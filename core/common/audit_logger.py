@@ -20,7 +20,6 @@ class AuditLogger:
         except Exception as exc:  # pragma: no cover
             raise RuntimeError("psycopg is required for AuditLogger") from exc
         self._psycopg = psycopg
-        self._init_schema()
 
     @staticmethod
     def from_env() -> "AuditLogger":
@@ -38,14 +37,6 @@ class AuditLogger:
     @property
     def log_path(self) -> str:
         return "postgres://audit_log"
-
-    def _init_schema(self) -> None:
-        try:
-            with self._psycopg.connect(self._dsn) as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1 FROM audit_log LIMIT 1")
-        except Exception as exc:
-            raise RuntimeError("audit_log table missing; run Alembic migrations first") from exc
 
     def log(self, event: str, **payload: object) -> None:
         if not self._enabled:

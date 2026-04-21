@@ -103,7 +103,7 @@ export const ChatArea = memo(function ChatArea(props: ChatAreaProps) {
             value={props.input}
             onChange={(event) => props.onInputChange(event.target.value)}
             rows={2}
-            placeholder="输入你想对 AI 说的话..."
+            placeholder="输入你想对 TA 说的话..."
             className="min-h-[60px] flex-1 resize-none bg-transparent text-sm text-[var(--text-main)] outline-none placeholder:text-[var(--text-muted)]"
           />
           <button

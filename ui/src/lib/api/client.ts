@@ -1,5 +1,7 @@
 import axios, { AxiosError } from "axios";
 
+const AUTH_TOKEN_STORAGE_KEY = "companion_auth_token";
+
 function getEnvBaseUrl(): string {
   const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
   if (!baseUrl && process.env.NODE_ENV === "production") {
@@ -10,11 +12,52 @@ function getEnvBaseUrl(): string {
 
 const API_BASE_URL = getEnvBaseUrl();
 
+function getEnvAuthToken(): string {
+  const token = process.env.NEXT_PUBLIC_DEMO_AUTH_TOKEN?.trim();
+  if (!token && process.env.NODE_ENV === "production") {
+    throw new Error("FATAL: NEXT_PUBLIC_DEMO_AUTH_TOKEN is not defined in production environment.");
+  }
+  return token || "";
+}
+
+function getAuthToken(): string {
+  if (typeof window !== "undefined") {
+    try {
+      const persisted = window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim();
+      if (persisted) {
+        return persisted;
+      }
+    } catch {
+      // Ignore localStorage read errors.
+    }
+  }
+  return getEnvAuthToken();
+}
+
+function buildAuthHeaders(extraHeaders?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = {
+    ...(extraHeaders ?? {}),
+  };
+  const token = getAuthToken();
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return headers;
+}
+
 const http = axios.create({
   baseURL: API_BASE_URL,
   headers: {
     "Content-Type": "application/json",
   },
+});
+
+http.interceptors.request.use((config) => {
+  const mergedHeaders = buildAuthHeaders({
+    ...(config.headers as Record<string, string> | undefined),
+  });
+  config.headers = mergedHeaders;
+  return config;
 });
 
 export class HttpError extends Error {
@@ -74,7 +117,7 @@ function parseError(error: unknown): Error {
 export async function httpGet<T>(path: string, options?: { signal?: AbortSignal }): Promise<T> {
   try {
     const response = await http.get<T>(path, {
-      headers: { "Cache-Control": "no-store" },
+      headers: buildAuthHeaders({ "Cache-Control": "no-store" }),
       signal: options?.signal,
     });
     return response.data;
@@ -117,7 +160,7 @@ export async function streamPost(
 ): Promise<void> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: buildAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
   });
 
