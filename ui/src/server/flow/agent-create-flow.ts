@@ -1,5 +1,10 @@
 import { AppDatabase } from "@/server/db/client";
 import { AgentRecord, AgentRepository, MemoryRepository, WorldRepository } from "@/server/domain/chat/repositories";
+import {
+  generateAgentDraft as defaultGenerateAgentDraft,
+  getActiveProviderInfo,
+  GenerateAgentDraft,
+} from "@/server/ai/chat";
 
 import { Flow } from "./runner";
 import { FlowNode } from "./types";
@@ -22,6 +27,13 @@ interface AgentDraft {
   hobbies: string[];
 }
 
+interface AgentWorldContext {
+  id: string;
+  name: string;
+  lore: string;
+  tone: string;
+}
+
 export interface AgentCreateContext {
   mode: "manual" | "ai";
   userId: string;
@@ -29,6 +41,7 @@ export interface AgentCreateContext {
   input?: ManualAgentInput;
   prompt?: string | null;
   draft?: AgentDraft;
+  world?: AgentWorldContext;
   agent?: AgentRecord;
   backend?: string;
   model?: string;
@@ -36,31 +49,62 @@ export interface AgentCreateContext {
   persistedMemoryCount?: number;
 }
 
-export function createAgentCreateFlow(options: { db: AppDatabase }): Flow<AgentCreateContext> {
+export function createAgentCreateFlow(options: {
+  db: AppDatabase;
+  generateAgentDraft?: GenerateAgentDraft;
+}): Flow<AgentCreateContext> {
   const worlds = new WorldRepository(options.db);
   const agents = new AgentRepository(options.db);
   const memories = new MemoryRepository(options.db);
+  const generateDraft = options.generateAgentDraft ?? defaultGenerateAgentDraft;
 
   const nodes: FlowNode<AgentCreateContext>[] = [
     {
       name: "LoadWorld",
       run: async (ctx) => {
-        if (!worlds.get(ctx.worldId)) {
+        const world = worlds.get(ctx.worldId);
+        if (!world) {
           throw new Error("world not found");
         }
-        return ctx;
+        return {
+          ...ctx,
+          world: { id: world.id, name: world.name, lore: world.lore, tone: world.tone },
+        };
       },
     },
     {
       name: "GenerateAgentProfile",
       run: async (ctx) => {
-        const draft = ctx.mode === "manual" ? draftFromManual(ctx.input) : draftFromPrompt(ctx.prompt);
+        if (ctx.mode === "manual") {
+          const draft = draftFromManual(ctx.input);
+          return {
+            ...ctx,
+            draft,
+            backend: "manual",
+            model: "manual-input",
+            rawText: JSON.stringify(ctx.input),
+          };
+        }
+
+        const aiDraft = await generateDraft({ prompt: ctx.prompt ?? "", world: ctx.world ?? null });
+        if (aiDraft) {
+          const info = getActiveProviderInfo();
+          return {
+            ...ctx,
+            draft: aiDraft,
+            backend: info.provider,
+            model: info.model,
+            rawText: ctx.prompt?.trim() || "",
+          };
+        }
+
+        const fallbackDraft = draftFromPrompt(ctx.prompt);
         return {
           ...ctx,
-          draft,
-          backend: ctx.mode === "ai" ? "mock" : "manual",
-          model: ctx.mode === "ai" ? "local-agent-generator" : "manual-input",
-          rawText: ctx.mode === "ai" ? ctx.prompt?.trim() || "本地生成的长期陪伴角色" : JSON.stringify(ctx.input),
+          draft: fallbackDraft,
+          backend: "mock",
+          model: "local-agent-generator",
+          rawText: ctx.prompt?.trim() || "本地生成的长期陪伴角色",
         };
       },
     },

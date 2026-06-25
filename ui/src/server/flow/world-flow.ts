@@ -1,5 +1,10 @@
 import { AppDatabase } from "@/server/db/client";
 import { WorldRecord, WorldRepository } from "@/server/domain/chat/repositories";
+import {
+  generateWorldDraft as defaultGenerateWorldDraft,
+  getActiveProviderInfo,
+  GenerateWorldDraft,
+} from "@/server/ai/chat";
 
 import { Flow } from "./runner";
 import { FlowNode } from "./types";
@@ -24,19 +29,49 @@ export interface WorldFlowContext {
   rawText?: string;
 }
 
-export function createWorldFlow(options: { db: AppDatabase }): Flow<WorldFlowContext> {
+export function createWorldFlow(options: {
+  db: AppDatabase;
+  generateWorldDraft?: GenerateWorldDraft;
+}): Flow<WorldFlowContext> {
   const worlds = new WorldRepository(options.db);
+  const generateDraft = options.generateWorldDraft ?? defaultGenerateWorldDraft;
 
   const nodes: FlowNode<WorldFlowContext>[] = [
     {
       name: "GenerateWorld",
-      run: async (ctx) => ({
-        ...ctx,
-        world: ctx.mode === "manual" ? worldFromManual(ctx.input) : worldFromPrompt(ctx.prompt, ctx.worldId),
-        backend: ctx.mode === "ai" ? "mock" : "manual",
-        model: ctx.mode === "ai" ? "local-world-generator" : "manual-input",
-        rawText: ctx.mode === "ai" ? ctx.prompt?.trim() || "本地生成的陪伴世界" : JSON.stringify(ctx.input),
-      }),
+      run: async (ctx) => {
+        if (ctx.mode === "manual") {
+          const world = worldFromManual(ctx.input);
+          return {
+            ...ctx,
+            world,
+            backend: "manual",
+            model: "manual-input",
+            rawText: JSON.stringify(ctx.input),
+          };
+        }
+
+        const aiDraft = await generateDraft({ prompt: ctx.prompt ?? "", worldId: ctx.worldId ?? null });
+        if (aiDraft) {
+          const info = getActiveProviderInfo();
+          return {
+            ...ctx,
+            world: aiDraft,
+            backend: info.provider,
+            model: info.model,
+            rawText: ctx.prompt?.trim() || "",
+          };
+        }
+
+        const fallbackWorld = worldFromPrompt(ctx.prompt, ctx.worldId);
+        return {
+          ...ctx,
+          world: fallbackWorld,
+          backend: "mock",
+          model: "local-world-generator",
+          rawText: ctx.prompt?.trim() || "本地生成的陪伴世界",
+        };
+      },
     },
     {
       name: "ValidateWorld",
