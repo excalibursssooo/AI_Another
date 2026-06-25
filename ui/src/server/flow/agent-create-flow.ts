@@ -86,7 +86,9 @@ export function createAgentCreateFlow(options: {
           };
         }
 
-        const aiDraft = await generateDraft({ prompt: ctx.prompt ?? "", world: ctx.world ?? null });
+        const aiDraft = await generateDraft({ prompt: ctx.prompt ?? "", world: ctx.world ?? null }).catch(
+          () => null,
+        );
         if (aiDraft) {
           const info = getActiveProviderInfo();
           return {
