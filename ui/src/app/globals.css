@@ -1,6 +1,9 @@
 @import "tailwindcss";
 
 :root {
+  --font-body: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI";
+  --font-title: Georgia, "Times New Roman";
+
   --surface-main: #0c0d1a;
   --surface-side: #11132a;
   --surface-card: #171936;

@@ -1,16 +1,18 @@
-import axios, { AxiosError } from "axios";
+import axios, { AxiosError, AxiosHeaders } from "axios";
 
 const AUTH_TOKEN_STORAGE_KEY = "companion_auth_token";
 
-function getEnvBaseUrl(): string {
-  const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
-  if (!baseUrl && process.env.NODE_ENV === "production") {
-    throw new Error("FATAL: NEXT_PUBLIC_API_BASE_URL is not defined in production environment.");
-  }
-  return baseUrl || "http://127.0.0.1:8000";
+export function resolveApiBaseUrl(input: { nodeEnv?: string; apiBaseUrl?: string } = {}): string {
+  const baseUrl = input.apiBaseUrl?.trim() ?? process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
+  return baseUrl || "/api";
 }
 
-const API_BASE_URL = getEnvBaseUrl();
+export function buildApiUrl(path: string, baseUrl = API_BASE_URL): string {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${baseUrl.replace(/\/$/, "")}${normalizedPath}`;
+}
+
+const API_BASE_URL = resolveApiBaseUrl();
 
 function getEnvAuthToken(): string {
   const token = process.env.NEXT_PUBLIC_DEMO_AUTH_TOKEN?.trim();
@@ -56,7 +58,7 @@ http.interceptors.request.use((config) => {
   const mergedHeaders = buildAuthHeaders({
     ...(config.headers as Record<string, string> | undefined),
   });
-  config.headers = mergedHeaders;
+  config.headers = new AxiosHeaders(mergedHeaders);
   return config;
 });
 
@@ -158,7 +160,7 @@ export async function streamPost(
   body: unknown,
   onEvent: (event: Record<string, unknown>) => void,
 ): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(buildApiUrl(path), {
     method: "POST",
     headers: buildAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),

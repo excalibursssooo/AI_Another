@@ -29,9 +29,6 @@ import { useWorldStore } from "@/stores/useWorldStore";
 
 function getEnvUserId(): string {
   const userId = process.env.NEXT_PUBLIC_DEMO_USER_ID?.trim();
-  if (!userId && process.env.NODE_ENV === "production") {
-    throw new Error("FATAL: NEXT_PUBLIC_DEMO_USER_ID is not defined in production environment.");
-  }
   return userId || "u001";
 }
 

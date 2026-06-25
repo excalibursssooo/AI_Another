@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { getAgentLiveState } from "@/lib/api/companion";
 import { AiAgent } from "@/features/chat/types";
@@ -16,14 +16,13 @@ export function useLiveState(options: UseLiveStateOptions) {
   const setLiveState = useChatStore((state) => state.setLiveState);
   const vitalsContainerRef = useRef<HTMLDivElement>(null);
 
-  const [baseHeartbeatBpm, setBaseHeartbeatBpm] = useState<number>(DEFAULT_VITALS.HEARTBEAT);
-  const [baseStressLevel, setBaseStressLevel] = useState<number>(DEFAULT_VITALS.STRESS);
-  const [baseMoodIndex, setBaseMoodIndex] = useState<number>(DEFAULT_VITALS.MOOD);
-
   const selectedLiveState = useMemo(
     () => (options.selectedAgent ? liveStateByAgent[options.selectedAgent.id] : undefined),
     [liveStateByAgent, options.selectedAgent],
   );
+  const baseHeartbeatBpm = selectedLiveState?.heartbeat_bpm ?? DEFAULT_VITALS.HEARTBEAT;
+  const baseStressLevel = selectedLiveState?.stress_level ?? DEFAULT_VITALS.STRESS;
+  const baseMoodIndex = selectedLiveState?.mood_index ?? DEFAULT_VITALS.MOOD;
 
   useEffect(() => {
     const selectedAgent = options.selectedAgent;
@@ -53,16 +52,6 @@ export function useLiveState(options: UseLiveStateOptions) {
       clearInterval(timer);
     };
   }, [options.selectedAgent, options.userId, setLiveState]);
-
-  useEffect(() => {
-    const baseHeartbeat = selectedLiveState?.heartbeat_bpm ?? DEFAULT_VITALS.HEARTBEAT;
-    const baseStress = selectedLiveState?.stress_level ?? DEFAULT_VITALS.STRESS;
-    const baseMood = selectedLiveState?.mood_index ?? DEFAULT_VITALS.MOOD;
-
-    setBaseHeartbeatBpm(baseHeartbeat);
-    setBaseStressLevel(baseStress);
-    setBaseMoodIndex(baseMood);
-  }, [selectedLiveState?.heartbeat_bpm, selectedLiveState?.mood_index, selectedLiveState?.stress_level]);
 
   useEffect(() => {
     let animationFrameId = 0;

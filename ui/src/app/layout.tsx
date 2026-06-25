@@ -1,16 +1,5 @@
 import type { Metadata } from "next";
-import { Lora, Nunito } from "next/font/google";
 import "./globals.css";
-
-const nunito = Nunito({
-  variable: "--font-body",
-  subsets: ["latin"],
-});
-
-const lora = Lora({
-  variable: "--font-title",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: "Companion Chat",
@@ -23,10 +12,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="en"
-      className={`${nunito.variable} ${lora.variable} h-full antialiased`}
-    >
+    <html lang="en" className="h-full antialiased">
       <body className="min-h-full flex flex-col">{children}</body>
     </html>
   );
