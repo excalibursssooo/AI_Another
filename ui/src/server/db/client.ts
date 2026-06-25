@@ -130,6 +130,23 @@ function initializeDatabase(db: AppDatabase): void {
       risk_level TEXT NOT NULL,
       updated_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS feed_posts (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      agent_name TEXT NOT NULL,
+      world_id TEXT NOT NULL DEFAULT 'default',
+      content TEXT NOT NULL,
+      topic_seed TEXT NOT NULL,
+      post_type TEXT NOT NULL DEFAULT 'status',
+      status TEXT NOT NULL DEFAULT 'published',
+      source_task_id TEXT,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS feed_posts_user_world_created_idx
+      ON feed_posts (user_id, world_id, status, created_at);
   `);
 }
 

@@ -1,209 +1,120 @@
-![logo](figures/logo.png)
 # Another-World
-个人vibe-coding项目
 
-## 项目简介
+个人 vibe-coding 项目。当前主线已经重构为 **Next.js + TypeScript + SQLite** 的轻量 AI 角色工作流平台。
 
-本项目实现了一个可长期对话的多背景 AI 聊天系统，支持：
+## 当前能力
 
-1. 多角色管理（手动创建、AI 自动建角、删除、更新）
-2. 多背景管理（手动创建，AI 创建，背景隔离）
-3. 聊天流式回复（SSE）
-4. 情绪识别与安全检查
-5. 记忆抽取、记忆治理、向量召回
-6. 会话历史持久化
-
-
-## 核心能力
-
-1. 编排链路：用户输入 -> 安全检查 -> 情绪分类 -> 记忆召回 -> 生成回复 -> 记忆写入
-2. 背景隔离：不同背景的角色和会话互相隔离
-3. 主语化记忆：memory 支持 subject（user 或 agent）
+1. 多角色管理：手动创建、AI 本地生成、更新、软删除。
+2. 多世界管理：手动创建/更新、AI 本地生成、按世界隔离角色和会话。
+3. 聊天主链路：SSE 回复、安全检查、记忆召回、SQLite 会话持久化、异步记忆抽取。
+4. 长期记忆：按 user/agent/world 范围管理，支持 active/frozen/deleted 状态。
+5. 角色动态：生成动态、列表读取、从动态注入聊天话题。
+6. 低风险工具层：记忆搜索、任务草稿、动态草稿。
 
 ## 技术栈
 
-1. 后端：FastAPI、Pydantic
-2. 前端：Next.js、TypeScript、Tailwind CSS
-3. 记忆存储：PostgreSQL（结构化）+ Qdrant（向量）
-4. 会话/角色/任务持久化：JSON 文件
-5. 模型调用：OpenRouter（chat/completions）
+1. App：Next.js App Router、React、TypeScript、Tailwind CSS。
+2. AI：Vercel AI SDK provider 抽象，默认可用本地 mock。
+3. 数据：SQLite + better-sqlite3 + Drizzle schema。
+4. 工作流：自研轻量 Flow Runner，显式拆分 ChatFlow、AgentCreateFlow、WorldFlow、FeedGenerateFlow。
+
+默认不需要 FastAPI、Postgres、Qdrant、Docker 或 CORS 双服务。
 
 ## 目录结构
 
-1. api：FastAPI 路由入口
-2. core：核心业务逻辑（agents、memory、emotion、session、tasks）
-3. ui：前端工程
-4. infra：数据库 schema 与基础设施相关
-5. scripts：本地启动与运维脚本
-
+```text
+ui/
+  src/app/api/              Next.js Route Handlers
+  src/features/             前端功能模块
+  src/server/db/            SQLite 初始化与 schema
+  src/server/ai/            模型选择与结构化输出
+  src/server/domain/        Repository 与业务记录类型
+  src/server/flow/          轻量工作流
+  src/server/tools/         低风险工具注册
+```
 
 ## 本地启动
 
-### 后端
-
-#### 安装后端基础设施（scripts 目录）
-1. 启动 PostgreSQL 与 Qdrant，并自动初始化数据库 schema
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/local_infra_up.ps1
-```
-
-2. 仅执行 schema 初始化（容器已启动时使用）
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/local_infra_init.ps1
-```
-#### 安装后端
-1. 安装依赖
 ```bash
-pip install -r requirements.txt
-```
-
-2. 配置环境变量
-
-```powershell
-Copy-Item .env.example .env
-```
-在 .env 文件中配置 OpenRouter key：
-```env
-OPENROUTER_API_KEY=<your_api_key>
-```
-3. 启动 API
-
-```powershell
-uvicorn api.main:app --reload --port 8000
-```
-
-### 前端
-
-1. 安装依赖
-
-```powershell
 cd ui
 npm install
-```
-
-2. 启动开发服务器
-
-```powershell
 npm run dev
 ```
 
-## Scripts 说明
+开发服务器默认运行在 `http://localhost:3000`，UI 和 API 都在同一个 Next.js 应用内。
 
-### 后端基础设施脚本（scripts 目录）
-1. 启动 PostgreSQL 与 Qdrant，并自动初始化数据库 schema
+## 环境变量
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/local_infra_up.ps1
+在 `ui/.env.local` 配置：
+
+```env
+DATABASE_URL=file:./data/another-world.sqlite
+NEXT_PUBLIC_DEMO_USER_ID=u001
+
+# 默认 mock 可本地运行；配置真实 provider 后可切换。
+AI_PROVIDER=mock
+CHAT_MODEL=
+
+DEEPSEEK_API_KEY=
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+GOOGLE_GENERATIVE_AI_API_KEY=
 ```
 
-2. 仅执行 schema 初始化（容器已启动时使用）
+## 常用命令
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/local_infra_init.ps1
-```
-
-### 前端 npm scripts（ui/package.json）
-
-1. 本地开发
-
-```powershell
-npm run dev
-```
-
-2. 生产构建
-
-```powershell
+```bash
+cd ui
+npm run test:run
+npm run lint
 npm run build
 ```
 
-3. 启动生产服务
+## 主要 API
 
-```powershell
-npm run start
-```
-
-4. 代码检查
-
-```powershell
-npm run lint
-```
-5. 环境配置
-在 `ui` 目录下创建 `.env.local`：
-
-```env
-# true: 使用本地 mock 数据（默认）
-# false: 连接真实后端
-NEXT_PUBLIC_USE_MOCK=true
-
-# 真实后端地址（当 NEXT_PUBLIC_USE_MOCK=false 时生效）
-NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
-
-# 前端演示用户ID
-NEXT_PUBLIC_DEMO_USER_ID=u001
-```
-
-
-## 主要调试 API
-
-### 系统与诊断
-
-1. GET /health
-2. GET /infra/debug
-3. POST /telemetry/heartbeat
-4. POST /telemetry/frontend-error
-5. POST /telemetry/web-vitals
-6. GET /telemetry/overview
+所有接口都挂在同源 `/api` 下。
 
 ### 聊天与会话
 
-1. POST /chat（SSE）
-2. GET /conversations（读取历史会话）
+1. `POST /api/chat`：SSE 聊天。
+2. `GET /api/conversations`：读取历史会话。
 
 ### 角色
 
-1. POST /agents
-2. POST /agents/ai-create
-3. POST /agents/{agent_id}/memory-seed/debug
-4. GET /agents
-5. GET /agents/{agent_id}
-6. PUT /agents/{agent_id}
-7. DELETE /agents/{agent_id}
+1. `GET /api/agents`
+2. `POST /api/agents`
+3. `POST /api/agents/ai-create`
+4. `GET /api/agents/{agentId}`
+5. `PUT /api/agents/{agentId}`
+6. `DELETE /api/agents/{agentId}`
+7. `GET /api/agents/{agentId}/state/live`
+8. `POST /api/agents/{agentId}/memory-seed/debug`
+
+### 世界
+
+1. `GET /api/worlds`
+2. `POST /api/worlds`
+3. `GET /api/worlds/{worldId}`
+4. `PUT /api/worlds/{worldId}`
+5. `POST /api/worlds/ai-create`
 
 ### 记忆
 
-1. GET /memories
-2. POST /memory/extract/debug
-3. POST /memories/{memory_id}/freeze
-4. POST /memories/{memory_id}/activate
-5. DELETE /memories/{memory_id}
+1. `GET /api/memories`
+2. `POST /api/memories/{memoryId}/freeze`
+3. `POST /api/memories/{memoryId}/activate`
+4. `DELETE /api/memories/{memoryId}`
 
-### 任务
+### 动态
 
-1. POST /tasks/draft
-2. POST /tasks/confirm
-3. GET /tasks
+1. `GET /api/posts`
+2. `POST /api/agents/{agentId}/generate-post`
+3. `POST /api/posts/{postId}/trigger-chat`
 
-## 持久化说明
+## 持久化
 
-1. 角色数据：data/agents.json
-2. 会话数据：data/conversations.json
-3. 记忆结构化数据：PostgreSQL memory_item
-4. 记忆向量索引：Qdrant
+默认 SQLite 文件位于 `ui/data/another-world.sqlite`。初始化会自动创建 worlds、agents、conversations、messages、memories、agent_live_states、feed_posts 等表，并写入默认世界和默认角色。
 
 ## 界面展示
-<<<<<<< HEAD
+
 ![UI](figures/UI_v0.2.jpg)
-
-
-## TODO
-* [x] 记忆系统优化
-* [x] 展示角色当前状态栏
-* [x] 新增角色动态功能
-* [x] 完成对话和记忆的异步进行 
-* [ ] 对话及agent隐式存储
-* [ ] 多模态支持
-* [ ] 多api接入
-* [ ] 选角广场
-* [ ] ？助手类功能（toolcalling）

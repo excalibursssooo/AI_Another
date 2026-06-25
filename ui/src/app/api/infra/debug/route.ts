@@ -7,7 +7,7 @@ export async function GET(): Promise<Response> {
     emotion_backend: "chatflow",
     emotion_model: process.env.CHAT_MODEL || "mock",
     openrouter_api_key_present: false,
-    postgres: { enabled: false, configured: false, reachable: false, detail: "disabled in Phase 1-3" },
-    qdrant: { enabled: false, configured: false, reachable: false, detail: "disabled in Phase 1-3" },
+    postgres: { enabled: false, configured: false, reachable: false, detail: "disabled by TypeScript SQLite refactor" },
+    qdrant: { enabled: false, configured: false, reachable: false, detail: "disabled by TypeScript SQLite refactor" },
   });
 }

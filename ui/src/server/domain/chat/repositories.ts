@@ -61,6 +61,20 @@ export interface AgentLiveStateRecord {
   updatedAt: number;
 }
 
+export interface FeedPostRecord {
+  id: string;
+  userId: string;
+  agentId: string;
+  agentName: string;
+  worldId: string;
+  content: string;
+  topicSeed: string;
+  postType: "status" | "reflection" | "plan";
+  status: "published" | "archived";
+  sourceTaskId: string | null;
+  createdAt: number;
+}
+
 interface AgentRow {
   id: string;
   name: string;
@@ -109,6 +123,20 @@ interface MemoryRow {
   last_accessed_at: number | null;
 }
 
+interface FeedPostRow {
+  id: string;
+  user_id: string;
+  agent_id: string;
+  agent_name: string;
+  world_id: string;
+  content: string;
+  topic_seed: string;
+  post_type: "status" | "reflection" | "plan";
+  status: "published" | "archived";
+  source_task_id: string | null;
+  created_at: number;
+}
+
 export class AgentRepository {
   constructor(private readonly db: AppDatabase) {}
 
@@ -127,6 +155,87 @@ export class AgentRepository {
     const row = this.db.sqlite.prepare("SELECT * FROM agents WHERE id = ?").get(agentId) as AgentRow | undefined;
     return row ? mapAgent(row) : null;
   }
+
+  create(input: {
+    name: string;
+    displayName?: string;
+    persona: string;
+    background: string;
+    greeting?: string;
+    speakingStyle: string;
+    hobbies: string[];
+    worldId: string;
+  }): AgentRecord {
+    const now = Date.now();
+    const id = `agent-${randomUUID()}`;
+    const displayName = input.displayName ?? input.name;
+    this.db.sqlite
+      .prepare(
+        `INSERT INTO agents
+          (id, name, display_name, persona, background, greeting, speaking_style, hobbies_json, world_id, status, created_at, updated_at)
+         VALUES
+          (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+      )
+      .run(
+        id,
+        input.name,
+        displayName,
+        input.persona,
+        input.background,
+        input.greeting ?? `你好，我是${displayName}。`,
+        input.speakingStyle,
+        JSON.stringify(input.hobbies),
+        input.worldId,
+        now,
+        now,
+      );
+    return this.get(id) as AgentRecord;
+  }
+
+  update(agentId: string, input: Partial<Omit<AgentRecord, "id" | "createdAt" | "updatedAt">>): AgentRecord | null {
+    const current = this.get(agentId);
+    if (!current) {
+      return null;
+    }
+    const next = { ...current, ...input };
+    const now = Date.now();
+    this.db.sqlite
+      .prepare(
+        `UPDATE agents
+         SET name = ?,
+             display_name = ?,
+             persona = ?,
+             background = ?,
+             greeting = ?,
+             speaking_style = ?,
+             hobbies_json = ?,
+             world_id = ?,
+             status = ?,
+             updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(
+        next.name,
+        next.displayName,
+        next.persona,
+        next.background,
+        next.greeting,
+        next.speakingStyle,
+        JSON.stringify(next.hobbies),
+        next.worldId,
+        next.status,
+        now,
+        agentId,
+      );
+    return this.get(agentId);
+  }
+
+  deactivate(agentId: string): AgentRecord | null {
+    if (agentId === "agent-default") {
+      return null;
+    }
+    return this.update(agentId, { status: "inactive" });
+  }
 }
 
 export class WorldRepository {
@@ -140,6 +249,35 @@ export class WorldRepository {
   get(worldId: string): WorldRecord | null {
     const row = this.db.sqlite.prepare("SELECT * FROM worlds WHERE id = ?").get(worldId) as WorldRow | undefined;
     return row ? mapWorld(row) : null;
+  }
+
+  upsert(input: WorldRecord): WorldRecord {
+    const now = Date.now();
+    this.db.sqlite
+      .prepare(
+        `INSERT INTO worlds
+          (id, name, lore, tone, constraints_json, seed_memories_json, created_at, updated_at)
+         VALUES
+          (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name,
+           lore = excluded.lore,
+           tone = excluded.tone,
+           constraints_json = excluded.constraints_json,
+           seed_memories_json = excluded.seed_memories_json,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        input.id,
+        input.name,
+        input.lore,
+        input.tone,
+        JSON.stringify(input.constraints),
+        JSON.stringify(input.seedMemories),
+        now,
+        now,
+      );
+    return this.get(input.id) as WorldRecord;
   }
 }
 
@@ -304,6 +442,38 @@ export class MemoryRepository {
       .all(input.userId, input.agentId, input.worldId, status, status) as MemoryRow[];
     return rows.map(mapMemory);
   }
+
+  setStatus(input: {
+    userId: string;
+    agentId: string;
+    worldId: string;
+    memoryId: string;
+    status: MemoryRecord["status"];
+  }): MemoryRecord | null {
+    const now = Date.now();
+    this.db.sqlite
+      .prepare(
+        `UPDATE memories
+         SET status = ?,
+             updated_at = ?
+         WHERE id = ?
+           AND user_id = ?
+           AND agent_id = ?
+           AND world_id = ?`,
+      )
+      .run(input.status, now, input.memoryId, input.userId, input.agentId, input.worldId);
+    const row = this.db.sqlite
+      .prepare(
+        `SELECT *
+         FROM memories
+         WHERE id = ?
+           AND user_id = ?
+           AND agent_id = ?
+           AND world_id = ?`,
+      )
+      .get(input.memoryId, input.userId, input.agentId, input.worldId) as MemoryRow | undefined;
+    return row ? mapMemory(row) : null;
+  }
 }
 
 function mapAgent(row: AgentRow): AgentRecord {
@@ -359,6 +529,22 @@ function mapMemory(row: MemoryRow): MemoryRecord {
     createdAt: row.created_at,
     accessCount: row.access_count,
     lastAccessedAt: row.last_accessed_at,
+  };
+}
+
+function mapFeedPost(row: FeedPostRow): FeedPostRecord {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    agentId: row.agent_id,
+    agentName: row.agent_name,
+    worldId: row.world_id,
+    content: row.content,
+    topicSeed: row.topic_seed,
+    postType: row.post_type,
+    status: row.status,
+    sourceTaskId: row.source_task_id,
+    createdAt: row.created_at,
   };
 }
 
@@ -429,6 +615,87 @@ export class AgentLiveStateRepository {
       heartbeatBpm: 72,
       riskLevel: "low",
       updatedAt: Date.now(),
+    };
+  }
+}
+
+export class FeedPostRepository {
+  constructor(private readonly db: AppDatabase) {}
+
+  create(input: {
+    userId: string;
+    agentId: string;
+    agentName: string;
+    worldId: string;
+    content: string;
+    topicSeed: string;
+    postType: FeedPostRecord["postType"];
+    status: FeedPostRecord["status"];
+    sourceTaskId: string | null;
+  }): FeedPostRecord {
+    const id = `post-${randomUUID()}`;
+    const now = Date.now();
+    this.db.sqlite
+      .prepare(
+        `INSERT INTO feed_posts
+          (id, user_id, agent_id, agent_name, world_id, content, topic_seed, post_type, status, source_task_id, created_at)
+         VALUES
+          (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        input.userId,
+        input.agentId,
+        input.agentName,
+        input.worldId,
+        input.content,
+        input.topicSeed,
+        input.postType,
+        input.status,
+        input.sourceTaskId,
+        now,
+      );
+    return this.get(id) as FeedPostRecord;
+  }
+
+  get(postId: string): FeedPostRecord | null {
+    const row = this.db.sqlite.prepare("SELECT * FROM feed_posts WHERE id = ?").get(postId) as FeedPostRow | undefined;
+    return row ? mapFeedPost(row) : null;
+  }
+
+  list(input: {
+    userId: string;
+    worldId?: string;
+    limit: number;
+    offset: number;
+    includeArchived: boolean;
+  }): { items: FeedPostRecord[]; total: number } {
+    const worldId = input.worldId?.trim() || null;
+    const status = input.includeArchived ? null : "published";
+    const count = this.db.sqlite
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM feed_posts
+         WHERE user_id = ?
+           AND (? IS NULL OR world_id = ?)
+           AND (? IS NULL OR status = ?)`,
+      )
+      .get(input.userId, worldId, worldId, status, status) as { count: number };
+    const rows = this.db.sqlite
+      .prepare(
+        `SELECT *
+         FROM feed_posts
+         WHERE user_id = ?
+           AND (? IS NULL OR world_id = ?)
+           AND (? IS NULL OR status = ?)
+         ORDER BY created_at DESC
+         LIMIT ?
+         OFFSET ?`,
+      )
+      .all(input.userId, worldId, worldId, status, status, input.limit, input.offset) as FeedPostRow[];
+    return {
+      items: rows.map(mapFeedPost),
+      total: count.count,
     };
   }
 }

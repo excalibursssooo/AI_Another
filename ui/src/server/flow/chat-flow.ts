@@ -199,7 +199,7 @@ export function createChatFlow(options: { db: AppDatabase; generateChatReply?: G
       },
     },
     {
-      name: "ExtractMemory",
+      name: "EnqueueMemoryExtraction",
       run: async (ctx) => {
         if (ctx.blocked) {
           liveStates.upsert({
@@ -214,8 +214,14 @@ export function createChatFlow(options: { db: AppDatabase; generateChatReply?: G
           });
           return ctx;
         }
-        const persistedMemoryCount = extractSimpleMemory(ctx, memories);
-        return finalize({ ...ctx, persistedMemoryCount });
+        globalThis.setTimeout(() => {
+          try {
+            extractSimpleMemory(ctx, memories);
+          } catch {
+            // Memory extraction is best-effort and must not affect delivered replies.
+          }
+        }, 0);
+        return finalize({ ...ctx, persistedMemoryCount: 0 });
       },
     },
   ];

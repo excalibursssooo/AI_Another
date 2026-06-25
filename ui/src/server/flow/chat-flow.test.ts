@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createTestDatabase } from "@/server/db/client";
+import { MemoryRepository } from "@/server/domain/chat/repositories";
 import { createChatFlow } from "./chat-flow";
 
 describe("ChatFlow", () => {
@@ -49,5 +50,31 @@ describe("ChatFlow", () => {
     expect(result.blocked).toBe(true);
     expect(result.riskLevel).toBe("high");
     expect(result.reply).toContain("我在这里");
+  });
+
+  it("queues memory extraction after returning the chat result", async () => {
+    const db = createTestDatabase();
+    const memories = new MemoryRepository(db);
+    const flow = createChatFlow({
+      db,
+      generateChatReply: async () => ({
+        reply: "我会记住。",
+        mood: { label: "calm", intensity: 0.3, heartbeatBpm: 72 },
+      }),
+    });
+
+    const result = await flow.run({
+      userId: "u001",
+      agentId: "agent-default",
+      worldId: "default",
+      input: "请记住我喜欢雨天散步",
+    });
+
+    expect(result.doneEvent?.persisted_memory_count).toBe(0);
+    expect(memories.list({ userId: "u001", agentId: "agent-default", worldId: "default", status: "active" })).toHaveLength(0);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    expect(memories.list({ userId: "u001", agentId: "agent-default", worldId: "default", status: "active" })).toHaveLength(1);
   });
 });

@@ -2,6 +2,7 @@ import {
   AgentLiveStateRecord,
   AgentRecord,
   ConversationMessageRecord,
+  FeedPostRecord,
   MemoryRecord,
   WorldRecord,
 } from "@/server/domain/chat/repositories";
@@ -76,5 +77,20 @@ export function toAgentLiveStateDto(state: AgentLiveStateRecord) {
     trend: "steady" as const,
     risk_level: state.riskLevel,
     updated_at: new Date(state.updatedAt).toISOString(),
+  };
+}
+
+export function toPostItemDto(post: FeedPostRecord) {
+  return {
+    id: post.id,
+    user_id: post.userId,
+    agent_id: post.agentId,
+    agent_name: post.agentName,
+    content: post.content,
+    topic_seed: post.topicSeed,
+    post_type: post.postType,
+    status: post.status,
+    source_task_id: post.sourceTaskId,
+    created_at: new Date(post.createdAt).toISOString(),
   };
 }

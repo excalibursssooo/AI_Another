@@ -71,3 +71,17 @@ export const agentLiveStates = sqliteTable("agent_live_states", {
   riskLevel: text("risk_level").notNull(),
   updatedAt: integer("updated_at").notNull(),
 });
+
+export const feedPosts = sqliteTable("feed_posts", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  agentId: text("agent_id").notNull(),
+  agentName: text("agent_name").notNull(),
+  worldId: text("world_id").notNull().default("default"),
+  content: text("content").notNull(),
+  topicSeed: text("topic_seed").notNull(),
+  postType: text("post_type").notNull().default("status"),
+  status: text("status").notNull().default("published"),
+  sourceTaskId: text("source_task_id"),
+  createdAt: integer("created_at").notNull(),
+});

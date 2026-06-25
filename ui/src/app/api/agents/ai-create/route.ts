@@ -1,5 +1,22 @@
+import { toAgentResponseDto } from "@/server/api/dto";
+import { getDatabase } from "@/server/db/client";
+import { createAgentCreateFlow } from "@/server/flow/agent-create-flow";
+
 export const runtime = "nodejs";
 
-export async function POST(): Promise<Response> {
-  return Response.json({ detail: "AI agent creation is not implemented in Phase 1-3" }, { status: 501 });
+export async function POST(req: Request): Promise<Response> {
+  const body = (await req.json().catch(() => ({}))) as { prompt?: string | null; domain_id?: string };
+  const result = await createAgentCreateFlow({ db: getDatabase() }).run({
+    mode: "ai",
+    userId: process.env.DEV_USER_ID || "u001",
+    worldId: body.domain_id || "default",
+    prompt: body.prompt ?? null,
+  });
+  return Response.json({
+    agent: toAgentResponseDto(result.agent!),
+    backend: result.backend || "mock",
+    model: result.model || "local-agent-generator",
+    used_prompt: body.prompt || "",
+    raw_text: result.rawText || "",
+  });
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { toAgentResponseDto, toConversationTurnDto, toMemoryResponseDto } from "./dto";
+import { toAgentResponseDto, toConversationTurnDto, toMemoryResponseDto, toPostItemDto } from "./dto";
 
 describe("API DTO mapping", () => {
   it("maps agent records to the existing frontend agent DTO shape", () => {
@@ -71,6 +71,34 @@ describe("API DTO mapping", () => {
       conflict_state: "none",
       access_count: 2,
       last_accessed_at: null,
+    });
+  });
+
+  it("maps feed posts to the frontend post DTO shape", () => {
+    expect(
+      toPostItemDto({
+        id: "post-1",
+        userId: "u001",
+        agentId: "agent-default",
+        agentName: "小伴",
+        worldId: "default",
+        content: "今天想把一件小事讲给你听。",
+        topicSeed: "一件小事",
+        postType: "status",
+        status: "published",
+        sourceTaskId: null,
+        createdAt: 1_700_000_000_000,
+      }),
+    ).toMatchObject({
+      id: "post-1",
+      user_id: "u001",
+      agent_id: "agent-default",
+      agent_name: "小伴",
+      topic_seed: "一件小事",
+      post_type: "status",
+      status: "published",
+      source_task_id: null,
+      created_at: new Date(1_700_000_000_000).toISOString(),
     });
   });
 });
