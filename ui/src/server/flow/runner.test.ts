@@ -17,7 +17,10 @@ describe("Flow", () => {
     });
 
     expect(result.value).toBe("ab");
-    expect(events.map((event) => `${event.type}:${event.node}`)).toEqual([
+    const nodeEvents = events.filter(
+      (event): event is Extract<FlowEvent, { node: string }> => "node" in event,
+    );
+    expect(nodeEvents.map((event) => `${event.type}:${event.node}`)).toEqual([
       "node:start:first",
       "node:end:first",
       "node:start:second",
@@ -36,7 +39,11 @@ describe("Flow", () => {
     ]);
     const events: FlowEvent[] = [];
 
-    await expect(flow.run({ value: "" }, (event) => events.push(event))).rejects.toThrow("boom");
+    await expect(
+      flow.run({ value: "" }, (event) => {
+        events.push(event);
+      }),
+    ).rejects.toThrow("boom");
     expect(events).toContainEqual({ type: "error", node: "fail", message: "boom" });
   });
 });
