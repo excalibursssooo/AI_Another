@@ -1,5 +1,5 @@
 .codegraph/
-
+.omo/
 # Python cache from the legacy backend.
 __pycache__/
 *.py[cod]
