@@ -51,7 +51,9 @@ export function createWorldFlow(options: {
           };
         }
 
-        const aiDraft = await generateDraft({ prompt: ctx.prompt ?? "", worldId: ctx.worldId ?? null });
+        const aiDraft = await generateDraft({ prompt: ctx.prompt ?? "", worldId: ctx.worldId ?? null }).catch(
+          () => null,
+        );
         if (aiDraft) {
           const info = getActiveProviderInfo();
           return {
