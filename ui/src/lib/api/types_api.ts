@@ -93,7 +93,6 @@ export interface InfraDebugDto {
   readonly memory_vector: string;
   readonly emotion_backend: string;
   readonly emotion_model: string;
-  readonly openrouter_api_key_present: boolean;
   readonly postgres: InfraTargetStatusDto;
   readonly qdrant: InfraTargetStatusDto;
 }

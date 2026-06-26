@@ -6,7 +6,6 @@ export async function GET(): Promise<Response> {
     memory_vector: "disabled",
     emotion_backend: "chatflow",
     emotion_model: process.env.CHAT_MODEL || "mock",
-    openrouter_api_key_present: false,
     postgres: { enabled: false, configured: false, reachable: false, detail: "disabled by TypeScript SQLite refactor" },
     qdrant: { enabled: false, configured: false, reachable: false, detail: "disabled by TypeScript SQLite refactor" },
   });
