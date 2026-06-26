@@ -88,4 +88,23 @@ describe("withStructuredOutput", () => {
     const call = vi.mocked(generateText).mock.calls[0]![0] as Record<string, unknown>;
     expect(call.abortSignal).toBe(abortController.signal);
   });
+
+  it("uses an explicit model when one is provided", async () => {
+    const explicitModel = { id: "explicit" };
+    const mockOutput = {
+      reply: "x",
+      mood: { label: "calm" as const, intensity: 0.5, heartbeatBpm: 72 },
+    };
+    vi.mocked(generateText).mockResolvedValue({ output: mockOutput } as never);
+
+    await withStructuredOutput({
+      schema: ChatReplySchema,
+      purpose: "chat",
+      model: explicitModel as never,
+      prompt: "hello",
+    });
+
+    const call = vi.mocked(generateText).mock.calls[0]![0] as Record<string, unknown>;
+    expect(call.model).toBe(explicitModel);
+  });
 });

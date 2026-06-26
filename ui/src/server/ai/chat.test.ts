@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("ai", () => ({
   generateText: vi.fn(),
+  Output: { object: vi.fn(({ schema }: { schema: unknown }) => ({ __mock_output: schema })) },
 }));
 
 const openaiChatSpy = vi.fn(() => ({ provider: "openai-mock" }));
@@ -24,25 +25,37 @@ vi.mock("@ai-sdk/deepseek", () => ({
   deepseek: deepseekSpy,
 }));
 
+vi.mock("./structured-output", () => ({
+  withStructuredOutput: vi.fn(),
+  StructuredOutputError: class StructuredOutputError extends Error {
+    name = "StructuredOutputError";
+    constructor(public readonly schemaName: string) {
+      super(`Structured output generation failed for schema: ${schemaName}`);
+    }
+  },
+}));
+
 const { generateText } = await import("ai");
+const structuredOutput = await import("./structured-output");
+const wso = structuredOutput.withStructuredOutput as ReturnType<typeof vi.fn>;
+const SOE = structuredOutput.StructuredOutputError;
 const {
-  extractJsonPayload,
   generateAgentDraft,
   generateChatReply,
   generateWorldDraft,
   getActiveProviderInfo,
   getLanguageModel,
   isMockProvider,
-  parseJsonWithSchema,
-  stripThinkingBlocks,
 } = await import("./chat");
-const { AgentDraftSchema, ChatReplySchema, WorldDraftSchema } = await import("./schemas");
+
 
 const PROVIDER_ENV_KEYS = [
   "AI_PROVIDER",
   "CHAT_MODEL",
   "AGENT_CREATOR_MODEL",
   "WORLD_CREATOR_MODEL",
+  "MEMORY_MODEL",
+  "FEED_MODEL",
   "MINIMAX_API_KEY",
   "MINIMAX_BASE_URL",
   "OPENAI_API_KEY",
@@ -69,6 +82,7 @@ beforeEach(() => {
   googleSpy.mockClear();
   deepseekSpy.mockClear();
   vi.mocked(generateText).mockReset();
+  wso.mockReset();
   stubProviderEnv({});
 });
 
@@ -151,7 +165,7 @@ describe("getLanguageModel", () => {
     expect(openaiChatSpy).toHaveBeenCalledWith("MiniMax-M3");
   });
 
-  it("uses AGENT_CREATOR_MODEL for the 'agent' purpose", () => {
+  it("uses AGENT_CREATOR_MODEL for the agent creator purpose", () => {
     stubProviderEnv({
       AI_PROVIDER: "minimax",
       CHAT_MODEL: "MiniMax-M3",
@@ -159,11 +173,11 @@ describe("getLanguageModel", () => {
       MINIMAX_API_KEY: "sk-test",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
     });
-    getLanguageModel("agent");
+    getLanguageModel("agentCreator");
     expect(openaiChatSpy).toHaveBeenCalledWith("agent-model-v1");
   });
 
-  it("uses WORLD_CREATOR_MODEL for the 'world' purpose", () => {
+  it("uses WORLD_CREATOR_MODEL for the world creator purpose", () => {
     stubProviderEnv({
       AI_PROVIDER: "minimax",
       CHAT_MODEL: "MiniMax-M3",
@@ -171,8 +185,32 @@ describe("getLanguageModel", () => {
       MINIMAX_API_KEY: "sk-test",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
     });
-    getLanguageModel("world");
+    getLanguageModel("worldCreator");
     expect(openaiChatSpy).toHaveBeenCalledWith("world-model-v1");
+  });
+
+  it("uses MEMORY_MODEL for the memory purpose", () => {
+    stubProviderEnv({
+      AI_PROVIDER: "minimax",
+      CHAT_MODEL: "MiniMax-M3",
+      MEMORY_MODEL: "memory-model-v1",
+      MINIMAX_API_KEY: "sk-test",
+      MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
+    });
+    getLanguageModel("memory");
+    expect(openaiChatSpy).toHaveBeenCalledWith("memory-model-v1");
+  });
+
+  it("uses FEED_MODEL for the feed purpose", () => {
+    stubProviderEnv({
+      AI_PROVIDER: "minimax",
+      CHAT_MODEL: "MiniMax-M3",
+      FEED_MODEL: "feed-model-v1",
+      MINIMAX_API_KEY: "sk-test",
+      MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
+    });
+    getLanguageModel("feed");
+    expect(openaiChatSpy).toHaveBeenCalledWith("feed-model-v1");
   });
 
   it("falls back to CHAT_MODEL when purpose-specific model is empty", () => {
@@ -182,7 +220,7 @@ describe("getLanguageModel", () => {
       MINIMAX_API_KEY: "sk-test",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
     });
-    getLanguageModel("agent");
+    getLanguageModel("agentCreator");
     expect(openaiChatSpy).toHaveBeenCalledWith("MiniMax-M3");
   });
 
@@ -216,126 +254,13 @@ describe("getLanguageModel", () => {
   });
 });
 
-describe("stripThinkingBlocks", () => {
-  it("removes a single <think>...</think> block", () => {
-    expect(stripThinkingBlocks("<think>hidden</think>hello")).toBe("hello");
-  });
-
-  it("removes multiple blocks", () => {
-    expect(stripThinkingBlocks("<think>a</think>middle<think>b</think>end")).toBe("middleend");
-  });
-
-  it("handles multiline thinking content", () => {
-    const input = "<think>\nline1\nline2\n</think>\nresult";
-    expect(stripThinkingBlocks(input)).toBe("result");
-  });
-
-  it("is case-insensitive on tag names", () => {
-    expect(stripThinkingBlocks("<THINK>x</think>ok")).toBe("ok");
-    expect(stripThinkingBlocks("<think>y</THINK>ok")).toBe("ok");
-  });
-
-  it("returns trimmed text when no blocks are present", () => {
-    expect(stripThinkingBlocks("  plain text  ")).toBe("plain text");
-  });
-
-  it("returns empty string when input is only thinking blocks", () => {
-    expect(stripThinkingBlocks("<think>all hidden</think>")).toBe("");
-  });
-});
-
-describe("extractJsonPayload", () => {
-  it("returns stripped text when there is no fence", () => {
-    expect(extractJsonPayload("<think>x</think>{\"a\":1}")).toBe('{"a":1}');
-  });
-
-  it("extracts content from a ```json fenced block", () => {
-    const input = "<think>x</think>```json\n{\"a\":1}\n```";
-    expect(extractJsonPayload(input)).toBe('{"a":1}');
-  });
-
-  it("extracts content from a ``` fenced block (no language hint)", () => {
-    const input = "```\n{\"a\":1}\n```";
-    expect(extractJsonPayload(input)).toBe('{"a":1}');
-  });
-
-  it("combines think-stripping and fence-extraction", () => {
-    const input = "<think>hidden</think>```json\n{\"a\":1}\n```";
-    expect(extractJsonPayload(input)).toBe('{"a":1}');
-  });
-});
-
-describe("parseJsonWithSchema", () => {
-  it("parses valid JSON that matches the schema", () => {
-    const text = '{"reply":"hi","mood":{"label":"calm","intensity":0.5,"heartbeatBpm":72}}';
-    const result = parseJsonWithSchema(text, ChatReplySchema);
-    expect(result).toEqual({
-      reply: "hi",
-      mood: { label: "calm", intensity: 0.5, heartbeatBpm: 72 },
-    });
-  });
-
-  it("returns null for malformed JSON", () => {
-    expect(parseJsonWithSchema("not json", ChatReplySchema)).toBeNull();
-  });
-
-  it("returns null for valid JSON that fails schema validation", () => {
-    const text = '{"reply":"hi","mood":{"label":"calm","intensity":0.5,"heartbeatBpm":999}}';
-    expect(parseJsonWithSchema(text, ChatReplySchema)).toBeNull();
-  });
-
-  it("returns null for empty input", () => {
-    expect(parseJsonWithSchema("", ChatReplySchema)).toBeNull();
-  });
-
-  it("strips thinking blocks before parsing", () => {
-    const input = '<think>hidden</think>{"reply":"hi","mood":{"label":"calm","intensity":0.5,"heartbeatBpm":72}}';
-    expect(parseJsonWithSchema(input, ChatReplySchema)).not.toBeNull();
-  });
-
-  it("strips code fence before parsing", () => {
-    const input = '```json\n{"reply":"hi","mood":{"label":"calm","intensity":0.5,"heartbeatBpm":72}}\n```';
-    expect(parseJsonWithSchema(input, ChatReplySchema)).not.toBeNull();
-  });
-
-  it("validates AgentDraftSchema", () => {
-    const valid = JSON.stringify({
-      name: "星岚",
-      displayName: "星岚",
-      persona: "温柔",
-      background: "背景",
-      greeting: "你好",
-      speakingStyle: "自然",
-      hobbies: ["a", "b"],
-    });
-    expect(parseJsonWithSchema(valid, AgentDraftSchema)).not.toBeNull();
-    const missing = JSON.stringify({ name: "x" });
-    expect(parseJsonWithSchema(missing, AgentDraftSchema)).toBeNull();
-  });
-
-  it("validates WorldDraftSchema", () => {
-    const valid = JSON.stringify({
-      id: "coastal-bookshop",
-      name: "潮鸣镇",
-      lore: "x",
-      tone: "静谧",
-      constraints: [],
-      seedMemories: [],
-    });
-    expect(parseJsonWithSchema(valid, WorldDraftSchema)).not.toBeNull();
-  });
-});
-
 describe("generateChatReply", () => {
-  const VALID_REPLY_JSON =
-    '{"reply":"hi","mood":{"label":"calm","intensity":0.5,"heartbeatBpm":72}}';
-
   it("returns the mock reply when provider is mock", async () => {
     stubProviderEnv({ AI_PROVIDER: "mock" });
     const result = await generateChatReply({ system: "sys", prompt: "hi" });
     expect(result.reply).toBe("我在这里。你刚才说的我记住了。");
     expect(result.mood.label).toBe("calm");
-    expect(generateText).not.toHaveBeenCalled();
+    expect(wso).not.toHaveBeenCalled();
   });
 
   it("returns fallback when no model can be resolved", async () => {
@@ -347,7 +272,8 @@ describe("generateChatReply", () => {
     });
     const result = await generateChatReply({ system: "sys", prompt: "hi" });
     expect(result.reply).toBe("当前模型暂时不可用，但我已经收到你的消息了。");
-    expect(generateText).not.toHaveBeenCalled();
+    expect(result.mood).toEqual({ label: "neutral", intensity: 0.25, heartbeatBpm: 72 });
+    expect(wso).not.toHaveBeenCalled();
   });
 
   it("returns parsed ChatReply on success", async () => {
@@ -357,68 +283,77 @@ describe("generateChatReply", () => {
       MINIMAX_API_KEY: "sk-test",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
     });
-    vi.mocked(generateText).mockResolvedValue({ text: VALID_REPLY_JSON } as never);
+    const parsedReply = {
+      reply: "hi",
+      mood: { label: "calm" as const, intensity: 0.5, heartbeatBpm: 72 },
+    };
+    wso.mockResolvedValue(parsedReply as never);
     const result = await generateChatReply({ system: "sys", prompt: "hi" });
-    expect(result.reply).toBe("hi");
-    expect(result.mood.label).toBe("calm");
+    expect(result).toEqual(parsedReply);
   });
 
-  it("strips thinking blocks from the model output before parsing", async () => {
+  it("returns fallback when withStructuredOutput throws StructuredOutputError", async () => {
     stubProviderEnv({
       AI_PROVIDER: "minimax",
       CHAT_MODEL: "MiniMax-M3",
       MINIMAX_API_KEY: "sk-test",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
     });
-    vi.mocked(generateText).mockResolvedValue({
-      text: `<think>reasoning</think>${VALID_REPLY_JSON}`,
-    } as never);
+    wso.mockRejectedValue(new SOE("x") as never);
     const result = await generateChatReply({ system: "sys", prompt: "hi" });
-    expect(result.reply).toBe("hi");
+    expect(result.reply).toBe("当前模型暂时不可用，但我已经收到你的消息了。");
+    expect(result.mood).toEqual({ label: "neutral", intensity: 0.25, heartbeatBpm: 72 });
   });
 
-  it("appends the JSON format instruction to the system prompt", async () => {
+  it("rethrows when withStructuredOutput throws non-SOE error", async () => {
     stubProviderEnv({
       AI_PROVIDER: "minimax",
       CHAT_MODEL: "MiniMax-M3",
       MINIMAX_API_KEY: "sk-test",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
     });
-    vi.mocked(generateText).mockResolvedValue({ text: VALID_REPLY_JSON } as never);
-    await generateChatReply({ system: "原始 system", prompt: "hi" });
-    const call = vi.mocked(generateText).mock.calls[0][0];
-    expect(call.system).toContain("原始 system");
-    expect(call.system).toContain("输出格式要求");
+    wso.mockRejectedValue(new Error("network down") as never);
+    await expect(generateChatReply({ system: "sys", prompt: "hi" })).rejects.toThrow("network down");
+  });
+
+  it("appends system prompt and forwards prompt verbatim", async () => {
+    stubProviderEnv({
+      AI_PROVIDER: "minimax",
+      CHAT_MODEL: "MiniMax-M3",
+      MINIMAX_API_KEY: "sk-test",
+      MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
+    });
+    const parsedReply = {
+      reply: "hi",
+      mood: { label: "calm" as const, intensity: 0.5, heartbeatBpm: 72 },
+    };
+    wso.mockResolvedValue(parsedReply as never);
+    await generateChatReply({ system: "原始 system", prompt: "用户的提问" });
+    const call = wso.mock.calls[0]![0] as Record<string, unknown>;
+    expect(call.system).toBe("原始 system");
+    expect(call.prompt).toBe("用户的提问");
+  });
+
+  it("temperature is 0.7 by default", async () => {
+    stubProviderEnv({
+      AI_PROVIDER: "minimax",
+      CHAT_MODEL: "MiniMax-M3",
+      MINIMAX_API_KEY: "sk-test",
+      MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
+    });
+    const parsedReply = {
+      reply: "hi",
+      mood: { label: "calm" as const, intensity: 0.5, heartbeatBpm: 72 },
+    };
+    wso.mockResolvedValue(parsedReply as never);
+    await generateChatReply({ system: "sys", prompt: "hi" });
+    const call = wso.mock.calls[0]![0] as Record<string, unknown>;
     expect(call.temperature).toBe(0.7);
-  });
-
-  it("returns fallback when model throws", async () => {
-    stubProviderEnv({
-      AI_PROVIDER: "minimax",
-      CHAT_MODEL: "MiniMax-M3",
-      MINIMAX_API_KEY: "sk-test",
-      MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
-    });
-    vi.mocked(generateText).mockRejectedValue(new Error("network down"));
-    const result = await generateChatReply({ system: "sys", prompt: "hi" });
-    expect(result.reply).toBe("当前模型暂时不可用，但我已经收到你的消息了。");
-  });
-
-  it("returns fallback when JSON parse fails", async () => {
-    stubProviderEnv({
-      AI_PROVIDER: "minimax",
-      CHAT_MODEL: "MiniMax-M3",
-      MINIMAX_API_KEY: "sk-test",
-      MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
-    });
-    vi.mocked(generateText).mockResolvedValue({ text: "not json at all" } as never);
-    const result = await generateChatReply({ system: "sys", prompt: "hi" });
-    expect(result.reply).toBe("当前模型暂时不可用，但我已经收到你的消息了。");
   });
 });
 
 describe("generateAgentDraft", () => {
-  const VALID_AGENT_JSON = JSON.stringify({
+  const VALID_AGENT_DRAFT = {
     name: "星岚",
     displayName: "星岚",
     persona: "温柔",
@@ -426,13 +361,13 @@ describe("generateAgentDraft", () => {
     greeting: "你好",
     speakingStyle: "自然",
     hobbies: ["a", "b"],
-  });
+  };
 
   it("returns null when provider is mock", async () => {
     stubProviderEnv({ AI_PROVIDER: "mock" });
     const result = await generateAgentDraft({ prompt: "x" });
     expect(result).toBeNull();
-    expect(generateText).not.toHaveBeenCalled();
+    expect(wso).not.toHaveBeenCalled();
   });
 
   it("returns null when no model can be resolved", async () => {
@@ -444,22 +379,19 @@ describe("generateAgentDraft", () => {
     });
     const result = await generateAgentDraft({ prompt: "x" });
     expect(result).toBeNull();
-    expect(generateText).not.toHaveBeenCalled();
+    expect(wso).not.toHaveBeenCalled();
   });
 
   it("returns parsed AgentDraft on success", async () => {
     stubProviderEnv({
       AI_PROVIDER: "minimax",
       CHAT_MODEL: "MiniMax-M3",
-      AGENT_CREATOR_MODEL: "agent-model",
       MINIMAX_API_KEY: "sk-test",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
     });
-    vi.mocked(generateText).mockResolvedValue({ text: VALID_AGENT_JSON } as never);
+    wso.mockResolvedValue(VALID_AGENT_DRAFT as never);
     const result = await generateAgentDraft({ prompt: "想要一个温柔的角色" });
-    expect(result).not.toBeNull();
-    expect(result?.name).toBe("星岚");
-    expect(result?.hobbies).toEqual(["a", "b"]);
+    expect(result).toEqual(VALID_AGENT_DRAFT);
   });
 
   it("includes world context in the prompt when world is provided", async () => {
@@ -469,12 +401,12 @@ describe("generateAgentDraft", () => {
       MINIMAX_API_KEY: "sk-test",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
     });
-    vi.mocked(generateText).mockResolvedValue({ text: VALID_AGENT_JSON } as never);
+    wso.mockResolvedValue(VALID_AGENT_DRAFT as never);
     await generateAgentDraft({
       prompt: "x",
       world: { id: "w1", name: "潮鸣镇", lore: "南方小镇", tone: "静谧、潮湿" },
     });
-    const call = vi.mocked(generateText).mock.calls[0][0];
+    const call = wso.mock.calls[0]![0] as Record<string, unknown>;
     expect(call.prompt).toContain("潮鸣镇");
     expect(call.prompt).toContain("静谧、潮湿");
     expect(call.prompt).toContain("南方小镇");
@@ -487,52 +419,52 @@ describe("generateAgentDraft", () => {
       MINIMAX_API_KEY: "sk-test",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
     });
-    vi.mocked(generateText).mockResolvedValue({ text: VALID_AGENT_JSON } as never);
+    wso.mockResolvedValue(VALID_AGENT_DRAFT as never);
     await generateAgentDraft({ prompt: "x", world: null });
-    const call = vi.mocked(generateText).mock.calls[0][0];
+    const call = wso.mock.calls[0]![0] as Record<string, unknown>;
     expect(call.prompt).not.toContain("所在世界");
   });
 
-  it("returns null when parse fails", async () => {
+  it("returns null when withStructuredOutput throws StructuredOutputError", async () => {
     stubProviderEnv({
       AI_PROVIDER: "minimax",
       CHAT_MODEL: "MiniMax-M3",
       MINIMAX_API_KEY: "sk-test",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
     });
-    vi.mocked(generateText).mockResolvedValue({ text: "garbage" } as never);
+    wso.mockRejectedValue(new SOE("invalid output") as never);
     const result = await generateAgentDraft({ prompt: "x" });
     expect(result).toBeNull();
   });
 
-  it("returns null when model throws", async () => {
+  it("returns null when withStructuredOutput throws any other error", async () => {
     stubProviderEnv({
       AI_PROVIDER: "minimax",
       CHAT_MODEL: "MiniMax-M3",
       MINIMAX_API_KEY: "sk-test",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
     });
-    vi.mocked(generateText).mockRejectedValue(new Error("boom"));
+    wso.mockRejectedValue(new Error("boom") as never);
     const result = await generateAgentDraft({ prompt: "x" });
     expect(result).toBeNull();
   });
 });
 
 describe("generateWorldDraft", () => {
-  const VALID_WORLD_JSON = JSON.stringify({
+  const VALID_WORLD_DRAFT = {
     id: "coastal-bookshop",
     name: "潮鸣镇",
     lore: "南方小镇",
     tone: "静谧",
     constraints: ["规则1"],
     seedMemories: ["记忆1"],
-  });
+  };
 
   it("returns null when provider is mock", async () => {
     stubProviderEnv({ AI_PROVIDER: "mock" });
     const result = await generateWorldDraft({ prompt: "x" });
     expect(result).toBeNull();
-    expect(generateText).not.toHaveBeenCalled();
+    expect(wso).not.toHaveBeenCalled();
   });
 
   it("returns null when no model can be resolved", async () => {
@@ -544,22 +476,19 @@ describe("generateWorldDraft", () => {
     });
     const result = await generateWorldDraft({ prompt: "x" });
     expect(result).toBeNull();
-    expect(generateText).not.toHaveBeenCalled();
+    expect(wso).not.toHaveBeenCalled();
   });
 
   it("returns parsed WorldDraft on success", async () => {
     stubProviderEnv({
       AI_PROVIDER: "minimax",
       CHAT_MODEL: "MiniMax-M3",
-      WORLD_CREATOR_MODEL: "world-model",
       MINIMAX_API_KEY: "sk-test",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
     });
-    vi.mocked(generateText).mockResolvedValue({ text: VALID_WORLD_JSON } as never);
+    wso.mockResolvedValue(VALID_WORLD_DRAFT as never);
     const result = await generateWorldDraft({ prompt: "x" });
-    expect(result).not.toBeNull();
-    expect(result?.id).toBe("coastal-bookshop");
-    expect(result?.name).toBe("潮鸣镇");
+    expect(result).toEqual(VALID_WORLD_DRAFT);
   });
 
   it("includes worldId hint when provided", async () => {
@@ -569,9 +498,9 @@ describe("generateWorldDraft", () => {
       MINIMAX_API_KEY: "sk-test",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
     });
-    vi.mocked(generateText).mockResolvedValue({ text: VALID_WORLD_JSON } as never);
+    wso.mockResolvedValue(VALID_WORLD_DRAFT as never);
     await generateWorldDraft({ prompt: "x", worldId: "city-night" });
-    const call = vi.mocked(generateText).mock.calls[0][0];
+    const call = wso.mock.calls[0]![0] as Record<string, unknown>;
     expect(call.prompt).toContain("city-night");
     expect(call.prompt).toContain("用户偏好的世界 id");
   });
@@ -583,32 +512,32 @@ describe("generateWorldDraft", () => {
       MINIMAX_API_KEY: "sk-test",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
     });
-    vi.mocked(generateText).mockResolvedValue({ text: VALID_WORLD_JSON } as never);
+    wso.mockResolvedValue(VALID_WORLD_DRAFT as never);
     await generateWorldDraft({ prompt: "x", worldId: null });
-    const call = vi.mocked(generateText).mock.calls[0][0];
+    const call = wso.mock.calls[0]![0] as Record<string, unknown>;
     expect(call.prompt).not.toContain("用户偏好的世界 id");
   });
 
-  it("returns null when parse fails", async () => {
+  it("returns null when withStructuredOutput throws StructuredOutputError", async () => {
     stubProviderEnv({
       AI_PROVIDER: "minimax",
       CHAT_MODEL: "MiniMax-M3",
       MINIMAX_API_KEY: "sk-test",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
     });
-    vi.mocked(generateText).mockResolvedValue({ text: "garbage" } as never);
+    wso.mockRejectedValue(new SOE("invalid output") as never);
     const result = await generateWorldDraft({ prompt: "x" });
     expect(result).toBeNull();
   });
 
-  it("returns null when model throws", async () => {
+  it("returns null when withStructuredOutput throws any other error", async () => {
     stubProviderEnv({
       AI_PROVIDER: "minimax",
       CHAT_MODEL: "MiniMax-M3",
       MINIMAX_API_KEY: "sk-test",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
     });
-    vi.mocked(generateText).mockRejectedValue(new Error("boom"));
+    wso.mockRejectedValue(new Error("boom") as never);
     const result = await generateWorldDraft({ prompt: "x" });
     expect(result).toBeNull();
   });

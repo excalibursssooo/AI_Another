@@ -1,3 +1,4 @@
+import type { LanguageModel } from "ai";
 import { generateText, Output } from "ai";
 import type { ZodType } from "zod";
 import { z } from "zod";
@@ -17,6 +18,7 @@ export async function withStructuredOutput<TSchema extends ZodType>({
   purpose,
   prompt,
   system,
+  model: providedModel,
   temperature = 0.7,
   abortSignal,
 }: {
@@ -24,10 +26,11 @@ export async function withStructuredOutput<TSchema extends ZodType>({
   purpose: "chat" | "agent" | "world";
   prompt: string;
   system?: string;
+  model?: LanguageModel;
   temperature?: number;
   abortSignal?: AbortSignal;
 }): Promise<z.infer<TSchema>> {
-  const model = getLanguageModel(purpose);
+  const model = providedModel ?? getLanguageModel(purpose);
   const schemaName = (schema as { name?: string }).name ?? "unknown";
   if (!model) {
     throw new StructuredOutputError(schemaName);

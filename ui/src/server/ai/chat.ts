@@ -1,6 +1,3 @@
-import { generateText } from "ai";
-import type { ZodType } from "zod";
-
 import {
   AgentDraft,
   AgentDraftSchema,
@@ -9,6 +6,7 @@ import {
   WorldDraft,
   WorldDraftSchema,
 } from "./schemas";
+import { withStructuredOutput, StructuredOutputError } from "./structured-output";
 
 // Re-export provider-selection helpers from models.ts for backwards compatibility
 export { isMockProvider, getActiveProviderInfo, getLanguageModel } from "./models";
@@ -38,30 +36,6 @@ export interface WorldDraftGenerationInput {
 
 export type GenerateWorldDraft = (input: WorldDraftGenerationInput) => Promise<WorldDraft | null>;
 
-export function stripThinkingBlocks(text: string): string {
-  return text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
-}
-
-export function extractJsonPayload(text: string): string {
-  const stripped = stripThinkingBlocks(text);
-  const fenceMatch = stripped.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  return fenceMatch ? fenceMatch[1].trim() : stripped;
-}
-
-export function parseJsonWithSchema<T>(text: string, schema: ZodType<T>): T | null {
-  const payload = extractJsonPayload(text);
-  if (!payload) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(payload);
-    const result = schema.safeParse(parsed);
-    return result.success ? result.data : null;
-  } catch {
-    return null;
-  }
-}
-
 export async function generateChatReply(input: ChatGenerationInput): Promise<ChatReply> {
   if (isMockProvider()) {
     return {
@@ -75,25 +49,21 @@ export async function generateChatReply(input: ChatGenerationInput): Promise<Cha
     return fallbackReply();
   }
 
-  const systemWithSchema = `${input.system}\n\n${CHAT_JSON_FORMAT_INSTRUCTION}`;
-
   try {
-    const result = await generateText({
-      model,
-      system: systemWithSchema,
+    return await withStructuredOutput({
+      schema: ChatReplySchema,
+      purpose: "chat",
+      system: input.system,
       prompt: input.prompt,
       temperature: 0.7,
     });
-    const parsed = parseJsonWithSchema(result.text, ChatReplySchema);
-    return parsed ?? fallbackReply();
-  } catch {
-    return fallbackReply();
+  } catch (error) {
+    if (error instanceof StructuredOutputError) {
+      return fallbackReply();
+    }
+    throw error;
   }
 }
-
-const CHAT_JSON_FORMAT_INSTRUCTION = `【输出格式要求】
-请严格用以下 JSON 结构回复（不要 markdown 代码块，不要解释，不要前缀）：
-{"reply": "你的中文回复", "mood": {"label": "calm|happy|sad|anxious|angry|focused|neutral|high_risk", "intensity": 0.0-1.0, "heartbeatBpm": 55-130}}`;
 
 const AGENT_SYSTEM_PROMPT = `你是一个角色设定助手。根据用户的描述和所在的世界观，生成一个角色档案。
 角色必须自然地归属于这个世界观（背景、说话风格、爱好都要呼应世界氛围），同时体现用户描述中的核心特征。
@@ -120,13 +90,14 @@ export async function generateAgentDraft(input: AgentDraftGenerationInput): Prom
     const worldBlock = input.world
       ? `\n\n所在世界:\n- 名称: ${input.world.name}\n- 氛围: ${input.world.tone}\n- 世界观: ${input.world.lore}`
       : "";
-    const result = await generateText({
+    return await withStructuredOutput({
+      schema: AgentDraftSchema,
+      purpose: "agent",
       model,
-      system: AGENT_SYSTEM_PROMPT,
       prompt: `用户想要的角色描述: ${input.prompt.trim()}${worldBlock}`,
+      system: AGENT_SYSTEM_PROMPT,
       temperature: 0.8,
     });
-    return parseJsonWithSchema(result.text, AgentDraftSchema);
   } catch {
     return null;
   }
@@ -153,13 +124,14 @@ export async function generateWorldDraft(input: WorldDraftGenerationInput): Prom
   }
   try {
     const idHint = input.worldId?.trim() ? `\n\n用户偏好的世界 id（如果不合理可调整）: ${input.worldId.trim()}` : "";
-    const result = await generateText({
+    return await withStructuredOutput({
+      schema: WorldDraftSchema,
+      purpose: "world",
       model,
-      system: WORLD_SYSTEM_PROMPT,
       prompt: `用户想要的世界描述: ${input.prompt.trim()}${idHint}`,
+      system: WORLD_SYSTEM_PROMPT,
       temperature: 0.8,
     });
-    return parseJsonWithSchema(result.text, WorldDraftSchema);
   } catch {
     return null;
   }
