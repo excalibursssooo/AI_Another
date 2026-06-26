@@ -7,7 +7,12 @@ import {
   WorldRecord,
 } from "@/server/domain/chat/repositories";
 
-export function toAgentResponseDto(agent: AgentRecord) {
+export function toAgentResponseDto(agent: AgentRecord, world?: WorldRecord | null) {
+  const world_context = world
+    ? [world.lore, world.tone, ...world.seedMemories]
+        .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+        .join("\n")
+    : "";
   return {
     id: agent.id,
     name: agent.name,
@@ -16,7 +21,7 @@ export function toAgentResponseDto(agent: AgentRecord) {
     persona: agent.persona,
     background: agent.background,
     domain_id: agent.worldId,
-    world_context: "",
+    world_context,
     hobbies: agent.hobbies,
     speaking_style: agent.speakingStyle,
     status: agent.status,

@@ -1,20 +1,23 @@
 import { toAgentResponseDto } from "@/server/api/dto";
 import { getDatabase } from "@/server/db/client";
-import { AgentRepository } from "@/server/domain/chat/repositories";
+import { AgentRepository, WorldRepository } from "@/server/domain/chat/repositories";
 
 export const runtime = "nodejs";
 
 export async function GET(_req: Request, context: { params: Promise<{ agentId: string }> }): Promise<Response> {
   const { agentId } = await context.params;
-  const agent = new AgentRepository(getDatabase()).get(agentId);
+  const db = getDatabase();
+  const agent = new AgentRepository(db).get(agentId);
   if (!agent) {
     return Response.json({ detail: "agent not found" }, { status: 404 });
   }
-  return Response.json(toAgentResponseDto(agent));
+  const world = new WorldRepository(db).get(agent.worldId);
+  return Response.json(toAgentResponseDto(agent, world));
 }
 
 export async function PUT(req: Request, context: { params: Promise<{ agentId: string }> }): Promise<Response> {
   const { agentId } = await context.params;
+  const db = getDatabase();
   const body = (await req.json()) as {
     name?: string;
     persona?: string;
@@ -24,7 +27,7 @@ export async function PUT(req: Request, context: { params: Promise<{ agentId: st
     speaking_style?: string;
     status?: "active" | "inactive";
   };
-  const updated = new AgentRepository(getDatabase()).update(agentId, {
+  const updated = new AgentRepository(db).update(agentId, {
     ...(body.name ? { name: body.name, displayName: body.name } : {}),
     ...(body.persona ? { persona: body.persona } : {}),
     ...(body.background ? { background: body.background } : {}),
@@ -36,14 +39,17 @@ export async function PUT(req: Request, context: { params: Promise<{ agentId: st
   if (!updated) {
     return Response.json({ detail: "agent not found" }, { status: 404 });
   }
-  return Response.json(toAgentResponseDto(updated));
+  const world = new WorldRepository(db).get(updated.worldId);
+  return Response.json(toAgentResponseDto(updated, world));
 }
 
 export async function DELETE(_req: Request, context: { params: Promise<{ agentId: string }> }): Promise<Response> {
   const { agentId } = await context.params;
-  const deleted = new AgentRepository(getDatabase()).deactivate(agentId);
+  const db = getDatabase();
+  const deleted = new AgentRepository(db).deactivate(agentId);
   if (!deleted) {
     return Response.json({ detail: "agent not found or protected" }, { status: 404 });
   }
-  return Response.json(toAgentResponseDto(deleted));
+  const world = new WorldRepository(db).get(deleted.worldId);
+  return Response.json(toAgentResponseDto(deleted, world));
 }

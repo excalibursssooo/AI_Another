@@ -1,6 +1,6 @@
 import { toAgentResponseDto } from "@/server/api/dto";
 import { getDatabase } from "@/server/db/client";
-import { AgentRepository } from "@/server/domain/chat/repositories";
+import { AgentRepository, WorldRepository } from "@/server/domain/chat/repositories";
 import { createAgentCreateFlow } from "@/server/flow/agent-create-flow";
 
 export const runtime = "nodejs";
@@ -8,7 +8,12 @@ export const runtime = "nodejs";
 export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const worldId = url.searchParams.get("domain_id") || undefined;
-  const agents = new AgentRepository(getDatabase()).listActive(worldId).map(toAgentResponseDto);
+  const agentRepo = new AgentRepository(getDatabase());
+  const worldRepo = new WorldRepository(getDatabase());
+  const agents = agentRepo.listActive(worldId).map((agent) => {
+    const world = worldId ? worldRepo.get(worldId) : worldRepo.get(agent.worldId);
+    return toAgentResponseDto(agent, world);
+  });
   return Response.json(agents);
 }
 
@@ -36,5 +41,6 @@ export async function POST(req: Request): Promise<Response> {
       speakingStyle: body.speaking_style || "自然、真诚",
     },
   });
-  return Response.json(toAgentResponseDto(result.agent!));
+  const world = new WorldRepository(getDatabase()).get(result.agent!.worldId);
+  return Response.json(toAgentResponseDto(result.agent!, world));
 }

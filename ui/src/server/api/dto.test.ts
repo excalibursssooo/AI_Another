@@ -5,28 +5,60 @@ import { toAgentResponseDto, toConversationTurnDto, toMemoryResponseDto, toPostI
 describe("API DTO mapping", () => {
   it("maps agent records to the existing frontend agent DTO shape", () => {
     expect(
-      toAgentResponseDto({
-        id: "agent-default",
-        name: "xiao-ban",
-        displayName: "小伴",
-        persona: "温和",
-        background: "默认角色",
-        greeting: "你好",
-        speakingStyle: "自然",
-        hobbies: ["聊天"],
-        worldId: "default",
-        status: "active",
-        createdAt: 1_700_000_000_000,
-        updatedAt: 1_700_000_001_000,
-      }),
+      toAgentResponseDto(
+        {
+          id: "agent-default",
+          name: "xiao-ban",
+          displayName: "小伴",
+          persona: "温和",
+          background: "默认角色",
+          greeting: "你好",
+          speakingStyle: "自然",
+          hobbies: ["聊天"],
+          worldId: "default",
+          status: "active",
+          createdAt: 1_700_000_000_000,
+          updatedAt: 1_700_000_001_000,
+        },
+        { id: "w", name: "海风镇", lore: "南方", tone: "潮湿", constraints: [], seedMemories: ["记忆1", "记忆2"] },
+      ),
     ).toMatchObject({
       id: "agent-default",
       display_name: "小伴",
       domain_id: "default",
-      world_context: "",
+      world_context: "南方\n潮湿\n记忆1\n记忆2",
       speaking_style: "自然",
       status: "active",
     });
+  });
+
+  it("with world: toAgentResponseDto returns world_context containing all world parts joined", () => {
+    const result = toAgentResponseDto(
+      { id: "a1", name: "n", displayName: "n", persona: "p", background: "b", greeting: "g", speakingStyle: "s", hobbies: [], worldId: "w1", status: "active", createdAt: 1, updatedAt: 1 },
+      { id: "w", name: "海风镇", lore: "南方", tone: "潮湿", constraints: [], seedMemories: ["记忆1", "记忆2"] },
+    );
+    expect(result.world_context).toContain("南方");
+    expect(result.world_context).toContain("潮湿");
+    expect(result.world_context).toContain("记忆1");
+    expect(result.world_context).toContain("记忆2");
+  });
+
+  it("without world: toAgentResponseDto returns world_context as empty string", () => {
+    const result = toAgentResponseDto({
+      id: "a1",
+      name: "n",
+      displayName: "n",
+      persona: "p",
+      background: "b",
+      greeting: "g",
+      speakingStyle: "s",
+      hobbies: [],
+      worldId: "w1",
+      status: "active",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    expect(result.world_context).toBe("");
   });
 
   it("maps conversation turns with ISO timestamps", () => {
