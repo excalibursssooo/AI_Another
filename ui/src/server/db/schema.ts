@@ -85,3 +85,15 @@ export const feedPosts = sqliteTable("feed_posts", {
   sourceTaskId: text("source_task_id"),
   createdAt: integer("created_at").notNull(),
 });
+
+export const tasks = sqliteTable("tasks", {
+  id: text("id").primaryKey(),
+  kind: text("kind").notNull(),
+  payloadJson: text("payload_json").notNull().default("{}"),
+  status: text("status").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error"),
+  runAfter: integer("run_after").notNull().default(0),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});

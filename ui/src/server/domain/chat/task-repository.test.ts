@@ -25,4 +25,51 @@ describe("TaskRepository", () => {
     const result = tasks.markDone(enqueued.id);
     expect(result?.status).toBe("done");
   });
+
+  it("claimNext skips rows with run_after > now", () => {
+    const db = createTestDatabase();
+    const tasks = new TaskRepository(db);
+    const oneHourFromNow = Date.now() + 60 * 60 * 1000;
+    tasks.enqueue({ kind: "memory_extract", payload: { x: 1 }, runAfter: oneHourFromNow });
+    expect(tasks.claimNext()).toBeNull();
+  });
+
+  it("markFailed increments attempts and sets last_error", () => {
+    const db = createTestDatabase();
+    const tasks = new TaskRepository(db);
+    const enqueued = tasks.enqueue({ kind: "memory_extract", payload: { foo: 1 } });
+    const errorMessage = "boom: something exploded";
+    const failed = tasks.markFailed(enqueued.id, errorMessage);
+    expect(failed).not.toBeNull();
+    expect(failed?.status).toBe("failed");
+    expect(failed?.attempts).toBe(1);
+    expect(failed?.lastError).toContain("boom");
+
+    const reread = tasks.get(enqueued.id);
+    expect(reread?.attempts).toBe(1);
+    expect(reread?.lastError).toContain("boom");
+  });
+
+  it("enqueue with runAfter in the past is immediately claimable; runAfter in the future is not", () => {
+    const db = createTestDatabase();
+    const tasks = new TaskRepository(db);
+    const oneMinuteAgo = Date.now() - 60 * 1000;
+    const oneHourFromNow = Date.now() + 60 * 60 * 1000;
+    const pastTask = tasks.enqueue({ kind: "memory_extract", payload: { when: "past" }, runAfter: oneMinuteAgo });
+    const futureTask = tasks.enqueue({ kind: "memory_extract", payload: { when: "future" }, runAfter: oneHourFromNow });
+
+    const firstClaim = tasks.claimNext();
+    expect(firstClaim).not.toBeNull();
+    expect(firstClaim?.id).toBe(pastTask.id);
+    expect(firstClaim?.status).toBe("running");
+
+    const secondClaim = tasks.claimNext();
+    expect(secondClaim).toBeNull();
+
+    const verifiedPast = tasks.get(pastTask.id);
+    expect(verifiedPast?.status).toBe("running");
+    expect(verifiedPast?.id).toBe(pastTask.id);
+
+    void futureTask;
+  });
 });

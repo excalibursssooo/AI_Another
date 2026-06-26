@@ -147,6 +147,21 @@ function initializeDatabase(db: AppDatabase): void {
 
     CREATE INDEX IF NOT EXISTS feed_posts_user_world_created_idx
       ON feed_posts (user_id, world_id, status, created_at);
+
+    CREATE TABLE IF NOT EXISTS tasks (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      run_after INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS tasks_status_kind_run_after_idx
+      ON tasks (status, kind, run_after);
   `);
 }
 
