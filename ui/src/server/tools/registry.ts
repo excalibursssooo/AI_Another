@@ -1,63 +1,15 @@
+export { createLowRiskToolActions } from "./low-risk-actions";
+export type { ToolScope } from "./low-risk-actions";
+
 import { tool } from "ai";
 import { z } from "zod";
 
-import { AppDatabase } from "@/server/db/client";
-import { MemoryRepository } from "@/server/domain/chat/repositories";
+import { createLowRiskToolActions } from "./low-risk-actions";
+import type { ToolScope } from "./low-risk-actions";
 
-export interface ToolScope {
-  db: AppDatabase;
-  userId: string;
-  agentId: string;
-  worldId: string;
-}
-
-export function createLowRiskToolActions(scope: ToolScope) {
-  const memories = new MemoryRepository(scope.db);
-
-  return {
-    searchMemories: async (input: { query: string; limit?: number }) =>
-      memories
-        .recall({
-          userId: scope.userId,
-          agentId: scope.agentId,
-          worldId: scope.worldId,
-          query: input.query,
-          limit: Math.max(1, Math.min(10, input.limit ?? 5)),
-        })
-        .map((item) => ({
-          memory_type: item.memoryType,
-          content: item.content,
-          importance: item.importance,
-        })),
-
-    createTaskDraft: async (input: { title: string; priority: "low" | "medium" | "high" }) => ({
-      id: `draft-task-${Date.now()}`,
-      status: "draft" as const,
-      title: input.title.trim(),
-      priority: input.priority,
-      user_id: scope.userId,
-      agent_id: scope.agentId,
-    }),
-
-    createFeedPostDraft: async (input: {
-      content: string;
-      topicSeed: string;
-      postType: "status" | "reflection" | "plan";
-    }) => ({
-      id: `draft-post-${Date.now()}`,
-      status: "draft" as const,
-      user_id: scope.userId,
-      agent_id: scope.agentId,
-      domain_id: scope.worldId,
-      content: input.content.trim(),
-      topic_seed: input.topicSeed.trim(),
-      post_type: input.postType,
-    }),
-  };
-}
-
-export function createToolRegistry(scope: ToolScope) {
+export function createChatToolSet(scope: ToolScope) {
   const actions = createLowRiskToolActions(scope);
+
   return {
     searchMemories: tool({
       description: "Search active long-term memories scoped to the current user, agent, and world.",
