@@ -4,6 +4,7 @@ import type { ZodType } from "zod";
 import { z } from "zod";
 
 import { getLanguageModel } from "./models";
+import type { ModelPurpose } from "./models";
 
 export class StructuredOutputError extends Error {
   name = "StructuredOutputError";
@@ -23,7 +24,7 @@ export async function withStructuredOutput<TSchema extends ZodType>({
   abortSignal,
 }: {
   schema: TSchema;
-  purpose: "chat" | "agent" | "world";
+  purpose: ModelPurpose;
   prompt: string;
   system?: string;
   model?: LanguageModel;

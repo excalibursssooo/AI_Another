@@ -82,7 +82,7 @@ export async function generateAgentDraft(input: AgentDraftGenerationInput): Prom
   if (isMockProvider()) {
     return null;
   }
-  const model = getLanguageModel("agent");
+  const model = getLanguageModel("agentCreator");
   if (!model) {
     return null;
   }
@@ -92,7 +92,7 @@ export async function generateAgentDraft(input: AgentDraftGenerationInput): Prom
       : "";
     return await withStructuredOutput({
       schema: AgentDraftSchema,
-      purpose: "agent",
+      purpose: "agentCreator",
       model,
       prompt: `用户想要的角色描述: ${input.prompt.trim()}${worldBlock}`,
       system: AGENT_SYSTEM_PROMPT,
@@ -118,7 +118,7 @@ export async function generateWorldDraft(input: WorldDraftGenerationInput): Prom
   if (isMockProvider()) {
     return null;
   }
-  const model = getLanguageModel("world");
+  const model = getLanguageModel("worldCreator");
   if (!model) {
     return null;
   }
@@ -126,7 +126,7 @@ export async function generateWorldDraft(input: WorldDraftGenerationInput): Prom
     const idHint = input.worldId?.trim() ? `\n\n用户偏好的世界 id（如果不合理可调整）: ${input.worldId.trim()}` : "";
     return await withStructuredOutput({
       schema: WorldDraftSchema,
-      purpose: "world",
+      purpose: "worldCreator",
       model,
       prompt: `用户想要的世界描述: ${input.prompt.trim()}${idHint}`,
       system: WORLD_SYSTEM_PROMPT,
