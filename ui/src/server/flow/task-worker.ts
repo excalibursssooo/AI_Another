@@ -49,6 +49,7 @@ function parseMemoryExtractPayload(payload: unknown): {
   userMessage: string;
   assistantMessage: string;
   agentName?: string;
+  fallbackReplies?: string[];
 } {
   if (!payload || typeof payload !== "object") {
     throw new Error("Invalid memory_extract payload");
@@ -60,7 +61,10 @@ function parseMemoryExtractPayload(payload: unknown): {
   const userMessage = readRequiredString(record, "userMessage");
   const assistantMessage = readRequiredString(record, "assistantMessage");
   const agentName = typeof record.agentName === "string" ? record.agentName : undefined;
-  return { userId, agentId, worldId, userMessage, assistantMessage, agentName };
+  const fallbackReplies = Array.isArray(record.fallbackReplies)
+    ? record.fallbackReplies.filter((x): x is string => typeof x === "string")
+    : undefined;
+  return { userId, agentId, worldId, userMessage, assistantMessage, agentName, fallbackReplies };
 }
 
 function readRequiredString(record: Record<string, unknown>, key: string): string {

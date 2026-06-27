@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createTestDatabase } from "@/server/db/client";
 import { MemoryRepository } from "@/server/domain/chat/repositories";
@@ -144,5 +144,48 @@ describe("MemoryExtractFlow", () => {
     });
     expect(memories).toHaveLength(1);
     expect(memories[0].sourceTaskId).toBe("task-1");
+  });
+});
+
+describe("MemoryExtractFlow throttling", () => {
+  it("short-circuits when shouldThrottle matches fallback_reply and user has no strong signal", async () => {
+    const db = createTestDatabase();
+    const generateSpy = vi.fn();
+    const flow = createMemoryExtractFlow({ db, generateMemoryExtraction: generateSpy });
+    const result = await flow.run({
+      userId: "u1", agentId: "a1", worldId: "w1",
+      userMessage: "好的",
+      assistantMessage: "当前模型暂时不可用，但我已经收到你的消息了。",
+      fallbackReplies: ["当前模型暂时不可用，但我已经收到你的消息了。"],
+    });
+    expect(generateSpy).not.toHaveBeenCalled();
+    expect(result.throttled).toBe(true);
+    expect(result.throttleReason).toBe("fallback_reply");
+    expect(result.persistedMemoryCount).toBe(0);
+  });
+
+  it("does NOT throttle when user has strong memory signal even if assistant is fallback", async () => {
+    const db = createTestDatabase();
+    const generateSpy = vi.fn().mockResolvedValue({ memories: [] });
+    const flow = createMemoryExtractFlow({ db, generateMemoryExtraction: generateSpy });
+    await flow.run({
+      userId: "u1", agentId: "a1", worldId: "w1",
+      userMessage: "以后叫我阿梁",
+      assistantMessage: "当前模型暂时不可用，但我已经收到你的消息了。",
+      fallbackReplies: ["当前模型暂时不可用，但我已经收到你的消息了。"],
+    });
+    expect(generateSpy).toHaveBeenCalled();
+  });
+
+  it("records one throttled log row per throttled task", async () => {
+    const db = createTestDatabase();
+    const flow = createMemoryExtractFlow({ db });
+    await flow.run({
+      userId: "u1", agentId: "a1", worldId: "w1",
+      userMessage: "好的",
+      assistantMessage: "好的",
+    });
+    const rows = db.sqlite.prepare("SELECT * FROM memory_operation_logs WHERE kind = 'throttled'").all();
+    expect(rows).toHaveLength(1);
   });
 });

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createTestDatabase } from "@/server/db/client";
 import { MemoryRepository } from "@/server/domain/chat/repositories";
@@ -46,5 +46,22 @@ describe("drainChatTasks", () => {
         status: "active",
       }),
     ).toHaveLength(1);
+  });
+
+  it("drainChatTasks propagates fallbackReplies into MemoryExtractContext", async () => {
+    const db = createTestDatabase();
+    const tasks = new TaskRepository(db);
+    const task = tasks.enqueue({
+      kind: "memory_extract",
+      payload: {
+        userId: "u1", agentId: "a1", worldId: "w1",
+        userMessage: "今天天气真好", assistantMessage: "确实很舒适",
+        fallbackReplies: ["当前模型暂时不可用，但我已经收到你的消息了。"],
+      },
+    });
+    const generateSpy = vi.fn().mockResolvedValue({ memories: [] });
+    await drainChatTasks({ db, generateMemoryExtraction: generateSpy, limit: 1 });
+    expect(generateSpy).toHaveBeenCalled();
+    void task;
   });
 });

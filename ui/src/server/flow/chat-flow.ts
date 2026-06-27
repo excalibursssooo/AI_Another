@@ -235,6 +235,10 @@ export function createChatFlow(options: { db: AppDatabase; generateChatReply?: G
             conversationId: ctx.conversationId ?? null,
             userMessage: ctx.input,
             assistantMessage: ctx.reply ?? "",
+            fallbackReplies: [
+              "我在这里。你刚才说的我记住了。",
+              "当前模型暂时不可用，但我已经收到你的消息了。",
+            ],
           },
         });
         return finalize({ ...ctx, persistedMemoryCount: 0 });

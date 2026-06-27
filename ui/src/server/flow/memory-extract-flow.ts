@@ -5,6 +5,8 @@ import {
   generateMemoryExtraction as defaultGenerateMemoryExtraction,
 } from "@/server/ai/chat";
 import { MemoryCandidate } from "@/server/ai/schemas";
+import { shouldThrottle, type ThrottleReason } from "@/server/domain/chat/throttle-rules";
+import { MemoryOperationLogRepository } from "@/server/domain/chat/memory-operation-log-repository";
 
 import type { EmbedText } from "@/server/domain/chat/memory-consolidator";
 import { Flow } from "./runner";
@@ -21,6 +23,9 @@ export interface MemoryExtractContext {
   persistedMemoryCount?: number;
   sourceMessageId?: string | null;
   sourceTaskId?: string | null;
+  throttled?: boolean;
+  throttleReason?: ThrottleReason;
+  fallbackReplies?: string[];
 }
 
 export function createMemoryExtractFlow(options: {
@@ -40,8 +45,31 @@ export function createMemoryExtractFlow(options: {
       }),
     },
     {
+      name: "ThrottleMemoryExtraction",
+      run: async (ctx) => {
+        const decision = shouldThrottle({
+          userMessage: ctx.userMessage,
+          assistantMessage: ctx.assistantMessage,
+          fallbackReplies: ctx.fallbackReplies ?? [],
+        });
+        if (decision.throttled) {
+          new MemoryOperationLogRepository(options.db).record({
+            userId: ctx.userId, agentId: ctx.agentId, worldId: ctx.worldId,
+            kind: "throttled",
+            reason: decision.reason!,
+            sourceTaskId: ctx.sourceTaskId ?? null,
+          });
+          return { ...ctx, throttled: true, throttleReason: decision.reason, candidates: [] };
+        }
+        return ctx;
+      },
+    },
+    {
       name: "ExtractMemoryCandidates",
       run: async (ctx) => {
+        if (ctx.throttled) {
+          return { ...ctx, candidates: [] };
+        }
         if (!ctx.userMessage || !ctx.assistantMessage) {
           return { ...ctx, candidates: [] };
         }
