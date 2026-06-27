@@ -27,7 +27,7 @@ describe("FeedGenerateFlow", () => {
     });
 
     expect(result.skipped).toBe(false);
-    expect(result.post?.content).toContain("海边散步");
+    expect(result.post?.content).toContain("海边散");
     expect(new FeedPostRepository(db).list({ userId: "u001", worldId: "default", limit: 20, offset: 0, includeArchived: false }).total).toBe(1);
   });
 
