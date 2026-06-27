@@ -89,4 +89,60 @@ describe("MemoryExtractFlow", () => {
       }),
     ).toHaveLength(8);
   });
+
+  it("consolidates extracted candidates instead of direct inserting duplicates", async () => {
+    const db = createTestDatabase();
+    const flow = createMemoryExtractFlow({
+      db,
+      generateMemoryExtraction: async () => ({
+        memories: [
+          {
+            subject: "user",
+            type: "preference",
+            key: "preference.weather.rain",
+            topic: "rain",
+            content: "用户喜欢雨天散步。",
+            importance: 0.8,
+            confidence: 0.9,
+          },
+          {
+            subject: "user",
+            type: "preference",
+            key: "preference.weather.rain",
+            topic: "rain",
+            content: "用户喜欢雨天散步。",
+            importance: 0.7,
+            confidence: 0.8,
+          },
+        ],
+      }),
+      embedText: async () => ({
+        vector: [1, 0],
+        dimension: 2,
+        backend: "llama.cpp",
+        quality: "semantic",
+        model: "bge-m3",
+        version: 1,
+        needsRefresh: false,
+      }),
+    });
+
+    const result = await flow.run({
+      userId: "u001",
+      agentId: "agent-default",
+      worldId: "default",
+      userMessage: "我喜欢雨天散步",
+      assistantMessage: "我记住了。",
+      sourceTaskId: "task-1",
+    });
+
+    expect(result.persistedMemoryCount).toBe(2);
+    const memories = new MemoryRepository(db).listActiveForScope({
+      userId: "u001",
+      agentId: "agent-default",
+      worldId: "default",
+    });
+    expect(memories).toHaveLength(1);
+    expect(memories[0].sourceTaskId).toBe("task-1");
+  });
 });
