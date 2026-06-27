@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createTestDatabase } from "@/server/db/client";
 import { MemoryRepository } from "./repositories";
-import { MemoryConsolidator } from "./memory-consolidator";
+import { MemoryConsolidator, detectConflict } from "./memory-consolidator";
 import type { EmbeddingResult } from "@/server/ai/embeddings";
 
 const semantic = (vector: number[]): EmbeddingResult => ({
@@ -263,5 +263,56 @@ describe("MemoryConsolidator", () => {
     expect(replacement?.sourceTaskId).toBe("task-conflict");
     expect(replacement?.sourceMessageId).toBe("msg-99");
     expect(replacement?.lastObservedAt).toEqual(expect.any(Number));
+  });
+});
+
+describe("detectConflict v1.1", () => {
+  it("returns type_not_conflict_capable for non-conflict types", () => {
+    expect(detectConflict("旧", "新", "event")).toEqual({ conflict: false, reason: "type_not_conflict_capable" });
+    expect(detectConflict("旧", "新", "profile").conflict).toBe(false); // profile excluded in v1.1
+  });
+
+  it("returns hypothetical_context when new content has hypothetical triggers and no long-term marker", () => {
+    expect(detectConflict("用户喜欢咖啡", "如果用户不喜欢咖啡", "preference"))
+      .toEqual({ conflict: false, reason: "hypothetical_context" });
+  });
+
+  it("returns high_confidence_reversal when new content has long-term marker + negative polarity", () => {
+    expect(detectConflict("用户接受晚间提醒", "用户以后不要晚间提醒", "preference"))
+      .toEqual({ conflict: true, reason: "high_confidence_reversal" });
+  });
+
+  it("'我希望以后...' is NOT hypothetical (long-term marker bypass)", () => {
+    expect(detectConflict("用户接受晚间提醒", "我希望以后不要晚间提醒", "boundary"))
+      .toEqual({ conflict: true, reason: "high_confidence_reversal" });
+  });
+
+  it("returns double_negative when either side has double negative", () => {
+    expect(detectConflict("用户不是不喜欢咖啡", "用户不喜欢咖啡", "preference"))
+      .toEqual({ conflict: false, reason: "double_negative" });
+  });
+
+  it("returns temporal_vs_long_term for preference/boundary with temporal trigger", () => {
+    expect(detectConflict("用户喜欢咖啡", "用户今天不喜欢咖啡", "preference"))
+      .toEqual({ conflict: false, reason: "temporal_vs_long_term" });
+  });
+
+  it("does NOT apply temporal_vs_long_term when long-term marker is present", () => {
+    expect(detectConflict("用户喜欢咖啡", "用户今天不再喜欢咖啡", "preference").conflict).toBe(true);
+  });
+
+  it("returns high_confidence_reversal on plain polarity flip", () => {
+    expect(detectConflict("用户喜欢咖啡", "用户不喜欢咖啡", "preference"))
+      .toEqual({ conflict: true, reason: "high_confidence_reversal" });
+  });
+
+  it("returns polarity_unchanged_or_ambiguous when same polarity", () => {
+    expect(detectConflict("用户喜欢咖啡", "用户也喜欢茶", "preference"))
+      .toEqual({ conflict: false, reason: "polarity_unchanged_or_ambiguous" });
+  });
+
+  it("profile type returns type_not_conflict_capable (v1.1 limitation)", () => {
+    expect(detectConflict("用户是医生", "用户不是医生", "profile"))
+      .toEqual({ conflict: false, reason: "type_not_conflict_capable" });
   });
 });

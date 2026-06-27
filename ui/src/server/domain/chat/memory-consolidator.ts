@@ -7,6 +7,7 @@ import {
 import type { EmbeddingResult } from "@/server/ai/embeddings";
 import type { MemoryCandidate } from "@/server/ai/schemas";
 import { MemoryRecord, MemoryRepository } from "./repositories";
+import { MemoryOperationLogRepository } from "./memory-operation-log-repository";
 
 export const MEMORY_MERGE_SIMILARITY = 0.86;
 export const MEMORY_CONFLICT_SIMILARITY = 0.72;
@@ -38,16 +39,94 @@ interface RankedMemory {
   similarity: number;
 }
 
-const POSITIVE_PHRASES = ["喜欢", "爱", "想", "要", "希望", "倾向"];
-const NEGATIVE_PHRASES = ["不喜欢", "不爱", "不想", "不要", "不希望", "讨厌", "排斥"];
+export const CONFLICT_CAPABLE_TYPES = new Set([
+  "preference", "boundary", "goal",
+]);
+
+const POSITIVE_PHRASES = [
+  "喜欢", "爱", "想", "要", "希望", "倾向", "接受", "可以", "愿意", "允许", "计划", "准备",
+];
+const NEGATIVE_PHRASES = [
+  "不喜欢", "不爱", "不想", "不要", "不希望", "讨厌", "排斥", "不接受", "拒绝", "不能", "禁止", "不再",
+];
+const DOUBLE_NEGATIVE_PHRASES = [
+  "不是不喜欢", "并不是不喜欢", "不是不爱", "并不是不爱", "不是不想", "并不是不想",
+];
+const HYPOTHETICAL_TRIGGERS = [
+  "如果", "要是", "假如", "假设", "要是能", "要是我",
+  "的话", "情况下", "若", "若要",
+];
+const TEMPORAL_TRIGGERS = [
+  "今天", "这次", "这次只", "临时", "最近", "目前",
+  "今天下午", "今天晚上", "这周", "本周",
+];
+const LONG_TERM_MARKERS = [
+  "以后", "从此", "从今以后", "从现在起", "默认", "永远",
+  "不要再", "不要了", "不再", "一直",
+];
+
+function containsAny(haystack: string, needles: readonly string[]): boolean {
+  const lower = haystack.toLowerCase();
+  for (const n of needles) {
+    if (lower.includes(n.toLowerCase())) return true;
+  }
+  return false;
+}
+
+function polarityOf(content: string): "positive" | "negative" | null {
+  if (DOUBLE_NEGATIVE_PHRASES.some((p) => content.includes(p))) return null;
+  for (const p of NEGATIVE_PHRASES) if (content.includes(p)) return "negative";
+  for (const p of POSITIVE_PHRASES) if (content.includes(p)) return "positive";
+  return null;
+}
+
+export type ConflictReason =
+  | "type_not_conflict_capable"
+  | "hypothetical_context"
+  | "double_negative"
+  | "temporal_vs_long_term"
+  | "high_confidence_reversal"
+  | "polarity_unchanged_or_ambiguous";
+
+export interface ConflictDecision {
+  conflict: boolean;
+  reason: ConflictReason;
+}
+
+export function detectConflict(oldContent: string, newContent: string, memoryType: string): ConflictDecision {
+  if (!CONFLICT_CAPABLE_TYPES.has(memoryType)) {
+    return { conflict: false, reason: "type_not_conflict_capable" };
+  }
+  const hasLongTermMarker = containsAny(newContent, LONG_TERM_MARKERS);
+  if (!hasLongTermMarker && containsAny(newContent, HYPOTHETICAL_TRIGGERS)) {
+    return { conflict: false, reason: "hypothetical_context" };
+  }
+  if (containsAny(oldContent, DOUBLE_NEGATIVE_PHRASES) || containsAny(newContent, DOUBLE_NEGATIVE_PHRASES)) {
+    return { conflict: false, reason: "double_negative" };
+  }
+  const isLongTermType = memoryType === "preference" || memoryType === "boundary";
+  const oldTemporal = containsAny(oldContent, TEMPORAL_TRIGGERS);
+  const newTemporal = containsAny(newContent, TEMPORAL_TRIGGERS);
+  if (isLongTermType && (oldTemporal || newTemporal) && !hasLongTermMarker) {
+    return { conflict: false, reason: "temporal_vs_long_term" };
+  }
+  const oldPolarity = polarityOf(oldContent);
+  const newPolarity = polarityOf(newContent);
+  if (oldPolarity !== null && newPolarity !== null && oldPolarity !== newPolarity) {
+    return { conflict: true, reason: "high_confidence_reversal" };
+  }
+  return { conflict: false, reason: "polarity_unchanged_or_ambiguous" };
+}
 
 export class MemoryConsolidator {
   private readonly memories: MemoryRepository;
   private readonly embedText: EmbedText;
+  private readonly db: AppDatabase;
 
   constructor(options: { db: AppDatabase; embedText?: EmbedText }) {
     this.memories = new MemoryRepository(options.db);
     this.embedText = options.embedText ?? defaultEmbedText;
+    this.db = options.db;
   }
 
   async consolidate(input: ConsolidateMemoryInput): Promise<ConsolidationResult> {
@@ -57,20 +136,58 @@ export class MemoryConsolidator {
     }
 
     const embedding = await this.embedText(content);
+    if (embedding.fallbackReason !== undefined) {
+      new MemoryOperationLogRepository(this.db).record({
+        userId: input.userId, agentId: input.agentId, worldId: input.worldId,
+        kind: "embedding_fallback",
+        reason: embedding.fallbackReason,
+        sourceTaskId: input.sourceTaskId ?? null,
+      });
+    }
     const embeddingInput = toEmbeddingInput(content, embedding);
     const comparable = this.memories
       .listActiveForScope(input)
       .filter((memory) => isComparable(memory, input.candidate));
 
     const ranked = rankComparable(comparable, embedding);
-    const conflict = ranked
+
+    const conflictChecks = ranked
       .filter((item) => item.similarity >= MEMORY_CONFLICT_SIMILARITY)
       .slice(0, MEMORY_CONFLICT_TOP_K)
-      .find((item) => detectConflict(item.memory.content, content, input.candidate.type));
+      .map((item) => ({
+        item,
+        decision: detectConflict(item.memory.content, content, input.candidate.type),
+      }));
 
+    const logs = new MemoryOperationLogRepository(this.db);
+
+    const noConflictReasons: Record<string, number> = {};
+    for (const { decision } of conflictChecks) {
+      if (!decision.conflict) {
+        noConflictReasons[decision.reason] = (noConflictReasons[decision.reason] ?? 0) + 1;
+      }
+    }
+    if (conflictChecks.length > 0) {
+      logs.record({
+        userId: input.userId, agentId: input.agentId, worldId: input.worldId,
+        kind: "no_conflict",
+        reason: "summary",
+        detail: { checked: conflictChecks.length, reasons: noConflictReasons },
+        sourceTaskId: input.sourceTaskId ?? null,
+      });
+    }
+
+    const conflict = conflictChecks.find(({ decision }) => decision.conflict);
     if (conflict) {
+      logs.record({
+        userId: input.userId, agentId: input.agentId, worldId: input.worldId,
+        kind: "conflict",
+        reason: conflict.decision.reason,
+        detail: { similarity: conflict.item.similarity, frozenMemoryId: conflict.item.memory.id },
+        sourceTaskId: input.sourceTaskId ?? null,
+      });
       const created = this.memories.replaceConflicted({
-        oldMemoryId: conflict.memory.id,
+        oldMemoryId: conflict.item.memory.id,
         reason: "deterministic conflict",
         newMemory: {
           userId: input.userId,
@@ -92,8 +209,8 @@ export class MemoryConsolidator {
       return {
         action: "conflicted",
         memoryId: created.id,
-        frozenMemoryId: conflict.memory.id,
-        reason: "conflict",
+        frozenMemoryId: conflict.item.memory.id,
+        reason: `conflict:${conflict.decision.reason}`,
       };
     }
 
@@ -134,7 +251,7 @@ export class MemoryConsolidator {
   }
 
   detectConflictForTest(oldContent: string, newContent: string, memoryType: string): boolean {
-    return detectConflict(oldContent, newContent, memoryType);
+    return detectConflict(oldContent, newContent, memoryType).conflict;
   }
 }
 
@@ -202,37 +319,6 @@ function parseVector(raw: string | null): number[] | null {
   } catch {
     return null;
   }
-}
-
-function detectConflict(oldContent: string, newContent: string, memoryType: string): boolean {
-  if (memoryType !== "preference") {
-    return false;
-  }
-  const oldPolarity = polarityOf(oldContent);
-  const newPolarity = polarityOf(newContent);
-
-  if (oldPolarity === null || newPolarity === null) {
-    return false;
-  }
-  return oldPolarity !== newPolarity;
-}
-
-function polarityOf(content: string): "positive" | "negative" | null {
-  // Match negative phrases first (per design rule). A negative phrase match
-  // classifies the content as negative; a positive phrase inside a negative
-  // phrase (e.g. "喜欢" in "不喜欢") is therefore ignored, so "不是不喜欢"
-  // is treated as negative — not as both.
-  for (const phrase of NEGATIVE_PHRASES) {
-    if (content.includes(phrase)) {
-      return "negative";
-    }
-  }
-  for (const phrase of POSITIVE_PHRASES) {
-    if (content.includes(phrase)) {
-      return "positive";
-    }
-  }
-  return null;
 }
 
 function mergeMemoryContent(memory: MemoryRecord, candidate: MemoryCandidate): string {
