@@ -185,7 +185,37 @@ function initializeDatabase(db: AppDatabase): void {
       INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
     END;
   `);
+  migrateMemoryEmbeddingColumns(db);
   migrateAgentLiveStatesScope(db);
+}
+
+function migrateMemoryEmbeddingColumns(db: AppDatabase): void {
+  const columns = db.sqlite.prepare("PRAGMA table_info(memories)").all() as Array<{ name: string }>;
+  const names = new Set(columns.map((column) => column.name));
+  const addColumn = (name: string, definition: string) => {
+    if (!names.has(name)) {
+      db.sqlite.exec(`ALTER TABLE memories ADD COLUMN ${name} ${definition}`);
+      names.add(name);
+    }
+  };
+
+  addColumn("canonical_key", "TEXT");
+  addColumn("topic", "TEXT");
+  addColumn("embedding_json", "TEXT");
+  addColumn("embedding_model", "TEXT");
+  addColumn("embedding_backend", "TEXT");
+  addColumn("embedding_quality", "TEXT");
+  addColumn("embedding_dimension", "INTEGER");
+  addColumn("embedding_status", "TEXT NOT NULL DEFAULT 'missing'");
+  addColumn("embedding_text_hash", "TEXT");
+  addColumn("embedding_version", "INTEGER NOT NULL DEFAULT 1");
+  addColumn("embedding_needs_refresh", "INTEGER NOT NULL DEFAULT 1");
+  addColumn("embedding_updated_at", "INTEGER");
+  addColumn("superseded_by", "TEXT");
+  addColumn("superseded_reason", "TEXT");
+  addColumn("last_observed_at", "INTEGER");
+  addColumn("source_message_id", "TEXT");
+  addColumn("source_task_id", "TEXT");
 }
 
 function migrateAgentLiveStatesScope(db: AppDatabase): void {

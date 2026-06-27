@@ -368,3 +368,33 @@ describe("chat repositories", () => {
     });
   });
 });
+
+describe("memory embedding schema", () => {
+  it("initializes memory embedding and supersession columns", () => {
+    const db = createTestDatabase();
+    const columns = db.sqlite.prepare("PRAGMA table_info(memories)").all() as Array<{ name: string }>;
+    const names = new Set(columns.map((column) => column.name));
+
+    for (const name of [
+      "canonical_key",
+      "topic",
+      "embedding_json",
+      "embedding_model",
+      "embedding_backend",
+      "embedding_quality",
+      "embedding_dimension",
+      "embedding_status",
+      "embedding_text_hash",
+      "embedding_version",
+      "embedding_needs_refresh",
+      "embedding_updated_at",
+      "superseded_by",
+      "superseded_reason",
+      "last_observed_at",
+      "source_message_id",
+      "source_task_id",
+    ]) {
+      expect(names.has(name)).toBe(true);
+    }
+  });
+});

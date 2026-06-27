@@ -59,6 +59,23 @@ export const memories = sqliteTable("memories", {
   updatedAt: integer("updated_at").notNull(),
   accessCount: integer("access_count").notNull().default(0),
   lastAccessedAt: integer("last_accessed_at"),
+  canonicalKey: text("canonical_key"),
+  topic: text("topic"),
+  embeddingJson: text("embedding_json"),
+  embeddingModel: text("embedding_model"),
+  embeddingBackend: text("embedding_backend"),
+  embeddingQuality: text("embedding_quality"),
+  embeddingDimension: integer("embedding_dimension"),
+  embeddingStatus: text("embedding_status").notNull().default("missing"),
+  embeddingTextHash: text("embedding_text_hash"),
+  embeddingVersion: integer("embedding_version").notNull().default(1),
+  embeddingNeedsRefresh: integer("embedding_needs_refresh").notNull().default(1),
+  embeddingUpdatedAt: integer("embedding_updated_at"),
+  supersededBy: text("superseded_by"),
+  supersededReason: text("superseded_reason"),
+  lastObservedAt: integer("last_observed_at"),
+  sourceMessageId: text("source_message_id"),
+  sourceTaskId: text("source_task_id"),
 });
 
 export const agentLiveStates = sqliteTable(
