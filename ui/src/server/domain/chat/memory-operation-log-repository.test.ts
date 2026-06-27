@@ -31,7 +31,7 @@ describe("MemoryOperationLogRepository", () => {
       detail: { checked: 10, reasons: { hypothetical_context: 4 } },
     });
     const [row] = logs.listRecent({});
-    expect(JSON.parse(row.detail!)).toEqual({ checked: 10, reasons: { hypothetical_context: 4 } });
+    expect(row.detail).toEqual({ checked: 10, reasons: { hypothetical_context: 4 } });
   });
 
   it("record() never throws when INSERT fails", () => {
