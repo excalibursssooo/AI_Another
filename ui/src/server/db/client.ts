@@ -184,6 +184,40 @@ function initializeDatabase(db: AppDatabase): void {
       INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
       INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
     END;
+
+    -- v1.1-r3: append-only observability log
+    CREATE TABLE IF NOT EXISTS memory_operation_logs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      world_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      detail TEXT,
+      source_task_id TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_mol_kind_time ON memory_operation_logs(kind, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_mol_scope_time ON memory_operation_logs(user_id, agent_id, world_id, created_at DESC);
+
+    -- v1.1-r3: feed topic clusters, scoped by user/world/agent
+    CREATE TABLE IF NOT EXISTS feed_topics (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      world_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL DEFAULT '__shared__',
+      topic_key TEXT NOT NULL,
+      representative_embedding_json TEXT NOT NULL,
+      embedding_model TEXT NOT NULL,
+      embedding_quality TEXT NOT NULL,
+      embedding_dimension INTEGER NOT NULL,
+      use_count INTEGER NOT NULL DEFAULT 1,
+      first_seen_at INTEGER NOT NULL,
+      last_used_at INTEGER NOT NULL,
+      UNIQUE (user_id, world_id, agent_id, topic_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_feed_topics_scope_last_used
+      ON feed_topics(user_id, world_id, agent_id, last_used_at DESC);
   `);
   migrateMemoryEmbeddingColumns(db);
   migrateAgentLiveStatesScope(db);

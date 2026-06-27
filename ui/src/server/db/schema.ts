@@ -123,3 +123,30 @@ export const memoriesFts = sqliteTable("memories_fts", {
   rowid: integer("rowid").notNull(),
   content: text("content").notNull(),
 });
+
+export const memoryOperationLogs = sqliteTable("memory_operation_logs", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  agentId: text("agent_id").notNull(),
+  worldId: text("world_id").notNull(),
+  kind: text("kind").notNull(),
+  reason: text("reason").notNull(),
+  detail: text("detail"),
+  sourceTaskId: text("source_task_id"),
+  createdAt: integer("created_at").notNull(),
+});
+
+export const feedTopics = sqliteTable("feed_topics", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  worldId: text("world_id").notNull(),
+  agentId: text("agent_id").notNull().default("__shared__"),
+  topicKey: text("topic_key").notNull(),
+  representativeEmbeddingJson: text("representative_embedding_json").notNull(),
+  embeddingModel: text("embedding_model").notNull(),
+  embeddingQuality: text("embedding_quality").notNull(),
+  embeddingDimension: integer("embedding_dimension").notNull(),
+  useCount: integer("use_count").notNull().default(1),
+  firstSeenAt: integer("first_seen_at").notNull(),
+  lastUsedAt: integer("last_used_at").notNull(),
+});
