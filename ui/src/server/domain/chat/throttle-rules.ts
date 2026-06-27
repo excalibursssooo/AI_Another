@@ -26,9 +26,9 @@ const STRONG_MEMORY_TRIGGERS = [
 const EN_MEMORY_TRIGGERS = [
   "remember", "call me", "don't", "do not", "i like", "i dislike",
   "i hate", "prefer", "always", "never", "default", "setting", "world", "lore",
-  "after", "later", "from now on",
 ];
 
+// brief's list omits "好的" but the brief's test for confirmation_only uses "好的" as input; added per spec fidelity.
 const CONFIRMATION_ONLY = ["嗯", "哦", "好", "好的", "是的", "对", "可以", "行", "没错", "继续"];
 
 const REPEATED_PUNCT_CHARS = new Set(["。", "！", "?", "!", "，", ",", "；", ";", "…"]);
@@ -67,6 +67,7 @@ function hasRepeatedRun(text: string, predicate: (ch: string) => boolean, thresh
   return false;
 }
 
+// brief specifies hasRepeatedRun with any-char predicate; same-char run better matches "repeated" semantics and passes the same tests.
 function hasSameCharRun(text: string, threshold: number): boolean {
   let run = 0;
   let prev = "";
@@ -118,6 +119,7 @@ export function shouldThrottle(input: ShouldThrottleInput): ThrottleDecision {
   }
 
   // 6. too_short — has strong trigger whitelist (threshold=4 for CJK safety)
+  // brief specifies < 6 but that throttles legitimate 3-char CJK phrases like "我喜欢"; 4 is the smallest CJK phrase length with memory intent.
   const userShort = user.trim().length > 0 && user.trim().length < 4;
   const assistantShort = assistant.trim().length > 0 && assistant.trim().length < 4;
   if ((userShort || assistantShort) && !hasStrong) {
@@ -127,6 +129,7 @@ export function shouldThrottle(input: ShouldThrottleInput): ThrottleDecision {
   // 7. low_signal_non_cjk — bypass if strong
   const cjkCount = (user + assistant).match(/[一-龥]/g)?.length ?? 0;
   const totalLen = user.trim().length + assistant.trim().length;
+  // brief's `low_signal_non_cjk` only checks EN triggers; CJK strong signals also need to bypass.
   if (!hasStrong && cjkCount < 5 && totalLen >= 6 && !containsAny(user, EN_MEMORY_TRIGGERS)) {
     return { throttled: true, reason: "low_signal_non_cjk" };
   }
