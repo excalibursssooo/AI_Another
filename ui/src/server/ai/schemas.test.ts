@@ -55,6 +55,36 @@ describe("MemoryCandidateSchema", () => {
   });
 });
 
+describe("MemoryCandidateSchema canonical fields", () => {
+  it("accepts optional key and topic for memory consolidation", () => {
+    const parsed = MemoryCandidateSchema.parse({
+      subject: "user",
+      type: "preference",
+      key: "preference.reminder.evening",
+      topic: "reminders",
+      content: "用户不要晚上提醒。",
+      importance: 0.8,
+      confidence: 0.9,
+    });
+
+    expect(parsed.key).toBe("preference.reminder.evening");
+    expect(parsed.topic).toBe("reminders");
+  });
+
+  it("still accepts legacy candidates without key or topic", () => {
+    const parsed = MemoryCandidateSchema.parse({
+      subject: "user",
+      type: "profile",
+      content: "用户使用 zsh。",
+      importance: 0.6,
+      confidence: 0.8,
+    });
+
+    expect(parsed.key).toBeUndefined();
+    expect(parsed.topic).toBeUndefined();
+  });
+});
+
 describe("MemoryExtractionSchema", () => {
   it("accepts up to 8 memories in array", () => {
     const memories = Array.from({ length: 8 }, (_, i) => ({

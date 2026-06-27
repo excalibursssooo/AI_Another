@@ -50,6 +50,8 @@ export const MemoryCandidateTypeSchema = z.enum([
 export const MemoryCandidateSchema = z.object({
   subject: MemoryCandidateSubjectSchema,
   type: MemoryCandidateTypeSchema,
+  key: z.string().trim().min(1).max(120).optional(),
+  topic: z.string().trim().min(1).max(120).optional(),
   content: z.string().min(1),
   importance: z.number().min(0).max(1),
   confidence: z.number().min(0).max(1),
