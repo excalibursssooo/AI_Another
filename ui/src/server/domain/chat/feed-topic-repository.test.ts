@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { afterEach, describe, expect, it, beforeEach, vi } from "vitest";
 import type { EmbeddingResult } from "@/server/ai/embeddings";
 import { createTestDatabase, type AppDatabase } from "@/server/db/client";
 import { FeedTopicRepository, normalizeAgentId, SHARED_AGENT_ID } from "./feed-topic-repository";
@@ -28,6 +28,7 @@ describe("FeedTopicRepository", () => {
     db = createTestDatabase();
     repo = new FeedTopicRepository(db);
   });
+  afterEach(() => { vi.restoreAllMocks(); });
 
   it("create stores a topic and returns the key", () => {
     const key = repo.create({
@@ -46,6 +47,16 @@ describe("FeedTopicRepository", () => {
     expect(key).toBe("咖啡");
     const list = repo.listRecent({ userId: "u1", worldId: "w1", agentId: "a1", sinceDays: 90 });
     expect(list).toHaveLength(1);
+  });
+
+  it("create rethrows non-unique database errors", () => {
+    vi.spyOn(db.sqlite, "prepare").mockImplementation(() => {
+      throw new Error("disk full");
+    });
+    expect(() => repo.create({
+      userId: "u1", worldId: "w1", agentId: "a1",
+      topicKey: "咖啡", embedding: semantic([1, 0, 0]),
+    })).toThrow("disk full");
   });
 
   it("different (user_id, world_id, agent_id) do not collide", () => {

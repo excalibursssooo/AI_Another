@@ -46,6 +46,11 @@ describe("shouldThrottle", () => {
       .toEqual({ throttled: true, reason: "repeated_chars" });
   });
 
+  it("does not treat ordinary non-repeated character runs as repeated_chars", () => {
+    expect(shouldThrottle({ userMessage: "abcdef", assistantMessage: "收到这些消息了" }))
+      .toEqual({ throttled: false });
+  });
+
   it("does NOT throttle repeated_chars when user has strong signal", () => {
     expect(shouldThrottle({ userMessage: "我叫梁梁梁梁梁", assistantMessage: "好" }).throttled).toBe(false);
   });
@@ -57,6 +62,11 @@ describe("shouldThrottle", () => {
 
   it("throttles too_short when no strong signal", () => {
     expect(shouldThrottle({ userMessage: "ab", assistantMessage: "cd" }))
+      .toEqual({ throttled: true, reason: "too_short" });
+  });
+
+  it("uses the v1.1 too_short threshold for five-character low-signal input", () => {
+    expect(shouldThrottle({ userMessage: "天气不错啊", assistantMessage: "收到消息" }))
       .toEqual({ throttled: true, reason: "too_short" });
   });
 

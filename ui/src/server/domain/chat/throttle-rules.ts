@@ -67,7 +67,6 @@ function hasRepeatedRun(text: string, predicate: (ch: string) => boolean, thresh
   return false;
 }
 
-// brief specifies hasRepeatedRun with any-char predicate; same-char run better matches "repeated" semantics and passes the same tests.
 function hasSameCharRun(text: string, threshold: number): boolean {
   let run = 0;
   let prev = "";
@@ -118,11 +117,10 @@ export function shouldThrottle(input: ShouldThrottleInput): ThrottleDecision {
     return { throttled: true, reason: "confirmation_only" };
   }
 
-  // 6. too_short — has strong trigger whitelist (threshold=4 for CJK safety)
-  // brief specifies < 6 but that throttles legitimate 3-char CJK phrases like "我喜欢"; 4 is the smallest CJK phrase length with memory intent.
-  const userShort = user.trim().length > 0 && user.trim().length < 4;
-  const assistantShort = assistant.trim().length > 0 && assistant.trim().length < 4;
-  if ((userShort || assistantShort) && !hasStrong) {
+  // 6. too_short — has strong trigger whitelist
+  const userShort = user.trim().length > 0 && user.trim().length < 6;
+  const assistantShort = assistant.trim().length > 0 && assistant.trim().length < 6;
+  if (userShort && assistantShort && !hasStrong) {
     return { throttled: true, reason: "too_short" };
   }
 

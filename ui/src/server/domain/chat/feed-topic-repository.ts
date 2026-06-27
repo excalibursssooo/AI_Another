@@ -86,8 +86,11 @@ export class FeedTopicRepository {
           input.embedding.model, input.embedding.quality, input.embedding.dimension,
           now, now,
         );
-    } catch {
-      // UNIQUE conflict — same (user, world, agent, key). Treat as idempotent no-op.
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) {
+        throw error;
+      }
+      // Same (user, world, agent, key). Treat as idempotent no-op.
     }
     return input.topicKey;
   }
@@ -138,4 +141,16 @@ export class FeedTopicRepository {
     }
     return best;
   }
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const code = (error as { code?: unknown }).code;
+  if (code === "SQLITE_CONSTRAINT_UNIQUE") {
+    return true;
+  }
+  const message = (error as { message?: unknown }).message;
+  return typeof message === "string" && message.includes("UNIQUE constraint failed");
 }

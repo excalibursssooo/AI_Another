@@ -81,8 +81,8 @@ export class MemoryOperationLogRepository {
   listRecent(input: ListRecentInput): MemoryOperationLogRecord[] {
     const limit = Math.max(0, Math.min(1000, input.limit ?? 50));
     const sql = input.kind
-      ? `SELECT * FROM memory_operation_logs WHERE kind = ? ORDER BY created_at desc LIMIT ?`
-      : `SELECT * FROM memory_operation_logs ORDER BY created_at desc LIMIT ?`;
+      ? `SELECT * FROM memory_operation_logs WHERE kind = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`
+      : `SELECT * FROM memory_operation_logs ORDER BY created_at DESC, rowid DESC LIMIT ?`;
     const params = input.kind ? [input.kind, limit] : [limit];
     const rows = this.db.sqlite.prepare(sql).all(...params) as Array<{
       id: string; user_id: string; agent_id: string; world_id: string;
