@@ -119,6 +119,7 @@ interface MemoryRow {
   confidence: number;
   status: "active" | "frozen" | "deleted";
   created_at: number;
+  updated_at: number;
   access_count: number;
   last_accessed_at: number | null;
 }
@@ -410,7 +411,7 @@ export class MemoryRepository {
   }
 
   recall(input: { userId: string; agentId: string; worldId: string; query: string; limit: number }): MemoryRecord[] {
-    const query = `%${input.query.trim()}%`;
+    const query = input.query.trim();
     const rows = this.db.sqlite
       .prepare(
         `SELECT *
@@ -419,12 +420,63 @@ export class MemoryRepository {
            AND agent_id = ?
            AND world_id = ?
            AND status = 'active'
-           AND (? = '%%' OR content LIKE ?)
-         ORDER BY importance DESC, updated_at DESC
-         LIMIT ?`,
+         ORDER BY updated_at DESC`,
       )
-      .all(input.userId, input.agentId, input.worldId, query, query, input.limit) as MemoryRow[];
-    return rows.map(mapMemory);
+      .all(input.userId, input.agentId, input.worldId) as MemoryRow[];
+    const ftsMatches = query ? this.matchFtsIds(query) : new Set<string>();
+    const scored = rows
+      .map((row) => ({ row, score: scoreMemory(row, query, ftsMatches.has(row.id)) }))
+      .filter((item) => !query || item.score.textScore > 0)
+      .sort(
+        (a, b) =>
+          b.score.total - a.score.total || b.row.importance - a.row.importance || b.row.updated_at - a.row.updated_at,
+      )
+      .slice(0, Math.max(0, input.limit));
+    this.touchAccess(scored.map((item) => item.row.id));
+    return scored.map((item) => mapMemory(item.row));
+  }
+
+  touchAccess(memoryIds: string[]): void {
+    const uniqueIds = [...new Set(memoryIds.filter((id) => id.trim()))];
+    if (uniqueIds.length === 0) {
+      return;
+    }
+    const now = Date.now();
+    const placeholders = uniqueIds.map(() => "?").join(", ");
+    this.db.sqlite
+      .prepare(
+        `UPDATE memories
+         SET access_count = access_count + 1,
+             last_accessed_at = ?,
+             updated_at = updated_at
+         WHERE id IN (${placeholders})`,
+      )
+      .run(now, ...uniqueIds);
+  }
+
+  private matchFtsIds(query: string): Set<string> {
+    const terms = query
+      .trim()
+      .split(/\s+/)
+      .map((term) => term.replace(/["*]/g, "").trim())
+      .filter(Boolean);
+    if (terms.length === 0) {
+      return new Set();
+    }
+    const matchQuery = terms.map((term) => `"${term}"*`).join(" OR ");
+    try {
+      const rows = this.db.sqlite
+        .prepare(
+          `SELECT m.id
+           FROM memories_fts
+           JOIN memories m ON m.rowid = memories_fts.rowid
+           WHERE memories_fts MATCH ?`,
+        )
+        .all(matchQuery) as Array<{ id: string }>;
+      return new Set(rows.map((row) => row.id));
+    } catch {
+      return new Set();
+    }
   }
 
   list(input: { userId: string; agentId: string; worldId: string; status?: string }): MemoryRecord[] {
@@ -548,6 +600,54 @@ function mapFeedPost(row: FeedPostRow): FeedPostRecord {
   };
 }
 
+function scoreMemory(
+  row: MemoryRow,
+  query: string,
+  ftsMatched: boolean,
+): { total: number; textScore: number; recency: number; relationshipBoost: number } {
+  const textScore = computeTextScore(row.content, query, ftsMatched);
+  const ageMs = Math.max(0, Date.now() - row.updated_at);
+  const ageDays = ageMs / 86_400_000;
+  const recency = 1 / (1 + ageDays / 30);
+  const relationshipBoost = row.memory_type === "relationship" ? 1 : row.subject === "user" ? 0.7 : 0.4;
+  return {
+    textScore,
+    recency,
+    relationshipBoost,
+    total: textScore * 0.45 + row.importance * 0.25 + recency * 0.15 + relationshipBoost * 0.15,
+  };
+}
+
+function computeTextScore(content: string, query: string, ftsMatched: boolean): number {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return 1;
+  }
+  const normalizedContent = content.toLowerCase();
+  const terms = normalizedQuery.split(/\s+/).filter(Boolean);
+  let occurrences = 0;
+  for (const term of terms) {
+    occurrences += countOccurrences(normalizedContent, term);
+  }
+  if (occurrences > 0) {
+    return Math.min(1, occurrences / 3);
+  }
+  return ftsMatched ? 0.6 : 0;
+}
+
+function countOccurrences(content: string, term: string): number {
+  if (!term) {
+    return 0;
+  }
+  let count = 0;
+  let index = content.indexOf(term);
+  while (index !== -1) {
+    count += 1;
+    index = content.indexOf(term, index + term.length);
+  }
+  return count;
+}
+
 export class AgentLiveStateRepository {
   constructor(private readonly db: AppDatabase) {}
 
@@ -555,11 +655,10 @@ export class AgentLiveStateRepository {
     this.db.sqlite
       .prepare(
         `INSERT INTO agent_live_states
-          (agent_id, user_id, agent_name, mood_label, mood_intensity, heartbeat_bpm, risk_level, updated_at)
+         (agent_id, user_id, agent_name, mood_label, mood_intensity, heartbeat_bpm, risk_level, updated_at)
          VALUES
           (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(agent_id) DO UPDATE SET
-           user_id = excluded.user_id,
+         ON CONFLICT(user_id, agent_id) DO UPDATE SET
            agent_name = excluded.agent_name,
            mood_label = excluded.mood_label,
            mood_intensity = excluded.mood_intensity,

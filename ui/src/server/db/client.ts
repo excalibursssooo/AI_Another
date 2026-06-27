@@ -121,14 +121,15 @@ function initializeDatabase(db: AppDatabase): void {
       ON memories (user_id, agent_id, world_id, status);
 
     CREATE TABLE IF NOT EXISTS agent_live_states (
-      agent_id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
       agent_name TEXT NOT NULL,
       mood_label TEXT NOT NULL,
       mood_intensity REAL NOT NULL,
       heartbeat_bpm INTEGER NOT NULL,
       risk_level TEXT NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, agent_id)
     );
 
     CREATE TABLE IF NOT EXISTS feed_posts (
@@ -162,6 +163,63 @@ function initializeDatabase(db: AppDatabase): void {
 
     CREATE INDEX IF NOT EXISTS tasks_status_kind_run_after_idx
       ON tasks (status, kind, run_after);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+      content,
+      content='memories',
+      content_rowid='rowid'
+    );
+
+    INSERT OR IGNORE INTO memories_fts(rowid, content) SELECT rowid, content FROM memories;
+
+    CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+      INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+      INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+      INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+      INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
+    END;
+  `);
+  migrateAgentLiveStatesScope(db);
+}
+
+function migrateAgentLiveStatesScope(db: AppDatabase): void {
+  const columns = db.sqlite.prepare("PRAGMA table_info(agent_live_states)").all() as Array<{
+    name: string;
+    pk: number;
+  }>;
+  const agentId = columns.find((column) => column.name === "agent_id");
+  const userId = columns.find((column) => column.name === "user_id");
+  if (!agentId || !userId || agentId.pk === 0 || userId.pk > 0) {
+    return;
+  }
+
+  db.sqlite.exec(`
+    ALTER TABLE agent_live_states RENAME TO agent_live_states_legacy;
+
+    CREATE TABLE agent_live_states (
+      agent_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      agent_name TEXT NOT NULL,
+      mood_label TEXT NOT NULL,
+      mood_intensity REAL NOT NULL,
+      heartbeat_bpm INTEGER NOT NULL,
+      risk_level TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, agent_id)
+    );
+
+    INSERT OR IGNORE INTO agent_live_states
+      (agent_id, user_id, agent_name, mood_label, mood_intensity, heartbeat_bpm, risk_level, updated_at)
+    SELECT agent_id, user_id, agent_name, mood_label, mood_intensity, heartbeat_bpm, risk_level, updated_at
+    FROM agent_live_states_legacy;
+
+    DROP TABLE agent_live_states_legacy;
   `);
 }
 

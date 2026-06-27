@@ -59,3 +59,10 @@ export const MemoryExtractionSchema = z.object({
   memories: z.array(MemoryCandidateSchema).max(8),
 });
 export type MemoryExtraction = z.infer<typeof MemoryExtractionSchema>;
+
+export const FeedPostDraftSchema = z.object({
+  content: z.string().min(1),
+  topicSeed: z.string().min(1),
+  postType: z.enum(["status", "reflection", "plan"]),
+});
+export type FeedPostDraft = z.infer<typeof FeedPostDraftSchema>;

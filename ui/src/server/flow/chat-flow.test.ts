@@ -1,8 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createTestDatabase } from "@/server/db/client";
 import { MemoryRepository } from "@/server/domain/chat/repositories";
+import { TaskRepository } from "@/server/domain/chat/task-repository";
 import { createChatFlow } from "./chat-flow";
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe("ChatFlow", () => {
   it("persists user and assistant messages and returns done-compatible data", async () => {
@@ -55,6 +60,7 @@ describe("ChatFlow", () => {
   it("queues memory extraction after returning the chat result", async () => {
     const db = createTestDatabase();
     const memories = new MemoryRepository(db);
+    const tasks = new TaskRepository(db);
     const flow = createChatFlow({
       db,
       generateChatReply: async () => ({
@@ -73,8 +79,64 @@ describe("ChatFlow", () => {
     expect(result.doneEvent?.persisted_memory_count).toBe(0);
     expect(memories.list({ userId: "u001", agentId: "agent-default", worldId: "default", status: "active" })).toHaveLength(0);
 
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    const task = tasks.claimNext({ kinds: ["memory_extract"] });
+    expect(task).not.toBeNull();
+    expect(task?.payload).toMatchObject({
+      userId: "u001",
+      agentId: "agent-default",
+      worldId: "default",
+      userMessage: "请记住我喜欢雨天散步",
+      assistantMessage: "我会记住。",
+    });
+  });
 
-    expect(memories.list({ userId: "u001", agentId: "agent-default", worldId: "default", status: "active" })).toHaveLength(1);
+  it("does not pass tools to chat generation when ENABLE_TOOLS is false", async () => {
+    vi.stubEnv("ENABLE_TOOLS", "false");
+    const db = createTestDatabase();
+    let receivedTools: unknown = "not-called";
+    const flow = createChatFlow({
+      db,
+      generateChatReply: async (input) => {
+        receivedTools = input.tools;
+        return {
+          reply: "无工具。",
+          mood: { label: "calm", intensity: 0.3, heartbeatBpm: 72 },
+        };
+      },
+    });
+
+    await flow.run({
+      userId: "u001",
+      agentId: "agent-default",
+      worldId: "default",
+      input: "你好",
+    });
+
+    expect(receivedTools).toBeUndefined();
+  });
+
+  it("passes only low-risk tools to chat generation when ENABLE_TOOLS is true", async () => {
+    vi.stubEnv("ENABLE_TOOLS", "true");
+    const db = createTestDatabase();
+    let toolNames: string[] = [];
+    const flow = createChatFlow({
+      db,
+      generateChatReply: async (input) => {
+        toolNames = Object.keys(input.tools ?? {});
+        return {
+          reply: "有工具。",
+          mood: { label: "calm", intensity: 0.3, heartbeatBpm: 72 },
+        };
+      },
+    });
+
+    await flow.run({
+      userId: "u001",
+      agentId: "agent-default",
+      worldId: "default",
+      input: "你好",
+    });
+
+    expect(toolNames.sort()).toEqual(["createFeedPostDraft", "createTaskDraft", "searchMemories"]);
   });
 });

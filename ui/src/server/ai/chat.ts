@@ -1,12 +1,20 @@
+import { Output, streamText } from "ai";
+import type { LanguageModel } from "ai";
+
 import {
   AgentDraft,
   AgentDraftSchema,
   ChatReply,
   ChatReplySchema,
+  FeedPostDraft,
+  FeedPostDraftSchema,
+  MemoryExtraction,
+  MemoryExtractionSchema,
   WorldDraft,
   WorldDraftSchema,
 } from "./schemas";
 import { withStructuredOutput, StructuredOutputError } from "./structured-output";
+import type { createChatToolSet } from "@/server/tools/registry";
 
 // Re-export provider-selection helpers from models.ts for backwards compatibility
 export { isMockProvider, getActiveProviderInfo, getLanguageModel } from "./models";
@@ -18,6 +26,8 @@ import { isMockProvider, getLanguageModel } from "./models";
 export interface ChatGenerationInput {
   system: string;
   prompt: string;
+  abortSignal?: AbortSignal;
+  tools?: ReturnType<typeof createChatToolSet>;
 }
 
 export type GenerateChatReply = (input: ChatGenerationInput) => Promise<ChatReply>;
@@ -35,6 +45,25 @@ export interface WorldDraftGenerationInput {
 }
 
 export type GenerateWorldDraft = (input: WorldDraftGenerationInput) => Promise<WorldDraft | null>;
+
+export interface MemoryExtractionGenerationInput {
+  userMessage: string;
+  assistantMessage: string;
+  agentName?: string;
+}
+
+export type GenerateMemoryExtraction = (input: MemoryExtractionGenerationInput) => Promise<MemoryExtraction | null>;
+
+export interface FeedPostDraftGenerationInput {
+  agentName: string;
+  persona: string;
+  worldName: string;
+  worldLore: string;
+  recentMessages: Array<{ role: string; content: string }>;
+  liveState?: { moodLabel: string; moodIntensity: number; riskLevel: string } | null;
+}
+
+export type GenerateFeedPostDraft = (input: FeedPostDraftGenerationInput) => Promise<FeedPostDraft | null>;
 
 export async function generateChatReply(input: ChatGenerationInput): Promise<ChatReply> {
   if (isMockProvider()) {
@@ -55,6 +84,7 @@ export async function generateChatReply(input: ChatGenerationInput): Promise<Cha
       purpose: "chat",
       system: input.system,
       prompt: input.prompt,
+      tools: input.tools,
       temperature: 0.7,
     });
   } catch (error) {
@@ -137,9 +167,162 @@ export async function generateWorldDraft(input: WorldDraftGenerationInput): Prom
   }
 }
 
+const MEMORY_SYSTEM_PROMPT = `你是一个长期记忆抽取器。只抽取对后续长期陪伴有帮助、稳定、明确的事实。
+不要抽取寒暄、一次性情绪、模型自己的措辞或不确定推断。
+请严格用 JSON 格式输出:
+{
+  "memories": [
+    {
+      "subject": "user | agent | world",
+      "type": "profile | preference | relationship | event | goal | boundary | lore",
+      "content": "可独立理解的一条中文记忆",
+      "importance": 0.0,
+      "confidence": 0.0
+    }
+  ]
+}`;
+
+export async function generateMemoryExtraction(input: MemoryExtractionGenerationInput): Promise<MemoryExtraction | null> {
+  if (isMockProvider()) {
+    return { memories: [] };
+  }
+  const model = getLanguageModel("memory");
+  if (!model) {
+    return null;
+  }
+  try {
+    return await withStructuredOutput({
+      schema: MemoryExtractionSchema,
+      purpose: "memory",
+      model,
+      system: MEMORY_SYSTEM_PROMPT,
+      prompt: [
+        input.agentName ? `角色名: ${input.agentName}` : "",
+        `用户: ${input.userMessage}`,
+        `角色: ${input.assistantMessage}`,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      temperature: 0.2,
+    });
+  } catch {
+    return null;
+  }
+}
+
+const FEED_SYSTEM_PROMPT = `你是一个角色动态生成器。根据角色、人设、世界观、最近对话和实时状态，生成一条短动态。
+动态必须像角色本人发出，不要解释生成过程。
+请严格用 JSON 格式输出:
+{
+  "content": "动态正文",
+  "topicSeed": "适合继续聊天的短主题",
+  "postType": "status | reflection | plan"
+}`;
+
+export async function generateFeedPostDraft(input: FeedPostDraftGenerationInput): Promise<FeedPostDraft | null> {
+  if (isMockProvider()) {
+    return null;
+  }
+  const model = getLanguageModel("feed");
+  if (!model) {
+    return null;
+  }
+  try {
+    return await withStructuredOutput({
+      schema: FeedPostDraftSchema,
+      purpose: "feed",
+      model,
+      system: FEED_SYSTEM_PROMPT,
+      prompt: [
+        `角色: ${input.agentName}`,
+        `人设: ${input.persona}`,
+        `世界: ${input.worldName}`,
+        input.worldLore ? `世界观: ${input.worldLore}` : "",
+        input.liveState
+          ? `状态: ${input.liveState.moodLabel}, intensity=${input.liveState.moodIntensity}, risk=${input.liveState.riskLevel}`
+          : "",
+        `最近对话:\n${input.recentMessages.map((item) => `${item.role}: ${item.content}`).join("\n") || "无"}`,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      temperature: 0.8,
+    });
+  } catch {
+    return null;
+  }
+}
+
 function fallbackReply(): ChatReply {
   return {
     reply: "当前模型暂时不可用，但我已经收到你的消息了。",
     mood: { label: "neutral", intensity: 0.25, heartbeatBpm: 72 },
+  };
+}
+
+export interface StreamChatReplyResult {
+  textStream: AsyncIterable<string>;
+  fullStream: AsyncIterable<unknown>;
+  object: Promise<ChatReply>;
+  model: LanguageModel;
+}
+
+export async function streamChatReply(input: ChatGenerationInput): Promise<StreamChatReplyResult> {
+  if (isMockProvider()) {
+    return makeMockStreamReply();
+  }
+
+  const model = getLanguageModel("chat");
+  if (!model) {
+    return makeFallbackStreamReply();
+  }
+
+  const result = streamText({
+    model,
+    output: Output.object({ schema: ChatReplySchema }),
+    system: input.system,
+    prompt: input.prompt,
+    temperature: 0.7,
+    abortSignal: input.abortSignal,
+  });
+
+  return {
+    textStream: result.textStream,
+    fullStream: result.fullStream as AsyncIterable<unknown>,
+    object: result.output as Promise<ChatReply>,
+    model,
+  };
+}
+
+function makeMockStreamReply(): StreamChatReplyResult {
+  const reply: ChatReply = {
+    reply: "我在这里。你刚才说的我记住了。",
+    mood: { label: "calm", intensity: 0.35, heartbeatBpm: 72 },
+  };
+  async function* oneShot() {
+    yield reply.reply;
+  }
+  async function* empty() {}
+  return {
+    textStream: oneShot(),
+    fullStream: empty(),
+    object: Promise.resolve(reply),
+    model: {} as LanguageModel,
+  };
+}
+
+function makeFallbackStreamReply(): StreamChatReplyResult {
+  const reply: ChatReply = {
+    reply: "当前模型暂时不可用，但我已经收到你的消息了。",
+    mood: { label: "neutral", intensity: 0.25, heartbeatBpm: 72 },
+  };
+  async function* oneShot() {
+    yield reply.reply;
+  }
+  async function* empty() {}
+  return {
+    textStream: oneShot(),
+    fullStream: empty(),
+    object: Promise.resolve(reply),
+    model: {} as LanguageModel,
   };
 }

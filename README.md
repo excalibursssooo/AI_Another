@@ -6,10 +6,10 @@
 
 1. 多角色管理：手动创建、AI 本地生成、更新、软删除。
 2. 多世界管理：手动创建/更新、AI 本地生成、按世界隔离角色和会话。
-3. 聊天主链路：SSE 回复、安全检查、记忆召回、SQLite 会话持久化、异步记忆抽取。
-4. 长期记忆：按 user/agent/world 范围管理，支持 active/frozen/deleted 状态。
-5. 角色动态：生成动态、列表读取、从动态注入聊天话题。
-6. 低风险工具层：记忆搜索、任务草稿、动态草稿。
+3. 聊天主链路：SSE 回复、安全检查、记忆召回、SQLite 会话持久化、异步记忆抽取任务。
+4. 长期记忆：按 user/agent/world 范围管理，支持 active/frozen/deleted 状态，召回使用 SQLite FTS5 + 多因子评分。
+5. 角色动态：AI structured-output 生成动态、列表读取、从动态注入聊天话题。
+6. 低风险工具层：记忆搜索、任务草稿、动态草稿，默认关闭。
 
 ## 技术栈
 
@@ -54,12 +54,25 @@ NEXT_PUBLIC_DEMO_USER_ID=u001
 # 默认 mock 可本地运行；配置真实 provider 后可切换。
 AI_PROVIDER=mock
 CHAT_MODEL=
+MEMORY_MODEL=
+AGENT_CREATOR_MODEL=
+WORLD_CREATOR_MODEL=
+FEED_MODEL=
 
 DEEPSEEK_API_KEY=
 OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 GOOGLE_GENERATIVE_AI_API_KEY=
+MINIMAX_API_KEY=
+MINIMAX_BASE_URL=
+
+ENABLE_MEMORY_ASYNC=true
+ENABLE_FEED=true
+ENABLE_TOOLS=false
+ENABLE_AUTH=false
 ```
+
+`AI_PROVIDER=mock` 是默认的确定性本地模式，不需要外部网络或 API key。切换真实 provider 后，聊天、记忆抽取、角色创建、世界创建和动态生成分别读取对应的 `*_MODEL` 环境变量；未设置时回退到 `CHAT_MODEL`。
 
 ## 常用命令
 
@@ -68,6 +81,8 @@ cd ui
 npm run test:run
 npm run lint
 npm run build
+npm run dev:seed
+npm run smoke:chat
 ```
 
 ## 主要 API
@@ -113,7 +128,9 @@ npm run build
 
 ## 持久化
 
-默认 SQLite 文件位于 `ui/data/another-world.sqlite`。初始化会自动创建 worlds、agents、conversations、messages、memories、agent_live_states、feed_posts 等表，并写入默认世界和默认角色。
+默认 SQLite 文件位于 `ui/data/another-world.sqlite`。初始化会自动创建 worlds、agents、conversations、messages、memories、memories_fts、agent_live_states、feed_posts、tasks 等表，并写入默认世界和默认角色。
+
+Drizzle schema 位于 `ui/src/server/db/schema.ts`，配置文件是 `ui/drizzle.config.ts`。当前运行时仍由 `getDatabase()` 懒初始化 SQLite 表结构，`npm run db:generate` 用于生成后续迁移文件。
 
 ## 界面展示
 

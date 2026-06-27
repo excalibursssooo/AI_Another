@@ -1,5 +1,6 @@
 import { getDatabase } from "@/server/db/client";
 import { createChatFlow } from "@/server/flow/chat-flow";
+import { drainChatTasks } from "@/server/flow/task-worker";
 
 export const runtime = "nodejs";
 
@@ -28,7 +29,8 @@ export async function POST(req: Request): Promise<Response> {
       };
 
       try {
-        const flow = createChatFlow({ db: getDatabase() });
+        const db = getDatabase();
+        const flow = createChatFlow({ db });
         const result = await flow.run(
           {
             userId,
@@ -47,6 +49,7 @@ export async function POST(req: Request): Promise<Response> {
           emit({ type: "delta", content: result.reply });
         }
         emit(result.doneEvent);
+        void drainChatTasks({ db }).catch(() => undefined);
       } catch (error) {
         emit({
           type: "done",

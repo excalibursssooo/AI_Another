@@ -27,6 +27,39 @@ describe("FeedGenerateFlow", () => {
     expect(new FeedPostRepository(db).list({ userId: "u001", worldId: "default", limit: 20, offset: 0, includeArchived: false }).total).toBe(1);
   });
 
+  it("persists AI-generated feed draft fields when a generator returns structured output", async () => {
+    const db = createTestDatabase();
+
+    const result = await createFeedGenerateFlow({
+      db,
+      generateFeedPostDraft: async () => ({
+        content: "今晚想把雨声写进日记。",
+        topicSeed: "雨声日记",
+        postType: "reflection",
+      }),
+    }).run({
+      userId: "u001",
+      agentId: "agent-default",
+      worldId: "default",
+      sourceTaskId: "task-feed",
+    });
+
+    expect(result.post).toMatchObject({
+      content: "今晚想把雨声写进日记。",
+      topicSeed: "雨声日记",
+      postType: "reflection",
+      sourceTaskId: "task-feed",
+    });
+    expect(
+      new FeedPostRepository(db).list({ userId: "u001", worldId: "default", limit: 20, offset: 0, includeArchived: false })
+        .items[0],
+    ).toMatchObject({
+      content: "今晚想把雨声写进日记。",
+      topicSeed: "雨声日记",
+      postType: "reflection",
+    });
+  });
+
   it("turns a stored post into a chat starter", () => {
     const db = createTestDatabase();
     const post = new FeedPostRepository(db).create({

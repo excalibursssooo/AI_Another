@@ -1,11 +1,20 @@
 import { AppDatabase } from "@/server/db/client";
 import {
+  AgentLiveStateRecord,
+  AgentLiveStateRepository,
+  AgentRecord,
   AgentRepository,
+  ConversationMessageRecord,
   ConversationRepository,
   FeedPostRecord,
   FeedPostRepository,
+  WorldRecord,
   WorldRepository,
 } from "@/server/domain/chat/repositories";
+import {
+  GenerateFeedPostDraft,
+  generateFeedPostDraft as defaultGenerateFeedPostDraft,
+} from "@/server/ai/chat";
 
 import { Flow } from "./runner";
 import { FlowNode } from "./types";
@@ -15,6 +24,10 @@ export interface FeedGenerateContext {
   agentId: string;
   worldId: string;
   sourceTaskId?: string | null;
+  agent?: AgentRecord;
+  world?: WorldRecord;
+  recentMessages?: ConversationMessageRecord[];
+  liveState?: AgentLiveStateRecord;
   topicSeed?: string;
   content?: string;
   postType?: FeedPostRecord["postType"];
@@ -30,11 +43,16 @@ export interface PostTriggerResult {
   suggestedMessage: string;
 }
 
-export function createFeedGenerateFlow(options: { db: AppDatabase }): Flow<FeedGenerateContext> {
+export function createFeedGenerateFlow(options: {
+  db: AppDatabase;
+  generateFeedPostDraft?: GenerateFeedPostDraft;
+}): Flow<FeedGenerateContext> {
   const agents = new AgentRepository(options.db);
   const worlds = new WorldRepository(options.db);
   const conversations = new ConversationRepository(options.db);
   const posts = new FeedPostRepository(options.db);
+  const liveStates = new AgentLiveStateRepository(options.db);
+  const generateDraft = options.generateFeedPostDraft ?? defaultGenerateFeedPostDraft;
 
   const nodes: FlowNode<FeedGenerateContext>[] = [
     {
@@ -44,7 +62,7 @@ export function createFeedGenerateFlow(options: { db: AppDatabase }): Flow<FeedG
         if (!agent || agent.status !== "active") {
           return { ...ctx, skipped: true, reason: "agent not found", post: null };
         }
-        return ctx;
+        return { ...ctx, agent };
       },
     },
     {
@@ -53,10 +71,41 @@ export function createFeedGenerateFlow(options: { db: AppDatabase }): Flow<FeedG
         if (ctx.skipped) {
           return ctx;
         }
-        if (!worlds.get(ctx.worldId)) {
+        const world = worlds.get(ctx.worldId);
+        if (!world) {
           return { ...ctx, skipped: true, reason: "world not found", post: null };
         }
-        return ctx;
+        return { ...ctx, world };
+      },
+    },
+    {
+      name: "LoadRecentMessages",
+      run: async (ctx) => {
+        if (ctx.skipped) {
+          return ctx;
+        }
+        return {
+          ...ctx,
+          recentMessages: conversations.recentMessagesForScope({
+            userId: ctx.userId,
+            agentId: ctx.agentId,
+            worldId: ctx.worldId,
+            limit: 4,
+          }),
+        };
+      },
+    },
+    {
+      name: "LoadLiveState",
+      run: async (ctx) => {
+        if (ctx.skipped) {
+          return ctx;
+        }
+        const agentName = ctx.agent?.displayName || ctx.agent?.name || ctx.agentId;
+        return {
+          ...ctx,
+          liveState: liveStates.get(ctx.userId, ctx.agentId, agentName),
+        };
       },
     },
     {
@@ -65,13 +114,30 @@ export function createFeedGenerateFlow(options: { db: AppDatabase }): Flow<FeedG
         if (ctx.skipped) {
           return ctx;
         }
-        const agent = agents.get(ctx.agentId)!;
-        const recent = conversations.recentMessagesForScope({
-          userId: ctx.userId,
-          agentId: ctx.agentId,
-          worldId: ctx.worldId,
-          limit: 4,
+        const agent = ctx.agent!;
+        const recent = ctx.recentMessages ?? [];
+        const generated = await generateDraft({
+          agentName: agent.displayName || agent.name,
+          persona: agent.persona,
+          worldName: ctx.world?.name ?? ctx.worldId,
+          worldLore: ctx.world?.lore ?? "",
+          recentMessages: recent.map((item) => ({ role: item.role, content: item.content })),
+          liveState: ctx.liveState
+            ? {
+                moodLabel: ctx.liveState.moodLabel,
+                moodIntensity: ctx.liveState.moodIntensity,
+                riskLevel: ctx.liveState.riskLevel,
+              }
+            : null,
         });
+        if (generated) {
+          return {
+            ...ctx,
+            topicSeed: generated.topicSeed,
+            postType: generated.postType,
+            content: generated.content,
+          };
+        }
         const lastUserMessage = [...recent].reverse().find((item) => item.role === "user")?.content;
         const topicSeed = extractTopic(lastUserMessage || agent.persona);
         return {
@@ -88,7 +154,7 @@ export function createFeedGenerateFlow(options: { db: AppDatabase }): Flow<FeedG
         if (ctx.skipped) {
           return ctx;
         }
-        const agent = agents.get(ctx.agentId)!;
+        const agent = ctx.agent ?? agents.get(ctx.agentId)!;
         return {
           ...ctx,
           skipped: false,

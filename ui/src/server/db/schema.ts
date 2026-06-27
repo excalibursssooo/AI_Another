@@ -1,4 +1,4 @@
-import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, primaryKey, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const agents = sqliteTable("agents", {
   id: text("id").primaryKey(),
@@ -61,16 +61,20 @@ export const memories = sqliteTable("memories", {
   lastAccessedAt: integer("last_accessed_at"),
 });
 
-export const agentLiveStates = sqliteTable("agent_live_states", {
-  agentId: text("agent_id").primaryKey(),
-  userId: text("user_id").notNull(),
-  agentName: text("agent_name").notNull(),
-  moodLabel: text("mood_label").notNull(),
-  moodIntensity: real("mood_intensity").notNull(),
-  heartbeatBpm: integer("heartbeat_bpm").notNull(),
-  riskLevel: text("risk_level").notNull(),
-  updatedAt: integer("updated_at").notNull(),
-});
+export const agentLiveStates = sqliteTable(
+  "agent_live_states",
+  {
+    agentId: text("agent_id").notNull(),
+    userId: text("user_id").notNull(),
+    agentName: text("agent_name").notNull(),
+    moodLabel: text("mood_label").notNull(),
+    moodIntensity: real("mood_intensity").notNull(),
+    heartbeatBpm: integer("heartbeat_bpm").notNull(),
+    riskLevel: text("risk_level").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.agentId] })],
+);
 
 export const feedPosts = sqliteTable("feed_posts", {
   id: text("id").primaryKey(),
@@ -96,4 +100,9 @@ export const tasks = sqliteTable("tasks", {
   runAfter: integer("run_after").notNull().default(0),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
+});
+
+export const memoriesFts = sqliteTable("memories_fts", {
+  rowid: integer("rowid").notNull(),
+  content: text("content").notNull(),
 });

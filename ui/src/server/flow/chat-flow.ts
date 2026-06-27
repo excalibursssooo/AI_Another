@@ -10,7 +10,9 @@ import {
   WorldRecord,
   WorldRepository,
 } from "@/server/domain/chat/repositories";
+import { TaskRepository } from "@/server/domain/chat/task-repository";
 import { GenerateChatReply, generateChatReply as defaultGenerateChatReply } from "@/server/ai/chat";
+import { createChatToolSet } from "@/server/tools/registry";
 
 import { Flow } from "./runner";
 import { FlowNode } from "./types";
@@ -53,6 +55,7 @@ export function createChatFlow(options: { db: AppDatabase; generateChatReply?: G
   const conversations = new ConversationRepository(options.db);
   const memories = new MemoryRepository(options.db);
   const liveStates = new AgentLiveStateRepository(options.db);
+  const tasks = new TaskRepository(options.db);
   const generateReply = options.generateChatReply ?? defaultGenerateChatReply;
 
   const nodes: FlowNode<ChatContext>[] = [
@@ -153,6 +156,15 @@ export function createChatFlow(options: { db: AppDatabase; generateChatReply?: G
         const generated = await generateReply({
           system: ctx.systemPrompt ?? "",
           prompt: ctx.userPrompt ?? ctx.input,
+          tools:
+            process.env.ENABLE_TOOLS === "true"
+              ? createChatToolSet({
+                  db: options.db,
+                  userId: ctx.userId,
+                  agentId: ctx.agentId,
+                  worldId: ctx.worldId,
+                })
+              : undefined,
         });
         return {
           ...ctx,
@@ -214,13 +226,17 @@ export function createChatFlow(options: { db: AppDatabase; generateChatReply?: G
           });
           return ctx;
         }
-        globalThis.setTimeout(() => {
-          try {
-            extractSimpleMemory(ctx, memories);
-          } catch {
-            // Memory extraction is best-effort and must not affect delivered replies.
-          }
-        }, 0);
+        tasks.enqueue({
+          kind: "memory_extract",
+          payload: {
+            userId: ctx.userId,
+            agentId: ctx.agentId,
+            worldId: ctx.worldId,
+            conversationId: ctx.conversationId ?? null,
+            userMessage: ctx.input,
+            assistantMessage: ctx.reply ?? "",
+          },
+        });
         return finalize({ ...ctx, persistedMemoryCount: 0 });
       },
     },
@@ -289,25 +305,4 @@ function buildUserPrompt(ctx: ChatContext): string {
     memory ? `可用记忆:\n${memory}` : "可用记忆: 无",
     `用户当前输入: ${ctx.input}`,
   ].join("\n\n");
-}
-
-function extractSimpleMemory(ctx: ChatContext, memories: MemoryRepository): number {
-  const trimmed = ctx.input.trim();
-  if (ctx.blocked || trimmed.length < 6 || trimmed.length > 120) {
-    return 0;
-  }
-  if (!/(我|喜欢|讨厌|希望|正在|住在|记住)/.test(trimmed)) {
-    return 0;
-  }
-  memories.create({
-    userId: ctx.userId,
-    agentId: ctx.agentId,
-    worldId: ctx.worldId,
-    subject: "user",
-    memoryType: "profile",
-    content: trimmed,
-    importance: 0.5,
-    confidence: 0.45,
-  });
-  return 1;
 }

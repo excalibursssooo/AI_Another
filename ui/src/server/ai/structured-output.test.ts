@@ -16,7 +16,7 @@ vi.mock("./models", () => ({
 }));
 
 const { generateText } = await import("ai");
-const { withStructuredOutput } = await import("./structured-output");
+const { StructuredOutputError, withStructuredOutput } = await import("./structured-output");
 
 describe("withStructuredOutput", () => {
   beforeEach(() => {
@@ -66,6 +66,19 @@ describe("withStructuredOutput", () => {
         system: "you are a bot",
       }),
     ).rejects.toMatchObject({ name: "StructuredOutputError" });
+  });
+
+  it("wraps AI SDK structured output failures as StructuredOutputError", async () => {
+    vi.mocked(generateText).mockRejectedValue(new Error("No object generated"));
+
+    await expect(
+      withStructuredOutput({
+        schema: ChatReplySchema,
+        purpose: "chat",
+        prompt: "hello",
+        system: "you are a bot",
+      }),
+    ).rejects.toBeInstanceOf(StructuredOutputError);
   });
 
   it("abort propagation: passes the abortSignal to generateText", async () => {

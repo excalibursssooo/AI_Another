@@ -20,6 +20,7 @@ export async function withStructuredOutput<TSchema extends ZodType>({
   prompt,
   system,
   model: providedModel,
+  tools,
   temperature = 0.7,
   abortSignal,
 }: {
@@ -28,6 +29,7 @@ export async function withStructuredOutput<TSchema extends ZodType>({
   prompt: string;
   system?: string;
   model?: LanguageModel;
+  tools?: Parameters<typeof generateText>[0]["tools"];
   temperature?: number;
   abortSignal?: AbortSignal;
 }): Promise<z.infer<TSchema>> {
@@ -37,14 +39,20 @@ export async function withStructuredOutput<TSchema extends ZodType>({
     throw new StructuredOutputError(schemaName);
   }
 
-  const result = await generateText({
-    model,
-    output: Output.object({ schema }),
-    system,
-    prompt,
-    temperature,
-    abortSignal,
-  });
+  let result: Awaited<ReturnType<typeof generateText>>;
+  try {
+    result = await generateText({
+      model,
+      output: Output.object({ schema }),
+      system,
+      prompt,
+      tools,
+      temperature,
+      abortSignal,
+    });
+  } catch {
+    throw new StructuredOutputError(schemaName);
+  }
 
   if (result.output === undefined) {
     throw new StructuredOutputError(schemaName);
