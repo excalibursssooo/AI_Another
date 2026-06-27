@@ -6,6 +6,7 @@ import {
   embedText,
   hashEmbeddingText,
   normalizeEmbeddingText,
+  classifyEmbeddingError,
 } from "./embeddings";
 
 afterEach(() => {
@@ -75,5 +76,62 @@ describe("embedding helpers", () => {
     const two = createFallbackEmbedding("用户喜欢咖啡", 8);
     expect(one).toEqual(two);
     expect(one).toHaveLength(8);
+  });
+});
+
+describe("classifyEmbeddingError", () => {
+  it("returns 'aborted' when error.name === 'AbortError'", () => {
+    expect(classifyEmbeddingError(new Error("fetch aborted"))).toBe("aborted");
+    expect(classifyEmbeddingError(Object.assign(new Error(""), { name: "AbortError" }))).toBe("aborted");
+  });
+
+  it("returns 'aborted' for non-Error throws with name 'AbortError'", () => {
+    expect(classifyEmbeddingError({ name: "AbortError" })).toBe("aborted");
+  });
+
+  it("returns 'non_2xx_status' for 'embedding request failed' messages", () => {
+    expect(classifyEmbeddingError(new Error("embedding request failed: 500"))).toBe("non_2xx_status");
+  });
+
+  it("returns 'invalid_response_shape' for 'missing data' messages", () => {
+    expect(classifyEmbeddingError(new Error("embedding response missing data"))).toBe("invalid_response_shape");
+  });
+
+  it("returns 'vector_dimension_zero' for length-0 messages", () => {
+    expect(classifyEmbeddingError(new Error("embedding response vector length 0"))).toBe("vector_dimension_zero");
+  });
+
+  it("returns 'invalid_response_shape' for 'missing vector' messages", () => {
+    expect(classifyEmbeddingError(new Error("embedding response missing vector"))).toBe("invalid_response_shape");
+  });
+
+  it("returns 'fetch_failed' for unknown errors", () => {
+    expect(classifyEmbeddingError(new Error("ECONNREFUSED"))).toBe("fetch_failed");
+    expect(classifyEmbeddingError("string error")).toBe("fetch_failed");
+  });
+});
+
+describe("embedText fallbackReason", () => {
+  it("tags fallback results with fallbackReason on fetch failure", async () => {
+    const result = await embedText("hello", { fetchFn: (() => Promise.reject(new Error("ECONNREFUSED"))) as typeof fetch });
+    expect(result.backend).toBe("fallback");
+    expect(result.fallbackReason).toBe("fetch_failed");
+  });
+
+  it("tags fallback results with non_2xx_status when response not ok", async () => {
+    const fakeFetch = (() => Promise.resolve(new Response("{}", { status: 500 }))) as typeof fetch;
+    const result = await embedText("hello", { fetchFn: fakeFetch });
+    expect(result.backend).toBe("fallback");
+    expect(result.fallbackReason).toBe("non_2xx_status");
+  });
+
+  it("does not set fallbackReason on success", async () => {
+    const fakeFetch = (() => Promise.resolve(new Response(
+      JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ))) as typeof fetch;
+    const result = await embedText("hello", { fetchFn: fakeFetch });
+    expect(result.backend).toBe("llama.cpp");
+    expect(result.fallbackReason).toBeUndefined();
   });
 });

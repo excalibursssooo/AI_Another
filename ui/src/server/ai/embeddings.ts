@@ -2,6 +2,12 @@ import { createHash } from "node:crypto";
 
 export type EmbeddingBackend = "llama.cpp" | "fallback";
 export type EmbeddingQuality = "semantic" | "lexical" | "none";
+export type EmbeddingFallbackReason =
+  | "fetch_failed"
+  | "non_2xx_status"
+  | "invalid_response_shape"
+  | "vector_dimension_zero"
+  | "aborted";
 
 export interface EmbeddingResult {
   vector: number[];
@@ -11,6 +17,7 @@ export interface EmbeddingResult {
   model: string;
   version: number;
   needsRefresh: boolean;
+  fallbackReason?: EmbeddingFallbackReason;
 }
 
 export interface EmbedTextOptions {
@@ -50,7 +57,8 @@ export async function embedText(text: string, options: EmbedTextOptions = {}): P
       version: EMBEDDING_VERSION,
       needsRefresh: false,
     };
-  } catch {
+  } catch (error) {
+    const fallbackReason = classifyEmbeddingError(error);
     const dimension = readFallbackDimension();
     return {
       vector: createFallbackEmbedding(normalized, dimension),
@@ -60,6 +68,7 @@ export async function embedText(text: string, options: EmbedTextOptions = {}): P
       model: "fallback-hash-v1",
       version: EMBEDDING_VERSION,
       needsRefresh: true,
+      fallbackReason,
     };
   }
 }
@@ -111,10 +120,32 @@ function parseEmbeddingVector(body: unknown): number[] {
     throw new Error("embedding response missing data");
   }
   const embedding = (data[0] as { embedding?: unknown }).embedding;
-  if (!Array.isArray(embedding) || embedding.length === 0 || !embedding.every((item) => typeof item === "number")) {
+  if (!Array.isArray(embedding)) {
     throw new Error("embedding response missing vector");
   }
+  if (embedding.length === 0) {
+    throw new Error("embedding response vector length 0");
+  }
+  if (!embedding.every((item) => typeof item === "number")) {
+    throw new Error("embedding response vector has non-numeric elements");
+  }
   return embedding;
+}
+
+export function classifyEmbeddingError(error: unknown): EmbeddingFallbackReason {
+  if (error instanceof Error) {
+    if (error.name === "AbortError" || error.message.includes("aborted")) return "aborted";
+    const msg = error.message;
+    if (msg.includes("embedding request failed")) return "non_2xx_status";
+    if (msg.includes("embedding response missing data")) return "invalid_response_shape";
+    if (msg.includes("vector length 0")) return "vector_dimension_zero";
+    if (msg.includes("embedding response missing vector")) return "invalid_response_shape";
+    return "fetch_failed";
+  }
+  if (typeof error === "object" && error !== null && (error as { name?: string }).name === "AbortError") {
+    return "aborted";
+  }
+  return "fetch_failed";
 }
 
 function readFallbackDimension(): number {
