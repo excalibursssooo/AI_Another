@@ -368,3 +368,213 @@ describe("chat repositories", () => {
     });
   });
 });
+
+describe("memory embedding schema", () => {
+  it("initializes memory embedding and supersession columns", () => {
+    const db = createTestDatabase();
+    const columns = db.sqlite.prepare("PRAGMA table_info(memories)").all() as Array<{ name: string }>;
+    const names = new Set(columns.map((column) => column.name));
+
+    for (const name of [
+      "canonical_key",
+      "topic",
+      "embedding_json",
+      "embedding_model",
+      "embedding_backend",
+      "embedding_quality",
+      "embedding_dimension",
+      "embedding_status",
+      "embedding_text_hash",
+      "embedding_version",
+      "embedding_needs_refresh",
+      "embedding_updated_at",
+      "superseded_by",
+      "superseded_reason",
+      "last_observed_at",
+      "source_message_id",
+      "source_task_id",
+    ]) {
+      expect(names.has(name)).toBe(true);
+    }
+  });
+});
+
+describe("MemoryRepository embedding metadata", () => {
+  it("creates and reads embedding metadata", () => {
+    const db = createTestDatabase();
+    const memories = new MemoryRepository(db);
+
+    const created = memories.create({
+      userId: "u001",
+      agentId: "agent-default",
+      worldId: "default",
+      subject: "user",
+      memoryType: "preference",
+      key: "preference.weather.rain",
+      topic: "rain",
+      content: "用户喜欢雨天散步。",
+      importance: 0.8,
+      confidence: 0.9,
+      embedding: {
+        json: JSON.stringify([1, 0]),
+        model: "bge-m3",
+        backend: "llama.cpp",
+        quality: "semantic",
+        dimension: 2,
+        status: "ready",
+        textHash: "hash-a",
+        version: 1,
+        needsRefresh: false,
+        updatedAt: 123,
+      },
+      sourceTaskId: "task-1",
+    });
+
+    const [read] = memories.listActiveForScope({ userId: "u001", agentId: "agent-default", worldId: "default" });
+    expect(read.id).toBe(created.id);
+    expect(read.key).toBe("preference.weather.rain");
+    expect(read.topic).toBe("rain");
+    expect(read.embeddingStatus).toBe("ready");
+    expect(read.embeddingJson).toBe(JSON.stringify([1, 0]));
+    expect(read.sourceTaskId).toBe("task-1");
+  });
+
+  it("atomically replaces a conflicting memory", () => {
+    const db = createTestDatabase();
+    const memories = new MemoryRepository(db);
+    const old = memories.create({
+      userId: "u001",
+      agentId: "agent-default",
+      worldId: "default",
+      subject: "user",
+      memoryType: "preference",
+      content: "用户喜欢咖啡。",
+      importance: 0.6,
+      confidence: 0.8,
+    });
+
+    const replacement = memories.replaceConflicted({
+      oldMemoryId: old.id,
+      reason: "preference reversal",
+      newMemory: {
+        userId: "u001",
+        agentId: "agent-default",
+        worldId: "default",
+        subject: "user",
+        memoryType: "preference",
+        content: "用户不喜欢咖啡。",
+        importance: 0.9,
+        confidence: 0.95,
+      },
+    });
+
+    const rows = memories.list({ userId: "u001", agentId: "agent-default", worldId: "default", status: "all" });
+    const frozen = rows.find((item) => item.id === old.id);
+    expect(frozen?.status).toBe("frozen");
+    expect(frozen?.supersededBy).toBe(replacement.id);
+    expect(replacement.status).toBe("active");
+  });
+
+  it("preserves provenance and embedding on conflict replacement", () => {
+    const db = createTestDatabase();
+    const memories = new MemoryRepository(db);
+    const old = memories.create({
+      userId: "u001",
+      agentId: "agent-default",
+      worldId: "default",
+      subject: "user",
+      memoryType: "preference",
+      content: "用户喜欢咖啡。",
+      importance: 0.6,
+      confidence: 0.8,
+    });
+
+    const observedAt = 1_700_000_000_000;
+    const replacement = memories.replaceConflicted({
+      oldMemoryId: old.id,
+      reason: "preference reversal",
+      newMemory: {
+        userId: "u001",
+        agentId: "agent-default",
+        worldId: "default",
+        subject: "user",
+        memoryType: "preference",
+        key: "preference.food.coffee",
+        topic: "coffee",
+        content: "用户不喜欢咖啡。",
+        importance: 0.9,
+        confidence: 0.95,
+        embedding: {
+          json: JSON.stringify([0.1, 0.9]),
+          model: "bge-m3",
+          backend: "llama.cpp",
+          quality: "semantic",
+          dimension: 2,
+          status: "ready",
+          textHash: "hash-c",
+          version: 1,
+          needsRefresh: false,
+          updatedAt: observedAt,
+        },
+        sourceMessageId: "msg-42",
+        sourceTaskId: "task-7",
+        lastObservedAt: observedAt,
+      },
+    });
+
+    expect(replacement.key).toBe("preference.food.coffee");
+    expect(replacement.topic).toBe("coffee");
+    expect(replacement.embeddingJson).toBe(JSON.stringify([0.1, 0.9]));
+    expect(replacement.embeddingModel).toBe("bge-m3");
+    expect(replacement.embeddingBackend).toBe("llama.cpp");
+    expect(replacement.embeddingQuality).toBe("semantic");
+    expect(replacement.embeddingDimension).toBe(2);
+    expect(replacement.embeddingStatus).toBe("ready");
+    expect(replacement.embeddingTextHash).toBe("hash-c");
+    expect(replacement.embeddingVersion).toBe(1);
+    expect(replacement.embeddingNeedsRefresh).toBe(false);
+    expect(replacement.embeddingUpdatedAt).toBe(observedAt);
+    expect(replacement.sourceMessageId).toBe("msg-42");
+    expect(replacement.sourceTaskId).toBe("task-7");
+    expect(replacement.lastObservedAt).toBe(observedAt);
+  });
+
+  it("merges an active memory with refreshed metadata", () => {
+    const db = createTestDatabase();
+    const memories = new MemoryRepository(db);
+    const old = memories.create({
+      userId: "u001",
+      agentId: "agent-default",
+      worldId: "default",
+      subject: "user",
+      memoryType: "preference",
+      content: "用户喜欢本地小模型。",
+      importance: 0.5,
+      confidence: 0.7,
+    });
+
+    const merged = memories.mergeMemory({
+      memoryId: old.id,
+      content: "用户偏好本地小模型，尤其是 10B 以下、能端侧 JSON 输出的模型。",
+      importance: 0.9,
+      confidence: 0.85,
+      embedding: {
+        json: JSON.stringify([0.5, 0.5]),
+        model: "bge-m3",
+        backend: "llama.cpp",
+        quality: "semantic",
+        dimension: 2,
+        status: "ready",
+        textHash: "hash-b",
+        version: 1,
+        needsRefresh: false,
+        updatedAt: 456,
+      },
+      lastObservedAt: 456,
+    });
+
+    expect(merged?.content).toContain("10B 以下");
+    expect(merged?.importance).toBe(0.9);
+    expect(merged?.embeddingStatus).toBe("ready");
+  });
+});

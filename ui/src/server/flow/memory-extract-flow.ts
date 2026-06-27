@@ -1,11 +1,12 @@
 import { AppDatabase } from "@/server/db/client";
-import { MemoryRepository } from "@/server/domain/chat/repositories";
+import { MemoryConsolidator } from "@/server/domain/chat/memory-consolidator";
 import {
   GenerateMemoryExtraction,
   generateMemoryExtraction as defaultGenerateMemoryExtraction,
 } from "@/server/ai/chat";
 import { MemoryCandidate } from "@/server/ai/schemas";
 
+import type { EmbedText } from "@/server/domain/chat/memory-consolidator";
 import { Flow } from "./runner";
 import { FlowNode } from "./types";
 
@@ -18,13 +19,15 @@ export interface MemoryExtractContext {
   agentName?: string;
   candidates?: MemoryCandidate[];
   persistedMemoryCount?: number;
+  sourceMessageId?: string | null;
+  sourceTaskId?: string | null;
 }
 
 export function createMemoryExtractFlow(options: {
   db: AppDatabase;
   generateMemoryExtraction?: GenerateMemoryExtraction;
+  embedText?: EmbedText;
 }): Flow<MemoryExtractContext> {
-  const memories = new MemoryRepository(options.db);
   const generateExtraction = options.generateMemoryExtraction ?? defaultGenerateMemoryExtraction;
 
   const nodes: FlowNode<MemoryExtractContext>[] = [
@@ -51,22 +54,25 @@ export function createMemoryExtractFlow(options: {
       },
     },
     {
-      name: "PersistMemories",
+      name: "ConsolidateMemories",
       run: async (ctx) => {
         const candidates = (ctx.candidates ?? []).filter((candidate) => candidate.content.trim()).slice(0, 8);
+        const consolidator = new MemoryConsolidator({ db: options.db, embedText: options.embedText });
+        let persistedMemoryCount = 0;
         for (const candidate of candidates) {
-          memories.create({
+          const result = await consolidator.consolidate({
             userId: ctx.userId,
             agentId: ctx.agentId,
             worldId: ctx.worldId,
-            subject: candidate.subject,
-            memoryType: candidate.type,
-            content: candidate.content.trim(),
-            importance: candidate.importance,
-            confidence: candidate.confidence,
+            candidate,
+            sourceMessageId: ctx.sourceMessageId ?? null,
+            sourceTaskId: ctx.sourceTaskId ?? null,
           });
+          if (result.action === "created" || result.action === "merged" || result.action === "conflicted") {
+            persistedMemoryCount += 1;
+          }
         }
-        return { ...ctx, persistedMemoryCount: candidates.length };
+        return { ...ctx, persistedMemoryCount };
       },
     },
   ];

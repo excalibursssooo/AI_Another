@@ -48,6 +48,23 @@ export interface MemoryRecord {
   createdAt: number;
   accessCount: number;
   lastAccessedAt: number | null;
+  key: string | null;
+  topic: string | null;
+  embeddingJson: string | null;
+  embeddingModel: string | null;
+  embeddingBackend: string | null;
+  embeddingQuality: string | null;
+  embeddingDimension: number | null;
+  embeddingStatus: "missing" | "ready" | "fallback" | "stale" | "failed";
+  embeddingTextHash: string | null;
+  embeddingVersion: number;
+  embeddingNeedsRefresh: boolean;
+  embeddingUpdatedAt: number | null;
+  supersededBy: string | null;
+  supersededReason: string | null;
+  lastObservedAt: number | null;
+  sourceMessageId: string | null;
+  sourceTaskId: string | null;
 }
 
 export interface AgentLiveStateRecord {
@@ -122,6 +139,23 @@ interface MemoryRow {
   updated_at: number;
   access_count: number;
   last_accessed_at: number | null;
+  canonical_key: string | null;
+  topic: string | null;
+  embedding_json: string | null;
+  embedding_model: string | null;
+  embedding_backend: string | null;
+  embedding_quality: string | null;
+  embedding_dimension: number | null;
+  embedding_status: "missing" | "ready" | "fallback" | "stale" | "failed";
+  embedding_text_hash: string | null;
+  embedding_version: number;
+  embedding_needs_refresh: number;
+  embedding_updated_at: number | null;
+  superseded_by: string | null;
+  superseded_reason: string | null;
+  last_observed_at: number | null;
+  source_message_id: string | null;
+  source_task_id: string | null;
 }
 
 interface FeedPostRow {
@@ -358,27 +392,52 @@ export class ConversationRepository {
   }
 }
 
+interface MemoryEmbeddingInput {
+  json: string;
+  model: string;
+  backend: string;
+  quality: string;
+  dimension: number;
+  status: "missing" | "ready" | "fallback" | "stale" | "failed";
+  textHash: string;
+  version: number;
+  needsRefresh: boolean;
+  updatedAt: number;
+}
+
+interface CreateMemoryInput {
+  userId: string;
+  agentId: string;
+  worldId: string;
+  subject: string;
+  memoryType: string;
+  key?: string | null;
+  topic?: string | null;
+  content: string;
+  importance: number;
+  confidence: number;
+  embedding?: MemoryEmbeddingInput;
+  sourceMessageId?: string | null;
+  sourceTaskId?: string | null;
+  lastObservedAt?: number | null;
+}
+
 export class MemoryRepository {
   constructor(private readonly db: AppDatabase) {}
 
-  create(input: {
-    userId: string;
-    agentId: string;
-    worldId: string;
-    subject: string;
-    memoryType: string;
-    content: string;
-    importance: number;
-    confidence: number;
-  }): MemoryRecord {
+  create(input: CreateMemoryInput): MemoryRecord {
     const now = Date.now();
     const id = `mem-${randomUUID()}`;
+    const emb = input.embedding;
     this.db.sqlite
       .prepare(
         `INSERT INTO memories
-          (id, user_id, agent_id, world_id, subject, memory_type, content, importance, confidence, status, created_at, updated_at)
+          (id, user_id, agent_id, world_id, subject, memory_type, canonical_key, topic, content, importance, confidence,
+           embedding_json, embedding_model, embedding_backend, embedding_quality, embedding_dimension,
+           embedding_status, embedding_text_hash, embedding_version, embedding_needs_refresh, embedding_updated_at,
+           source_message_id, source_task_id, last_observed_at, status, created_at, updated_at, access_count, last_accessed_at)
          VALUES
-          (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+          (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -387,11 +446,29 @@ export class MemoryRepository {
         input.worldId,
         input.subject,
         input.memoryType,
+        input.key ?? null,
+        input.topic ?? null,
         input.content,
         input.importance,
         input.confidence,
+        emb?.json ?? null,
+        emb?.model ?? null,
+        emb?.backend ?? null,
+        emb?.quality ?? null,
+        emb?.dimension ?? null,
+        emb?.status ?? "missing",
+        emb?.textHash ?? null,
+        emb?.version ?? 1,
+        emb?.needsRefresh ? 1 : 0,
+        emb?.updatedAt ?? null,
+        input.sourceMessageId ?? null,
+        input.sourceTaskId ?? null,
+        input.lastObservedAt ?? null,
+        "active",
         now,
         now,
+        0,
+        null,
       );
     return {
       id,
@@ -407,6 +484,23 @@ export class MemoryRepository {
       createdAt: now,
       accessCount: 0,
       lastAccessedAt: null,
+      key: input.key ?? null,
+      topic: input.topic ?? null,
+      embeddingJson: emb?.json ?? null,
+      embeddingModel: emb?.model ?? null,
+      embeddingBackend: emb?.backend ?? null,
+      embeddingQuality: emb?.quality ?? null,
+      embeddingDimension: emb?.dimension ?? null,
+      embeddingStatus: emb?.status ?? "missing",
+      embeddingTextHash: emb?.textHash ?? null,
+      embeddingVersion: emb?.version ?? 1,
+      embeddingNeedsRefresh: emb?.needsRefresh ?? false,
+      embeddingUpdatedAt: emb?.updatedAt ?? null,
+      supersededBy: null,
+      supersededReason: null,
+      lastObservedAt: input.lastObservedAt ?? null,
+      sourceMessageId: input.sourceMessageId ?? null,
+      sourceTaskId: input.sourceTaskId ?? null,
     };
   }
 
@@ -526,6 +620,161 @@ export class MemoryRepository {
       .get(input.memoryId, input.userId, input.agentId, input.worldId) as MemoryRow | undefined;
     return row ? mapMemory(row) : null;
   }
+
+  listActiveForScope(input: { userId: string; agentId: string; worldId: string }): MemoryRecord[] {
+    const rows = this.db.sqlite
+      .prepare(
+        `SELECT *
+         FROM memories
+         WHERE user_id = ?
+           AND agent_id = ?
+           AND world_id = ?
+           AND status = 'active'
+         ORDER BY updated_at DESC`,
+      )
+      .all(input.userId, input.agentId, input.worldId) as MemoryRow[];
+    return rows.map(mapMemory);
+  }
+
+  mergeMemory(input: {
+    memoryId: string;
+    content?: string;
+    importance?: number;
+    confidence?: number;
+    key?: string | null;
+    topic?: string | null;
+    embedding?: MemoryEmbeddingInput;
+    lastObservedAt?: number | null;
+  }): MemoryRecord | null {
+    const result = this.db.sqlite.transaction(() => {
+      const now = Date.now();
+      const emb = input.embedding;
+      this.db.sqlite
+        .prepare(
+          `UPDATE memories
+           SET content = COALESCE(?, content),
+               importance = COALESCE(?, importance),
+               confidence = COALESCE(?, confidence),
+               canonical_key = COALESCE(?, canonical_key),
+               topic = COALESCE(?, topic),
+               embedding_json = COALESCE(?, embedding_json),
+               embedding_model = COALESCE(?, embedding_model),
+               embedding_backend = COALESCE(?, embedding_backend),
+               embedding_quality = COALESCE(?, embedding_quality),
+               embedding_dimension = COALESCE(?, embedding_dimension),
+               embedding_status = COALESCE(?, embedding_status),
+               embedding_text_hash = COALESCE(?, embedding_text_hash),
+               embedding_version = COALESCE(?, embedding_version),
+               embedding_needs_refresh = COALESCE(?, embedding_needs_refresh),
+               embedding_updated_at = COALESCE(?, embedding_updated_at),
+               last_observed_at = COALESCE(?, last_observed_at),
+               updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(
+          input.content ?? null,
+          input.importance ?? null,
+          input.confidence ?? null,
+          input.key ?? null,
+          input.topic ?? null,
+          emb?.json ?? null,
+          emb?.model ?? null,
+          emb?.backend ?? null,
+          emb?.quality ?? null,
+          emb?.dimension ?? null,
+          emb?.status ?? null,
+          emb?.textHash ?? null,
+          emb?.version ?? null,
+          emb?.needsRefresh != null ? (emb.needsRefresh ? 1 : 0) : null,
+          emb?.updatedAt ?? null,
+          input.lastObservedAt ?? null,
+          now,
+          input.memoryId,
+        );
+      const row = this.db.sqlite.prepare("SELECT * FROM memories WHERE id = ?").get(input.memoryId) as MemoryRow | undefined;
+      return row ? mapMemory(row) : null;
+    })();
+    return result;
+  }
+
+  replaceConflicted(input: {
+    oldMemoryId: string;
+    reason: string;
+    newMemory: {
+      userId: string;
+      agentId: string;
+      worldId: string;
+      subject: string;
+      memoryType: string;
+      key?: string | null;
+      topic?: string | null;
+      content: string;
+      importance: number;
+      confidence: number;
+      embedding?: MemoryEmbeddingInput;
+      sourceMessageId?: string | null;
+      sourceTaskId?: string | null;
+      lastObservedAt?: number | null;
+    };
+  }): MemoryRecord {
+    const result = this.db.sqlite.transaction(() => {
+      const now = Date.now();
+      const newId = `mem-${randomUUID()}`;
+      const emb = input.newMemory.embedding;
+      this.db.sqlite
+        .prepare(
+          `INSERT INTO memories
+            (id, user_id, agent_id, world_id, subject, memory_type, canonical_key, topic, content, importance, confidence,
+             embedding_json, embedding_model, embedding_backend, embedding_quality, embedding_dimension,
+             embedding_status, embedding_text_hash, embedding_version, embedding_needs_refresh, embedding_updated_at,
+             source_message_id, source_task_id, last_observed_at, status, created_at, updated_at, access_count, last_accessed_at)
+           VALUES
+            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 0, ?)`,
+        )
+        .run(
+          newId,
+          input.newMemory.userId,
+          input.newMemory.agentId,
+          input.newMemory.worldId,
+          input.newMemory.subject,
+          input.newMemory.memoryType,
+          input.newMemory.key ?? null,
+          input.newMemory.topic ?? null,
+          input.newMemory.content,
+          input.newMemory.importance,
+          input.newMemory.confidence,
+          emb?.json ?? null,
+          emb?.model ?? null,
+          emb?.backend ?? null,
+          emb?.quality ?? null,
+          emb?.dimension ?? null,
+          emb?.status ?? "missing",
+          emb?.textHash ?? null,
+          emb?.version ?? 1,
+          emb?.needsRefresh ? 1 : 0,
+          emb?.updatedAt ?? null,
+          input.newMemory.sourceMessageId ?? null,
+          input.newMemory.sourceTaskId ?? null,
+          input.newMemory.lastObservedAt ?? null,
+          now,
+          now,
+          null,
+        );
+      this.db.sqlite
+        .prepare(
+          `UPDATE memories
+           SET status = 'frozen',
+               superseded_by = ?,
+               superseded_reason = ?,
+               updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(newId, input.reason, now, input.oldMemoryId);
+      const row = this.db.sqlite.prepare("SELECT * FROM memories WHERE id = ?").get(newId) as MemoryRow;
+      return mapMemory(row);
+    })();
+    return result;
+  }
 }
 
 function mapAgent(row: AgentRow): AgentRecord {
@@ -581,6 +830,23 @@ function mapMemory(row: MemoryRow): MemoryRecord {
     createdAt: row.created_at,
     accessCount: row.access_count,
     lastAccessedAt: row.last_accessed_at,
+    key: row.canonical_key,
+    topic: row.topic,
+    embeddingJson: row.embedding_json,
+    embeddingModel: row.embedding_model,
+    embeddingBackend: row.embedding_backend,
+    embeddingQuality: row.embedding_quality,
+    embeddingDimension: row.embedding_dimension,
+    embeddingStatus: row.embedding_status,
+    embeddingTextHash: row.embedding_text_hash,
+    embeddingVersion: row.embedding_version,
+    embeddingNeedsRefresh: row.embedding_needs_refresh === 1,
+    embeddingUpdatedAt: row.embedding_updated_at,
+    supersededBy: row.superseded_by,
+    supersededReason: row.superseded_reason,
+    lastObservedAt: row.last_observed_at,
+    sourceMessageId: row.source_message_id,
+    sourceTaskId: row.source_task_id,
   };
 }
 

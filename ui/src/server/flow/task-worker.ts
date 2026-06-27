@@ -30,7 +30,7 @@ export async function drainChatTasks(options: {
       await createMemoryExtractFlow({
         db: options.db,
         generateMemoryExtraction: options.generateMemoryExtraction,
-      }).run(payload);
+      }).run({ ...payload, sourceTaskId: task.id });
       tasks.markDone(task.id);
       processed += 1;
     } catch (error) {
