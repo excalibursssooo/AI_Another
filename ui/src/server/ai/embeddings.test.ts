@@ -81,8 +81,11 @@ describe("embedding helpers", () => {
 
 describe("classifyEmbeddingError", () => {
   it("returns 'aborted' when error.name === 'AbortError'", () => {
-    expect(classifyEmbeddingError(new Error("fetch aborted"))).toBe("aborted");
     expect(classifyEmbeddingError(Object.assign(new Error(""), { name: "AbortError" }))).toBe("aborted");
+  });
+
+  it("returns 'aborted' when error.message includes 'aborted'", () => {
+    expect(classifyEmbeddingError(new Error("fetch aborted"))).toBe("aborted");
   });
 
   it("returns 'aborted' for non-Error throws with name 'AbortError'", () => {

@@ -134,6 +134,7 @@ function parseEmbeddingVector(body: unknown): number[] {
 
 export function classifyEmbeddingError(error: unknown): EmbeddingFallbackReason {
   if (error instanceof Error) {
+    // AbortController sets name === "AbortError"; upstream wrappers may set only the message.
     if (error.name === "AbortError" || error.message.includes("aborted")) return "aborted";
     const msg = error.message;
     if (msg.includes("embedding request failed")) return "non_2xx_status";
