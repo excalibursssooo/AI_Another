@@ -74,6 +74,35 @@ ENABLE_AUTH=false
 
 `AI_PROVIDER=mock` 是默认的确定性本地模式，不需要外部网络或 API key。切换真实 provider 后，聊天、记忆抽取、角色创建、世界创建和动态生成分别读取对应的 `*_MODEL` 环境变量；未设置时回退到 `CHAT_MODEL`。
 
+## 本地 Embedding 服务
+
+长期记忆合并可以使用本地 llama.cpp embedding server。默认地址是 `http://127.0.0.1:8080/v1`。
+
+```bash
+cd ~/llama.cpp
+
+./build/bin/llama-server \
+  -m ~/models/embeddings/bge-m3/bge-m3-q8_0.gguf \
+  --embedding \
+  --pooling mean \
+  -c 8192 \
+  -ngl 999 \
+  --host 127.0.0.1 \
+  --port 8080
+```
+
+相关环境变量：
+
+```env
+LLAMA_EMBEDDING_BASE_URL=http://127.0.0.1:8080/v1
+LLAMA_EMBEDDING_MODEL=bge-m3
+LLAMA_EMBEDDING_TIMEOUT_MS=5000
+EMBEDDING_FALLBACK_DIMENSION=128
+EMBEDDING_ALLOW_FALLBACK_SEMANTIC_MERGE=false
+```
+
+如果服务未启动，系统会写入 fallback embedding 并标记需要刷新；fallback 不参与默认语义合并。
+
 ## 常用命令
 
 ```bash
