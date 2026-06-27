@@ -15,6 +15,10 @@ import {
   GenerateFeedPostDraft,
   generateFeedPostDraft as defaultGenerateFeedPostDraft,
 } from "@/server/ai/chat";
+import { embedText as defaultEmbedText } from "@/server/ai/embeddings";
+import type { EmbedText } from "@/server/domain/chat/memory-consolidator";
+import { FeedTopicRepository, normalizeAgentId, TOPIC_RECENT_WINDOW_DAYS } from "@/server/domain/chat/feed-topic-repository";
+import { MemoryOperationLogRepository } from "@/server/domain/chat/memory-operation-log-repository";
 
 import { Flow } from "./runner";
 import { FlowNode } from "./types";
@@ -46,6 +50,7 @@ export interface PostTriggerResult {
 export function createFeedGenerateFlow(options: {
   db: AppDatabase;
   generateFeedPostDraft?: GenerateFeedPostDraft;
+  embedText?: EmbedText;
 }): Flow<FeedGenerateContext> {
   const agents = new AgentRepository(options.db);
   const worlds = new WorldRepository(options.db);
@@ -53,6 +58,7 @@ export function createFeedGenerateFlow(options: {
   const posts = new FeedPostRepository(options.db);
   const liveStates = new AgentLiveStateRepository(options.db);
   const generateDraft = options.generateFeedPostDraft ?? defaultGenerateFeedPostDraft;
+  const embedFn = options.embedText ?? defaultEmbedText;
 
   const nodes: FlowNode<FeedGenerateContext>[] = [
     {
@@ -139,7 +145,15 @@ export function createFeedGenerateFlow(options: {
           };
         }
         const lastUserMessage = [...recent].reverse().find((item) => item.role === "user")?.content;
-        const topicSeed = extractTopic(lastUserMessage || agent.persona);
+        const topicSeed = await extractTopicWithCluster({
+          db: options.db,
+          content: lastUserMessage || agent.persona,
+          userId: ctx.userId,
+          agentId: ctx.agentId,
+          worldId: ctx.worldId,
+          sourceTaskId: ctx.sourceTaskId,
+          embedText: embedFn,
+        });
         return {
           ...ctx,
           topicSeed,
@@ -191,11 +205,85 @@ export function createPostTrigger(input: { db: AppDatabase; postId: string; user
   };
 }
 
-function extractTopic(text: string): string {
+const TOPIC_KEY_MAX_CJK = 8;
+const TOPIC_KEY_MAX_WORDS = 4;
+const TOPIC_MATCH_SIMILARITY = 0.75;
+
+export async function extractTopicWithCluster(input: {
+  db: AppDatabase;
+  content: string;
+  userId: string;
+  agentId: string | null;
+  worldId: string;
+  sourceTaskId?: string | null;
+  embedText?: EmbedText;
+}): Promise<string> {
+  const topics = new FeedTopicRepository(input.db);
+  const logs = new MemoryOperationLogRepository(input.db);
+  const effectiveAgentId = normalizeAgentId(input.agentId);
+  const embedFn = input.embedText ?? defaultEmbedText;
+  const embedding = await embedFn(input.content);
+
+  if (embedding.fallbackReason !== undefined || embedding.quality !== "semantic") {
+    logs.record({
+      kind: "topic_fallback", reason: "embedding_unavailable",
+      sourceTaskId: input.sourceTaskId ?? null,
+      userId: input.userId, agentId: effectiveAgentId, worldId: input.worldId,
+    });
+    return extractTopicFallback(input.content);
+  }
+
+  const recent = topics.listRecent({
+    userId: input.userId, worldId: input.worldId, agentId: effectiveAgentId,
+    sinceDays: TOPIC_RECENT_WINDOW_DAYS,
+  });
+
+  if (recent.length === 0) {
+    const key = topics.create({
+      userId: input.userId, worldId: input.worldId, agentId: effectiveAgentId,
+      topicKey: extractTopicFallback(input.content),
+      embedding,
+    });
+    logs.record({
+      kind: "topic_fallback", reason: "cold_start",
+      sourceTaskId: input.sourceTaskId ?? null,
+      userId: input.userId, agentId: effectiveAgentId, worldId: input.worldId,
+    });
+    return key;
+  }
+
+  const matched = topics.bestMatchByCosine(recent, embedding, TOPIC_MATCH_SIMILARITY);
+  if (matched) {
+    topics.touch(matched.id);
+    return matched.topicKey;
+  }
+
+  const key = topics.create({
+    userId: input.userId, worldId: input.worldId, agentId: effectiveAgentId,
+    topicKey: extractTopicFallback(input.content),
+    embedding,
+  });
+  logs.record({
+    kind: "topic_fallback", reason: "no_match",
+    sourceTaskId: input.sourceTaskId ?? null,
+    userId: input.userId, agentId: effectiveAgentId, worldId: input.worldId,
+  });
+  return key;
+}
+
+function extractTopicFallback(text: string): string {
   const normalized = text.replace(/[。！？!?，,]/g, " ").trim();
   const words = normalized.split(/\s+/).filter(Boolean);
-  if (words.length > 0) {
-    return words.slice(0, 4).join(" ");
+  const candidate = words.length > 0 ? words.slice(0, 4).join(" ") : normalized.slice(0, 18);
+  return clampTopicKey(candidate) || "日常";
+}
+
+function clampTopicKey(s: string): string {
+  const cjkChars = [...s].filter((ch) => /[一-龥]/.test(ch));
+  if (cjkChars.length > TOPIC_KEY_MAX_CJK) {
+    return cjkChars.slice(0, TOPIC_KEY_MAX_CJK).join("");
   }
-  return normalized.slice(0, 18) || "日常";
+  const words = s.split(/\s+/).filter(Boolean);
+  if (words.length > TOPIC_KEY_MAX_WORDS) return words.slice(0, TOPIC_KEY_MAX_WORDS).join(" ");
+  return s;
 }
