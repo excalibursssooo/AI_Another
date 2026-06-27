@@ -202,4 +202,66 @@ describe("MemoryConsolidator", () => {
     expect(consolidator.detectConflictForTest("用户喜欢咖啡。", "用户不喜欢咖啡。", "preference")).toBe(true);
     expect(consolidator.detectConflictForTest("用户不喜欢咖啡。", "用户不是不喜欢咖啡。", "preference")).toBe(false);
   });
+
+  it("propagates provenance and embedding onto the conflict replacement", async () => {
+    const db = createTestDatabase();
+    const memories = new MemoryRepository(db);
+    memories.create({
+      userId: "u001",
+      agentId: "agent-default",
+      worldId: "default",
+      subject: "user",
+      memoryType: "preference",
+      key: "preference.food.coffee",
+      topic: "coffee",
+      content: "用户喜欢咖啡。",
+      importance: 0.6,
+      confidence: 0.8,
+      embedding: {
+        json: JSON.stringify([0.9, 0.1]),
+        model: "bge-m3",
+        backend: "llama.cpp",
+        quality: "semantic",
+        dimension: 2,
+        status: "ready",
+        textHash: "old",
+        version: 1,
+        needsRefresh: false,
+        updatedAt: 1,
+      },
+    });
+    const consolidator = new MemoryConsolidator({
+      db,
+      embedText: async () => semantic([0.85, 0.15]),
+    });
+
+    const result = await consolidator.consolidate({
+      userId: "u001",
+      agentId: "agent-default",
+      worldId: "default",
+      sourceMessageId: "msg-99",
+      sourceTaskId: "task-conflict",
+      candidate: {
+        subject: "user",
+        type: "preference",
+        key: "preference.food.coffee",
+        topic: "coffee",
+        content: "用户不喜欢咖啡。",
+        importance: 0.9,
+        confidence: 0.95,
+      },
+    });
+
+    expect(result.action).toBe("conflicted");
+    const all = memories.list({ userId: "u001", agentId: "agent-default", worldId: "default", status: "all" });
+    const replacement = all.find((item) => item.id === result.memoryId);
+    expect(replacement).toBeDefined();
+    expect(replacement?.key).toBe("preference.food.coffee");
+    expect(replacement?.topic).toBe("coffee");
+    expect(replacement?.embeddingJson).toBe(JSON.stringify([0.85, 0.15]));
+    expect(replacement?.embeddingStatus).toBe("ready");
+    expect(replacement?.sourceTaskId).toBe("task-conflict");
+    expect(replacement?.sourceMessageId).toBe("msg-99");
+    expect(replacement?.lastObservedAt).toEqual(expect.any(Number));
+  });
 });

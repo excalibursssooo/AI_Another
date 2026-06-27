@@ -78,9 +78,15 @@ export class MemoryConsolidator {
           worldId: input.worldId,
           subject: input.candidate.subject,
           memoryType: input.candidate.type,
+          key: input.candidate.key,
+          topic: input.candidate.topic,
           content,
           importance: input.candidate.importance,
           confidence: input.candidate.confidence,
+          embedding: embeddingInput,
+          sourceMessageId: input.sourceMessageId,
+          sourceTaskId: input.sourceTaskId,
+          lastObservedAt: Date.now(),
         },
       });
       return {

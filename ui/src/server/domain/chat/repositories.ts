@@ -706,20 +706,30 @@ export class MemoryRepository {
       worldId: string;
       subject: string;
       memoryType: string;
+      key?: string | null;
+      topic?: string | null;
       content: string;
       importance: number;
       confidence: number;
+      embedding?: MemoryEmbeddingInput;
+      sourceMessageId?: string | null;
+      sourceTaskId?: string | null;
+      lastObservedAt?: number | null;
     };
   }): MemoryRecord {
     const result = this.db.sqlite.transaction(() => {
       const now = Date.now();
       const newId = `mem-${randomUUID()}`;
+      const emb = input.newMemory.embedding;
       this.db.sqlite
         .prepare(
           `INSERT INTO memories
-            (id, user_id, agent_id, world_id, subject, memory_type, content, importance, confidence, status, created_at, updated_at)
+            (id, user_id, agent_id, world_id, subject, memory_type, canonical_key, topic, content, importance, confidence,
+             embedding_json, embedding_model, embedding_backend, embedding_quality, embedding_dimension,
+             embedding_status, embedding_text_hash, embedding_version, embedding_needs_refresh, embedding_updated_at,
+             source_message_id, source_task_id, last_observed_at, status, created_at, updated_at, access_count, last_accessed_at)
            VALUES
-            (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 0, ?)`,
         )
         .run(
           newId,
@@ -728,11 +738,27 @@ export class MemoryRepository {
           input.newMemory.worldId,
           input.newMemory.subject,
           input.newMemory.memoryType,
+          input.newMemory.key ?? null,
+          input.newMemory.topic ?? null,
           input.newMemory.content,
           input.newMemory.importance,
           input.newMemory.confidence,
+          emb?.json ?? null,
+          emb?.model ?? null,
+          emb?.backend ?? null,
+          emb?.quality ?? null,
+          emb?.dimension ?? null,
+          emb?.status ?? "missing",
+          emb?.textHash ?? null,
+          emb?.version ?? 1,
+          emb?.needsRefresh ? 1 : 0,
+          emb?.updatedAt ?? null,
+          input.newMemory.sourceMessageId ?? null,
+          input.newMemory.sourceTaskId ?? null,
+          input.newMemory.lastObservedAt ?? null,
           now,
           now,
+          null,
         );
       this.db.sqlite
         .prepare(

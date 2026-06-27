@@ -475,6 +475,70 @@ describe("MemoryRepository embedding metadata", () => {
     expect(replacement.status).toBe("active");
   });
 
+  it("preserves provenance and embedding on conflict replacement", () => {
+    const db = createTestDatabase();
+    const memories = new MemoryRepository(db);
+    const old = memories.create({
+      userId: "u001",
+      agentId: "agent-default",
+      worldId: "default",
+      subject: "user",
+      memoryType: "preference",
+      content: "用户喜欢咖啡。",
+      importance: 0.6,
+      confidence: 0.8,
+    });
+
+    const observedAt = 1_700_000_000_000;
+    const replacement = memories.replaceConflicted({
+      oldMemoryId: old.id,
+      reason: "preference reversal",
+      newMemory: {
+        userId: "u001",
+        agentId: "agent-default",
+        worldId: "default",
+        subject: "user",
+        memoryType: "preference",
+        key: "preference.food.coffee",
+        topic: "coffee",
+        content: "用户不喜欢咖啡。",
+        importance: 0.9,
+        confidence: 0.95,
+        embedding: {
+          json: JSON.stringify([0.1, 0.9]),
+          model: "bge-m3",
+          backend: "llama.cpp",
+          quality: "semantic",
+          dimension: 2,
+          status: "ready",
+          textHash: "hash-c",
+          version: 1,
+          needsRefresh: false,
+          updatedAt: observedAt,
+        },
+        sourceMessageId: "msg-42",
+        sourceTaskId: "task-7",
+        lastObservedAt: observedAt,
+      },
+    });
+
+    expect(replacement.key).toBe("preference.food.coffee");
+    expect(replacement.topic).toBe("coffee");
+    expect(replacement.embeddingJson).toBe(JSON.stringify([0.1, 0.9]));
+    expect(replacement.embeddingModel).toBe("bge-m3");
+    expect(replacement.embeddingBackend).toBe("llama.cpp");
+    expect(replacement.embeddingQuality).toBe("semantic");
+    expect(replacement.embeddingDimension).toBe(2);
+    expect(replacement.embeddingStatus).toBe("ready");
+    expect(replacement.embeddingTextHash).toBe("hash-c");
+    expect(replacement.embeddingVersion).toBe(1);
+    expect(replacement.embeddingNeedsRefresh).toBe(false);
+    expect(replacement.embeddingUpdatedAt).toBe(observedAt);
+    expect(replacement.sourceMessageId).toBe("msg-42");
+    expect(replacement.sourceTaskId).toBe("task-7");
+    expect(replacement.lastObservedAt).toBe(observedAt);
+  });
+
   it("merges an active memory with refreshed metadata", () => {
     const db = createTestDatabase();
     const memories = new MemoryRepository(db);
