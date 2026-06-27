@@ -31,7 +31,7 @@ export interface ConsolidationResult {
   reason: string;
 }
 
-type EmbedText = typeof defaultEmbedText;
+export type EmbedText = typeof defaultEmbedText;
 
 interface RankedMemory {
   memory: MemoryRecord;

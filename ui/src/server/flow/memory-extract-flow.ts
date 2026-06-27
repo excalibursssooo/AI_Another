@@ -4,7 +4,6 @@ import {
   GenerateMemoryExtraction,
   generateMemoryExtraction as defaultGenerateMemoryExtraction,
 } from "@/server/ai/chat";
-import { embedText as defaultEmbedText } from "@/server/ai/embeddings";
 import { MemoryCandidate } from "@/server/ai/schemas";
 
 import type { EmbedText } from "@/server/domain/chat/memory-consolidator";
