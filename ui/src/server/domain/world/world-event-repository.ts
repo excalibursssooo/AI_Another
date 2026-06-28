@@ -16,7 +16,7 @@ interface WorldEventRow {
   type: WorldEventType;
   payload_json: string;
   summary: string;
-  visibility: VisibilityScope["level"];
+  visibility: VisibilityScope["mode"];
   visible_to_actor_ids_json: string;
   visible_to_user: number;
   actor_ids_json: string;
@@ -89,7 +89,7 @@ export class WorldEventRepository {
           input.type,
           JSON.stringify(input.payload),
           input.summary,
-          input.visibility.level,
+          input.visibility.mode,
           JSON.stringify(input.visibility.visibleToActorIds),
           input.visibility.visibleToUser ? 1 : 0,
           JSON.stringify(input.actorIds),
@@ -164,7 +164,7 @@ function mapWorldEvent(row: WorldEventRow): WorldEventRecord {
     payload: parseJson(row.payload_json, {}),
     summary: row.summary,
     visibility: {
-      level: row.visibility,
+      mode: row.visibility,
       visibleToActorIds: parseJson(row.visible_to_actor_ids_json, []),
       visibleToUser: row.visible_to_user === 1,
     },

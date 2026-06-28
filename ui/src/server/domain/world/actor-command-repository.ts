@@ -19,7 +19,7 @@ interface ActorCommandRow {
   target_agent_id: string;
   command_type: ActorCommandType;
   priority: ActorCommandPriority;
-  visibility: VisibilityScope["level"];
+  visibility: VisibilityScope["mode"];
   visible_to_actor_ids_json: string;
   visible_to_user: number;
   actor_instruction: string;
@@ -62,7 +62,7 @@ function mapActorCommand(row: ActorCommandRow): ActorCommandRecord {
     commandType: row.command_type,
     priority: row.priority,
     visibility: {
-      level: row.visibility,
+      mode: row.visibility,
       visibleToActorIds: parseJson(row.visible_to_actor_ids_json, []),
       visibleToUser: row.visible_to_user === 1,
     },
@@ -130,7 +130,7 @@ export class ActorCommandRepository {
           input.targetAgentId,
           input.commandType,
           input.priority,
-          input.visibility.level,
+          input.visibility.mode,
           stringifyJson(input.visibility.visibleToActorIds),
           input.visibility.visibleToUser ? 1 : 0,
           input.actorInstruction,

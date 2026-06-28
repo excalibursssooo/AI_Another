@@ -1,7 +1,7 @@
 export type VisibilityLevel = "public" | "private" | "hidden";
 
 export interface VisibilityScope {
-  level: VisibilityLevel;
+  mode: VisibilityLevel;
   visibleToActorIds: string[];
   visibleToUser: boolean;
 }
@@ -108,7 +108,7 @@ export interface WorldReductionResult {
 }
 
 export const PUBLIC_VISIBILITY: VisibilityScope = {
-  level: "public",
+  mode: "public",
   visibleToActorIds: [],
   visibleToUser: true,
 };

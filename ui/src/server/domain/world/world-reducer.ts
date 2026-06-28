@@ -78,7 +78,7 @@ function applyWorldIncident(
 }
 
 function selectFactBucket(state: WorldRuntimeState, visibility: VisibilityScope): WorldFact[] {
-  if (visibility.level === "public" && visibility.visibleToUser) {
+  if (visibility.mode === "public" && visibility.visibleToUser) {
     return state.publicFacts;
   }
   return state.hiddenFacts;
