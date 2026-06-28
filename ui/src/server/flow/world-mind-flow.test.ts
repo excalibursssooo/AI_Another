@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 import { createTestDatabase } from "@/server/db/client";
 import { WorldRepository } from "@/server/domain/chat/repositories";
@@ -10,6 +10,30 @@ import { WorldEventRepository } from "@/server/domain/world/world-event-reposito
 import { WorldRunRepository } from "@/server/domain/world/world-run-repository";
 import { WorldStateRepository } from "@/server/domain/world/world-state-repository";
 import { createWorldMindFlow } from "./world-mind-flow";
+
+// Mutable flag controlled by the transaction_failed test.
+// vi.hoisted ensures this is evaluated before the hoisted vi.mock factory runs.
+const shouldThrow = vi.hoisted(() => ({ value: false }));
+
+vi.mock("@/server/domain/world/actor-command-repository", async () => {
+  const { ActorCommandRepository: RealRepo } = await vi.importActual(
+    "@/server/domain/world/actor-command-repository",
+  );
+  return {
+    ActorCommandRepository: function (db: ConstructorParameters<typeof RealRepo>[0]) {
+      const realInstance = new RealRepo(db);
+      return {
+        ...realInstance,
+        createMany: (...args: Parameters<typeof realInstance.createMany>) => {
+          if (shouldThrow.value) {
+            throw new Error("UNIQUE constraint failed: actor_commands.idempotency_key");
+          }
+          return realInstance.createMany(...args);
+        },
+      } as typeof realInstance;
+    },
+  };
+});
 
 function makeValidWorldMindDecision(overrides: Partial<WorldMindDecision> = {}): WorldMindDecision {
   return {
@@ -50,21 +74,23 @@ function makeValidWorldMindDecision(overrides: Partial<WorldMindDecision> = {}):
 }
 
 describe("WorldMindFlow", () => {
+  afterEach(() => {
+    shouldThrow.value = false;
+    vi.restoreAllMocks();
+  });
+
   // -------------------------------------------------------------------------
   // accepted decision
   // -------------------------------------------------------------------------
   it("accepted decision commits one user_action and one derived event with shared decision and run ids, snapshot sequence 2, one pending command, and accepted decision log", async () => {
     const db = createTestDatabase();
 
-    // Set up world + agent (already seeded: worldId="default", agentId="agent-default")
     const worldRepo = new WorldRepository(db);
     worldRepo.upsert({ id: "default", name: "Test World", lore: "", tone: "", constraints: [], seedMemories: [] });
 
-    // Create character state for the agent so it is "active"
     const charRepo = new CharacterStateRepository(db);
     charRepo.getOrCreateDefault({ userId: "u001", worldId: "default", agentId: "agent-default" });
 
-    // Create run envelope
     const runRepo = new WorldRunRepository(db);
     const envelope = runRepo.createOrGet({
       userId: "u001",
@@ -84,7 +110,6 @@ describe("WorldMindFlow", () => {
       generateDecision: async () => decision,
     });
 
-    // --- assertions ---
     const eventRepo = new WorldEventRepository(db);
     const events = eventRepo.listCommitted({ userId: "u001", worldId: "default" });
 
@@ -99,12 +124,10 @@ describe("WorldMindFlow", () => {
     expect(derivedEvent.decisionId).toBe(envelope.decisionId);
     expect(derivedEvent.worldRunId).toBe(envelope.worldRunId);
 
-    // Snapshot sequence = 2
     const snapshotRepo = new WorldStateRepository(db);
     const snapshot = snapshotRepo.getLatest({ userId: "u001", worldId: "default" });
     expect(snapshot?.appliedEventSequence).toBe(2);
 
-    // One pending command
     const cmdRepo = new ActorCommandRepository(db);
     const commands = db.sqlite
       .prepare("SELECT * FROM actor_commands WHERE world_run_id = ? AND status = 'pending'")
@@ -113,7 +136,6 @@ describe("WorldMindFlow", () => {
     expect(commands[0].command_type).toBe("speak_to_user");
     expect(commands[0].actor_instruction).toBe("say hello");
 
-    // Decision log
     const logRepo = new WorldDecisionLogRepository(db);
     const logs = logRepo.listForRun(envelope.worldRunId);
     expect(logs).toHaveLength(1);
@@ -121,7 +143,6 @@ describe("WorldMindFlow", () => {
     expect(logs[0].createdEventIdsJson).toContain(userAction.id);
     expect(logs[0].createdCommandIdsJson).toHaveLength(1);
 
-    // Run status
     const run = runRepo.getById(envelope.worldRunId);
     expect(run?.status).toBe("committed");
   });
@@ -148,7 +169,6 @@ describe("WorldMindFlow", () => {
       idempotencyKey: `test-run:${Math.random()}`,
     });
 
-    // Decision with a command referencing a non-existent clientEventId → validator rejects
     const decision = makeValidWorldMindDecision({
       proposedCommands: [
         {
@@ -159,7 +179,7 @@ describe("WorldMindFlow", () => {
           visibleToUser: false,
           actorInstruction: "should not appear",
           privateReason: null,
-          cause: { type: "proposed_event", clientEventId: "evt-nonexistent" }, // ← invalid
+          cause: { type: "proposed_event", clientEventId: "evt-nonexistent" },
           payload: {},
           relatedEventSummary: null,
         },
@@ -250,7 +270,7 @@ describe("WorldMindFlow", () => {
   });
 
   // -------------------------------------------------------------------------
-  // transaction_failed — duplicate command idempotency key inside transaction
+  // transaction_failed — command repository throws during insert
   // -------------------------------------------------------------------------
   it("transaction_failed rolls back all writes and creates a best-effort decision log", async () => {
     const db = createTestDatabase();
@@ -271,12 +291,6 @@ describe("WorldMindFlow", () => {
       idempotencyKey: `test-run:${Math.random()}`,
     });
 
-    const sharedIdempotencyKey = "cmd-dup-key";
-
-    // Decision with TWO commands sharing the same idempotency_key.
-    // Validator does NOT check command idempotency, so it passes.
-    // SQLite UNIQUE constraint on actor_commands.idempotency_key causes the
-    // transaction to roll back on the second insert.
     const decision = makeValidWorldMindDecision({
       proposedEvents: [
         {
@@ -295,19 +309,7 @@ describe("WorldMindFlow", () => {
           priority: "normal",
           visibility: { mode: "public", visibleToActorIds: [] },
           visibleToUser: false,
-          actorInstruction: "first",
-          privateReason: null,
-          cause: { type: "proposed_event", clientEventId: "evt-derived-1" },
-          payload: {},
-          relatedEventSummary: null,
-        },
-        {
-          commandType: "speak_to_user",
-          targetAgentId: "agent-default",
-          priority: "high",
-          visibility: { mode: "public", visibleToActorIds: [] },
-          visibleToUser: false,
-          actorInstruction: "second (duplicate key)",
+          actorInstruction: "say hello",
           privateReason: null,
           cause: { type: "proposed_event", clientEventId: "evt-derived-1" },
           payload: {},
@@ -317,23 +319,19 @@ describe("WorldMindFlow", () => {
       observations: [],
       memoryCandidates: [],
       nextTick: { delayMs: 60_000, reason: "test" },
-      // Both commands have the same targetAgentId, commandType, and clientEventId,
-      // so they generate the same idempotency_key internally in the flow.
-      // forceCommandInsert bypasses the de-duplication check, hitting SQLite's
-      // UNIQUE constraint and rolling back the transaction.
     });
+
+    // Enable the mock to throw on the next createMany call.
+    shouldThrow.value = true;
 
     await expect(
       createWorldMindFlow({
         db,
         envelope,
         sourceInput: { message: "hello", targetAgentId: "agent-default" },
-        // forceCommandInsert bypasses idempotency de-duplication so the duplicate
-        // idempotency key hits SQLite's UNIQUE constraint and rolls back the tx.
-        forceCommandInsert: true,
         generateDecision: async () => decision,
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow("UNIQUE constraint failed");
 
     // The user_action is also rolled back — no committed events at all
     const eventRepo = new WorldEventRepository(db);

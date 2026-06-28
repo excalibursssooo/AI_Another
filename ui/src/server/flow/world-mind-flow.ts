@@ -29,12 +29,6 @@ export interface WorldMindContext {
   generateDecision?: GenerateWorldDecision;
   /** Pre-supplied decision — skips generation if provided. */
   decision?: WorldMindDecision;
-  /**
-   * When true, bypasses command idempotency de-duplication so that duplicate
-   * idempotency keys cause a SQLite UNIQUE constraint error (transaction_failed path).
-   * Only for use in tests.
-   */
-  forceCommandInsert?: boolean;
 }
 
 export interface WorldMindResult {
@@ -284,7 +278,7 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
       };
     });
 
-    const insertedCommands = cmdRepo.createMany(commandInputs, { forceInsert: ctx.forceCommandInsert });
+    const insertedCommands = cmdRepo.createMany(commandInputs);
     for (const c of insertedCommands) {
       createdCommandIds.push(c.id);
     }
