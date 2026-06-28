@@ -423,8 +423,11 @@ export function ChatApp() {
 
     setIsSending(true);
 
+    const clientActionId = crypto.randomUUID();
+
     const userMessage = {
       id: uid("msg"),
+      clientActionId,
       role: "user" as const,
       content: text,
       createdAt: nowTime(),
@@ -454,6 +457,7 @@ export function ChatApp() {
           conversation_id: selectedAgentId,
           agent_id: selectedAgentId,
           domain_id: activeDomainId,
+          client_action_id: clientActionId,
         },
         {
           onDelta: (content) => {
