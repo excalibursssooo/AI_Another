@@ -1,5 +1,6 @@
 import { getDatabase } from "@/server/db/client";
 import { createChatFlow } from "@/server/flow/chat-flow";
+import { createWorldInteractionFlow } from "@/server/flow/world-interaction-flow";
 import { drainChatTasks } from "@/server/flow/task-worker";
 
 export const runtime = "nodejs";
@@ -11,6 +12,7 @@ export async function POST(req: Request): Promise<Response> {
     agent_id?: string;
     domain_id?: string;
     conversation_id?: string;
+    client_action_id?: string;
   };
 
   if (!body.user_id || !body.message || !body.agent_id) {
@@ -20,6 +22,45 @@ export async function POST(req: Request): Promise<Response> {
   const message = body.message;
   const agentId = body.agent_id;
   const worldId = body.domain_id || "default";
+
+  // WorldMind mode: requires client_action_id and routes through world interaction flow
+  if (process.env.ENABLE_WORLD_MIND === "true") {
+    if (!body.client_action_id) {
+      return Response.json({ error: "missing client_action_id" }, { status: 400 });
+    }
+    const db = getDatabase();
+    const result = await createWorldInteractionFlow(
+      {
+        userId,
+        worldId,
+        message,
+        targetAgentId: agentId,
+        clientActionId: body.client_action_id,
+      },
+      { db },
+    );
+
+    const stream = new ReadableStream({
+      start(controller) {
+        const encoder = new TextEncoder();
+        if (result.reply) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "delta", content: result.reply })}\n\n`));
+        }
+        if (result.doneEvent) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(result.doneEvent)}\n\n`));
+        }
+        controller.close();
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+      },
+    });
+  }
 
   const stream = new ReadableStream({
     async start(controller) {

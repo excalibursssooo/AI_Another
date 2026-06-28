@@ -4,7 +4,7 @@ import { google } from "@ai-sdk/google";
 import { createOpenAI, openai } from "@ai-sdk/openai";
 import type { LanguageModel } from "ai";
 
-export type ModelPurpose = "chat" | "memory" | "agentCreator" | "worldCreator" | "feed";
+export type ModelPurpose = "chat" | "memory" | "agentCreator" | "worldCreator" | "feed" | "worldDirector";
 
 export interface ActiveProviderInfo {
   provider: string;
@@ -29,6 +29,7 @@ export function getLanguageModel(purpose: ModelPurpose = "chat"): LanguageModel 
     agentCreator: "AGENT_CREATOR_MODEL",
     worldCreator: "WORLD_CREATOR_MODEL",
     feed: "FEED_MODEL",
+    worldDirector: "WORLD_DIRECTOR_MODEL",
   };
   const purposeEnvKey = purposeEnvKeyByPurpose[purpose];
   const modelName = process.env[purposeEnvKey]?.trim() || process.env.CHAT_MODEL?.trim();

@@ -56,6 +56,7 @@ const PROVIDER_ENV_KEYS = [
   "WORLD_CREATOR_MODEL",
   "MEMORY_MODEL",
   "FEED_MODEL",
+  "WORLD_DIRECTOR_MODEL",
   "MINIMAX_API_KEY",
   "MINIMAX_BASE_URL",
   "OPENAI_API_KEY",
@@ -211,6 +212,18 @@ describe("getLanguageModel", () => {
     });
     getLanguageModel("feed");
     expect(openaiChatSpy).toHaveBeenCalledWith("feed-model-v1");
+  });
+
+  it("uses WORLD_DIRECTOR_MODEL for the world director purpose", () => {
+    stubProviderEnv({
+      AI_PROVIDER: "minimax",
+      CHAT_MODEL: "MiniMax-M3",
+      WORLD_DIRECTOR_MODEL: "director-model-v1",
+      MINIMAX_API_KEY: "sk-test",
+      MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
+    });
+    getLanguageModel("worldDirector");
+    expect(openaiChatSpy).toHaveBeenCalledWith("director-model-v1");
   });
 
   it("falls back to CHAT_MODEL when purpose-specific model is empty", () => {

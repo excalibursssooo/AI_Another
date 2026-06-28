@@ -16,7 +16,7 @@ interface WorldEventRow {
   type: WorldEventType;
   payload_json: string;
   summary: string;
-  visibility: VisibilityScope["level"];
+  visibility: VisibilityScope["mode"];
   visible_to_actor_ids_json: string;
   visible_to_user: number;
   actor_ids_json: string;
@@ -89,7 +89,7 @@ export class WorldEventRepository {
           input.type,
           JSON.stringify(input.payload),
           input.summary,
-          input.visibility.level,
+          input.visibility.mode,
           JSON.stringify(input.visibility.visibleToActorIds),
           input.visibility.visibleToUser ? 1 : 0,
           JSON.stringify(input.actorIds),
@@ -139,6 +139,39 @@ export class WorldEventRepository {
       .all(input.userId, input.worldId) as WorldEventRow[];
     return rows.map(mapWorldEvent);
   }
+
+  listRecentForWorld(input: { userId: string; worldId: string; limit: number }): WorldEventRecord[] {
+    const rows = this.db.sqlite
+      .prepare(
+        `SELECT *
+         FROM world_events
+         WHERE user_id = ?
+           AND world_id = ?
+           AND status = 'committed'
+         ORDER BY sequence DESC
+         LIMIT ?`,
+      )
+      .all(input.userId, input.worldId, input.limit) as WorldEventRow[];
+    // Reverse to get ascending order
+    return [...rows].reverse().map(mapWorldEvent);
+  }
+
+  listRecentForActor(input: { userId: string; worldId: string; agentId: string; limit: number }): WorldEventRecord[] {
+    const rows = this.db.sqlite
+      .prepare(
+        `SELECT *
+         FROM world_events
+         WHERE user_id = ?
+           AND world_id = ?
+           AND status = 'committed'
+           AND EXISTS (SELECT 1 FROM json_each(actor_ids_json) WHERE value = ?)
+         ORDER BY sequence DESC
+         LIMIT ?`,
+      )
+      .all(input.userId, input.worldId, input.agentId, input.limit) as WorldEventRow[];
+    // Reverse to get ascending order
+    return [...rows].reverse().map(mapWorldEvent);
+  }
 }
 
 function parseJson<T>(value: string, fallback: T): T {
@@ -164,7 +197,7 @@ function mapWorldEvent(row: WorldEventRow): WorldEventRecord {
     payload: parseJson(row.payload_json, {}),
     summary: row.summary,
     visibility: {
-      level: row.visibility,
+      mode: row.visibility,
       visibleToActorIds: parseJson(row.visible_to_actor_ids_json, []),
       visibleToUser: row.visible_to_user === 1,
     },

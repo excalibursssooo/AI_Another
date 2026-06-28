@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { PUBLIC_VISIBILITY, WorldEventRecord } from "./types";
+import { CharacterStateRecord, PUBLIC_VISIBILITY, WorldEventRecord } from "./types";
 import { reduceWorldEvents } from "./world-reducer";
 import { createInitialWorldSnapshot } from "./world-state-repository";
 
@@ -21,6 +21,22 @@ function event(partial: Partial<WorldEventRecord> & Pick<WorldEventRecord, "id" 
     idempotencyKey: partial.id,
     status: "committed",
     createdAt: partial.sequence,
+    ...partial,
+  };
+}
+
+function makeCharacterState(partial: Partial<CharacterStateRecord> & Pick<CharacterStateRecord, "agentId">): CharacterStateRecord {
+  return {
+    userId: "u001",
+    worldId: "default",
+    locationKey: "tavern",
+    currentGoal: "",
+    emotionalState: { label: "neutral", intensity: 0.5 },
+    relationshipToUser: { affinity: 0.5, trust: 0.5, tension: 0 },
+    knowledgeKeys: [],
+    activeCommandId: null,
+    lastActedAt: null,
+    updatedAt: 1000,
     ...partial,
   };
 }
@@ -91,7 +107,7 @@ describe("reduceWorldEvents", () => {
           id: "event-1",
           sequence: 1,
           type: "world_incident",
-          visibility: { level: "hidden", visibleToActorIds: [], visibleToUser: false },
+          visibility: { mode: "hidden", visibleToActorIds: [], visibleToUser: false },
           payload: {
             title: "hidden fire",
             description: "A hidden warehouse burns.",
@@ -107,7 +123,7 @@ describe("reduceWorldEvents", () => {
       {
         factKey: "secret-fire",
         summary: "A hidden warehouse burns.",
-        visibility: { level: "hidden", visibleToActorIds: [], visibleToUser: false },
+        visibility: { mode: "hidden", visibleToActorIds: [], visibleToUser: false },
         sourceEventId: "event-1",
       },
     ]);
@@ -159,5 +175,113 @@ describe("reduceWorldEvents", () => {
     expect(result.appliedEventIds).toEqual(["event-1", "event-2"]);
     expect(result.worldSnapshot.appliedEventSequence).toBe(2);
     expect(result.worldSnapshot.state.tension).toBe(0.3);
+  });
+
+  describe("character state reduction", () => {
+    it("knowledge_reveal adds factKey to matching character's knowledgeKeys", () => {
+      const previousSnapshot = createInitialWorldSnapshot({ userId: "u001", worldId: "default", now: 1000 });
+      const result = reduceWorldEvents({
+        previousSnapshot,
+        reducerVersion: 1,
+        events: [
+          event({
+            id: "event-kr",
+            sequence: 1,
+            type: "knowledge_reveal",
+            actorIds: ["agent-a"],
+            payload: { factKey: "the-sky-is-purple" },
+            summary: "revealed sky color",
+          }),
+        ],
+        previousCharacterStates: [
+          makeCharacterState({ agentId: "agent-a", knowledgeKeys: [] }),
+        ],
+      });
+
+      expect(result.characterStates).toBeDefined();
+      expect(result.characterStates![0].knowledgeKeys).toContain("the-sky-is-purple");
+    });
+
+    it("knowledge_reveal is idempotent — does not duplicate an already-known factKey", () => {
+      const previousSnapshot = createInitialWorldSnapshot({ userId: "u001", worldId: "default", now: 1000 });
+      const result = reduceWorldEvents({
+        previousSnapshot,
+        reducerVersion: 1,
+        events: [
+          event({
+            id: "event-kr",
+            sequence: 1,
+            type: "knowledge_reveal",
+            actorIds: ["agent-a"],
+            payload: { factKey: "the-sky-is-purple" },
+            summary: "revealed sky color",
+          }),
+        ],
+        previousCharacterStates: [
+          makeCharacterState({ agentId: "agent-a", knowledgeKeys: ["the-sky-is-purple"] }),
+        ],
+      });
+
+      expect(result.characterStates![0].knowledgeKeys.filter((k) => k === "the-sky-is-purple")).toHaveLength(1);
+    });
+
+    it("character_action move_location updates locationKey and lastActedAt", () => {
+      const before = Date.now();
+      const previousSnapshot = createInitialWorldSnapshot({ userId: "u001", worldId: "default", now: 1000 });
+      const result = reduceWorldEvents({
+        previousSnapshot,
+        reducerVersion: 1,
+        events: [
+          event({
+            id: "event-move",
+            sequence: 1,
+            type: "character_action",
+            actorIds: ["agent-b"],
+            payload: { action: "move_location", locationKey: "market" },
+            summary: "moved to market",
+          }),
+        ],
+        previousCharacterStates: [
+          makeCharacterState({ agentId: "agent-b", locationKey: "tavern" }),
+        ],
+      });
+      const after = Date.now();
+
+      expect(result.characterStates).toBeDefined();
+      expect(result.characterStates![0].locationKey).toBe("market");
+      expect(result.characterStates![0].lastActedAt).toBeGreaterThanOrEqual(before);
+      expect(result.characterStates![0].lastActedAt).toBeLessThanOrEqual(after);
+    });
+
+    it("user_action observed_only advances appliedEventIds and sequence without mutating character state", () => {
+      const previousSnapshot = createInitialWorldSnapshot({ userId: "u001", worldId: "default", now: 1000 });
+      const charState = makeCharacterState({ agentId: "agent-c", locationKey: "tavern", knowledgeKeys: ["fact-x"] });
+      const result = reduceWorldEvents({
+        previousSnapshot,
+        reducerVersion: 1,
+        events: [
+          event({
+            id: "event-obs",
+            sequence: 1,
+            type: "user_action",
+            actorIds: [],
+            payload: {
+              clientActionId: "client-1",
+              normalizedMessage: "look around",
+              targetAgentId: "agent-c",
+              interpretationStatus: "observed_only",
+            },
+            summary: "observed only",
+          }),
+        ],
+        previousCharacterStates: [charState],
+      });
+
+      expect(result.appliedEventIds).toContain("event-obs");
+      expect(result.worldSnapshot.appliedEventSequence).toBe(1);
+      expect(result.characterStates).toBeDefined();
+      expect(result.characterStates![0].locationKey).toBe("tavern");
+      expect(result.characterStates![0].knowledgeKeys).toEqual(["fact-x"]);
+    });
   });
 });

@@ -4,6 +4,7 @@ export interface ChatRequestDto {
   readonly conversation_id?: string;
   readonly agent_id: string;
   readonly domain_id?: string;
+  readonly client_action_id?: string;
 }
 
 export interface ChatDeltaEvent {
