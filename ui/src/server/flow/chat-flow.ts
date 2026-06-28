@@ -16,6 +16,7 @@ import { createChatToolSet } from "@/server/tools/registry";
 
 import { Flow } from "./runner";
 import { FlowNode } from "./types";
+import type { VisibleActorDirective } from "@/server/domain/world/types";
 
 export interface ChatDoneEventPayload {
   type: "done";
@@ -47,6 +48,7 @@ export interface ChatContext {
   riskLevel?: "low" | "medium" | "high";
   persistedMemoryCount?: number;
   doneEvent?: ChatDoneEventPayload;
+  worldDirective?: VisibleActorDirective | null;
 }
 
 export function createChatFlow(options: { db: AppDatabase; generateChatReply?: GenerateChatReply }): Flow<ChatContext> {
@@ -291,6 +293,7 @@ function buildSystemPrompt(ctx: ChatContext): string {
     agent?.speakingStyle ? `说话风格: ${agent.speakingStyle}` : "",
     world?.lore ? `世界观: ${world.lore}` : "",
     "请用自然、简洁、符合角色的中文回复。",
+    ctx.worldDirective?.actorInstruction ? `当前世界指令: ${ctx.worldDirective.actorInstruction}` : "",
   ]
     .filter(Boolean)
     .join("\n");

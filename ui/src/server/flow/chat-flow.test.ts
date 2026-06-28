@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTestDatabase } from "@/server/db/client";
 import { MemoryRepository } from "@/server/domain/chat/repositories";
 import { TaskRepository } from "@/server/domain/chat/task-repository";
+import { VisibleActorDirective } from "@/server/domain/world/types";
 import { createChatFlow } from "./chat-flow";
 
 afterEach(() => {
@@ -138,5 +139,65 @@ describe("ChatFlow", () => {
     });
 
     expect(toolNames.sort()).toEqual(["createFeedPostDraft", "createTaskDraft", "searchMemories"]);
+  });
+
+  it("injects worldDirective.actorInstruction into the system prompt", async () => {
+    const db = createTestDatabase();
+    let capturedSystem = "";
+    const flow = createChatFlow({
+      db,
+      generateChatReply: async (input) => {
+        capturedSystem = input.system;
+        return { reply: "响应", mood: { label: "calm", intensity: 0.3, heartbeatBpm: 72 } };
+      },
+    });
+
+    await flow.run({
+      userId: "u001",
+      agentId: "agent-default",
+      worldId: "default",
+      input: "你好",
+      worldDirective: { commandId: "cmd-1", actorInstruction: "say hello warmly" },
+    });
+
+    expect(capturedSystem).toContain("当前世界指令: say hello warmly");
+  });
+
+  it("type system prevents privateReason from being passed in worldDirective", () => {
+    // privateReason is not part of VisibleActorDirective — assigning it is a type error
+    const directive: VisibleActorDirective = {
+      commandId: "cmd-1",
+      actorInstruction: "be welcoming",
+      // @ts-expect-error — privateReason is not a field of VisibleActorDirective
+      privateReason: "secret",
+    };
+    expect(directive.actorInstruction).toBe("be welcoming");
+  });
+
+  it("blocks high-risk chat without building prompts or injecting directives", async () => {
+    const db = createTestDatabase();
+    let called = false;
+    const flow = createChatFlow({
+      db,
+      generateChatReply: async () => {
+        called = true;
+        throw new Error("should not call model");
+      },
+    });
+
+    const result = await flow.run({
+      userId: "u001",
+      agentId: "agent-default",
+      worldId: "default",
+      input: "我要自杀",
+      worldDirective: { commandId: "cmd-1", actorInstruction: "this should not appear" },
+    });
+
+    expect(called).toBe(false);
+    expect(result.blocked).toBe(true);
+    expect(result.riskLevel).toBe("high");
+    expect(result.reply).toContain("我在这里");
+    // The worldDirective must not be injected into the prompt for high-risk inputs
+    expect(result.systemPrompt).toBeUndefined();
   });
 });
