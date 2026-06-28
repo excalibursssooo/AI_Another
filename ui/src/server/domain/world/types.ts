@@ -112,3 +112,81 @@ export const PUBLIC_VISIBILITY: VisibilityScope = {
   visibleToActorIds: [],
   visibleToUser: true,
 };
+
+export type WorldRunSourceType = "user_action" | "scheduled_tick" | "system_trigger";
+export type WorldRunStatus = "running" | "committed" | "failed" | "rejected";
+
+export interface WorldRunEnvelope {
+  worldRunId: string;
+  decisionId: string;
+  sourceType: WorldRunSourceType;
+  sourceActionId: string;
+  idempotencyKey: string;
+  userId: string;
+  worldId: string;
+  agentId?: string;
+  startedAt: number;
+}
+
+export interface CharacterStateRecord {
+  userId: string;
+  worldId: string;
+  agentId: string;
+  locationKey: string;
+  currentGoal: string;
+  emotionalState: { label: string; intensity: number };
+  relationshipToUser: { affinity: number; trust: number; tension: number };
+  knowledgeKeys: string[];
+  activeCommandId: string | null;
+  lastActedAt: number | null;
+  updatedAt: number;
+}
+
+export type ActorCommandType =
+  | "speak_to_user"
+  | "move_location"
+  | "investigate"
+  | "remember"
+  | "publish_post"
+  | "initiate_event";
+export type ActorCommandPriority = "low" | "normal" | "high";
+export type ActorCommandStatus = "pending" | "claimed" | "done" | "failed" | "expired";
+
+export type CommandCause =
+  | { type: "proposed_event"; clientEventId: string }
+  | { type: "committed_event"; eventId: string }
+  | { type: "source_action"; sourceActionId: string }
+  | { type: "director_no_event"; reasonCode: string };
+
+export interface ActorCommandRecord {
+  id: string;
+  decisionId: string;
+  worldRunId: string;
+  userId: string;
+  worldId: string;
+  targetAgentId: string;
+  commandType: ActorCommandType;
+  priority: ActorCommandPriority;
+  visibility: VisibilityScope;
+  actorInstruction: string;
+  privateReason: string | null;
+  cause: CommandCause;
+  payload: unknown;
+  relatedEventId: string | null;
+  status: ActorCommandStatus;
+  runAfter: number;
+  expiresAt: number | null;
+  idempotencyKey: string;
+  claimedBy: string | null;
+  claimedAt: number | null;
+  claimExpiresAt: number | null;
+  resultEventId: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface VisibleActorDirective {
+  commandId: string;
+  actorInstruction: string;
+  relatedEventSummary?: string;
+}
