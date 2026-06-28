@@ -87,6 +87,8 @@ These invariants are mandatory for the first implementation:
 8. World memory consolidation and next tick scheduling happen after the core transaction and cannot invalidate committed world state.
 9. Event replay order is logical and deterministic, based on `sequence`, not `created_at`.
 10. Visibility is enforced with explicit ACL fields, not only a `public/private/hidden` enum.
+11. Safety screening runs before WorldMind sees user input.
+12. Legal user actions are recorded even when the director model fails or validation rejects its output; unsafe or invalid inputs are not recorded in the world ledger.
 
 ## Flow Runner Boundary
 
@@ -123,11 +125,15 @@ The existing `ChatFlow` may keep its `default` fallback for non-WorldMind mode. 
 
 ### User Interaction
 
-`WorldInteractionFlow` must not pre-commit a `user_action` event. It normalizes user input and delegates all world mutation to `WorldMindFlow`.
+`WorldInteractionFlow` must not pre-commit a `user_action` event. It normalizes user input, runs safety before WorldMind, creates a stable run envelope, and delegates all world mutation to `WorldMindFlow`.
 
 ```text
 WorldInteractionFlow
   -> NormalizeUserActionInput
+  -> PreSafetyCheck
+  -> if high risk: RunChatFlowSafetyOnly / return safety response
+  -> RequireClientActionId
+  -> CreateWorldRunEnvelope
   -> RunWorldMind(source = "user_action", sourceActionId)
   -> LoadVisibleActorDirective
   -> RunChatFlowWithWorldDirective
@@ -135,7 +141,9 @@ WorldInteractionFlow
   -> ReturnChatResult
 ```
 
-`sourceActionId` is an idempotency key supplied by the caller or generated before the run. It is used to ensure that retrying the same user action does not duplicate events.
+`PreSafetyCheck` uses the same risk semantics as the current `ChatFlow` safety gate. High-risk input must not be sent to WorldMind and must not create `world_events`, `actor_commands`, `world_memories`, or director context. The response can reuse a safety-only chat path so the user still receives the existing safety response.
+
+WorldMind mode requires a client-provided `client_action_id`. The server maps it to `sourceActionId`. A WorldMind chat request without `client_action_id` must return `400` before creating a world run envelope. The first implementation must update the frontend to generate a UUID per outbound user action.
 
 ### Background Tick
 
@@ -146,7 +154,7 @@ task kind: world_tick
 payload: { worldId, userId, reason, scheduledTick }
 ```
 
-World ticks must use the same `WorldMindFlow`, but with:
+World ticks must create the same run envelope, but with:
 
 ```text
 source = "scheduled_tick"
@@ -164,11 +172,34 @@ payload: { worldId, userId, triggerType, payload }
 
 System triggers use the same transaction rules as user actions and ticks.
 
+## World Run Envelope
+
+Every WorldMind attempt gets a stable envelope before model generation.
+
+```ts
+WorldRunEnvelope {
+  worldRunId: string;
+  decisionId: string;
+  sourceType: "user_action" | "scheduled_tick" | "system_trigger";
+  sourceActionId: string;
+  idempotencyKey: string;
+  userId: string;
+  worldId: string;
+  agentId?: string;
+  startedAt: number;
+}
+```
+
+The envelope is created after `PreSafetyCheck` for user input and before `GenerateDirectorDecision`. Model failures, validation failures, transaction failures, and accepted decisions all use the same `worldRunId` and `decisionId`.
+
+An optional `world_runs` table may persist envelopes. If Phase 1 skips that table, `world_decision_logs` must still receive stable envelope identifiers for every logged attempt.
+
 ## WorldMind Flow
 
 `WorldMindFlow` is linear, but only one node mutates primary world state.
 
 ```text
+LoadWorldRunEnvelope
 LoadWorldRuntime
 LoadWorldStateSnapshot
 LoadActiveActors
@@ -181,6 +212,10 @@ CommitWorldRunTransaction
 ConsolidateWorldMemorySecondary
 ScheduleNextTickSecondary
 ```
+
+### LoadWorldRunEnvelope
+
+Loads the stable envelope prepared by `WorldInteractionFlow`, a tick worker, or a system trigger. This node does not generate new ids. If the envelope is missing, the flow fails before model generation.
 
 ### LoadWorldRuntime
 
@@ -240,7 +275,7 @@ CharacterState {
     trust: number;
     tension: number;
   };
-  knowledgeKeys: string[];
+  knowledgeKeys: string[]; // stable factKey values known by this character
   activeCommandId: string | null;
   lastActedAt: number | null;
   updatedAt: number;
@@ -325,6 +360,8 @@ Budget guidance:
 
 The context builder may use `world_summaries` for older event windows. It must not summarize the current user action or immutable canon.
 
+`world_summaries` must be generated per visibility scope. A director summary may include hidden facts. Actor-facing and user-facing summaries must be ACL-filtered and must never be reused as director-hidden context. Summary rows therefore need the same `VisibilityScope` fields as events and memories.
+
 ### GenerateDirectorDecision
 
 The director uses AI SDK structured output with a new model purpose:
@@ -396,7 +433,7 @@ Rules:
 - Events must use known event types.
 - Commands must use known command types.
 - Event payloads must match typed schemas for their event type.
-- Commands must reference either a proposed event client id, an existing committed event id, or a public actor instruction.
+- Commands must include a typed `CommandCause`.
 - Hidden facts cannot be included in public command instructions, public events, feed content, or actor-visible memory.
 - Command `actorInstruction` must be safe to inject into the target actor prompt after ACL filtering.
 - Command `privateReason` must never be injected into chat prompts.
@@ -404,7 +441,51 @@ Rules:
 - A user action may create at most one major event unless an event is explicitly marked as a chain reaction.
 - Scheduled ticks may create zero events; no-op is valid.
 
-If validation fails, `CommitWorldRunTransaction` writes a rejected decision log but commits no proposed events, no snapshot updates, and no commands.
+If validation fails for a legal user action, `CommitWorldRunTransaction` commits the source `user_action` event as `observed_only`, applies the reducer to that source event, writes a rejected decision log, and commits no derived events or commands.
+
+If validation fails for a scheduled tick or system trigger, the transaction writes a rejected decision log and commits no derived events, commands, or snapshot changes unless a source event was already required by that source type.
+
+### Failure Ledger Policy
+
+WorldMind uses this policy for source user actions:
+
+```text
+A. Parameter invalid or PreSafetyCheck high risk:
+   Do not create a world run envelope.
+   Do not commit user_action.
+   Do not run WorldMind.
+
+B. User input is legal but director model generation fails:
+   Commit user_action as observed_only.
+   Apply reducer to the source event only.
+   Write decision log with validationStatus = "model_failed".
+   Commit no derived events and no actor commands.
+
+C. Director output is invalid:
+   Commit user_action as observed_only.
+   Apply reducer to the source event only.
+   Write decision log with validationStatus = "rejected".
+   Commit no derived events and no actor commands.
+
+D. Director output is valid:
+   Commit user_action and derived events.
+   Apply reducer to all events in sequence order.
+   Persist actor commands and accepted decision log.
+```
+
+`observed_only` means the event is part of the audit ledger and replay sequence, but reducers must not treat it as a narrative world incident unless a later valid director event interprets it.
+
+The source `user_action` event remains `status = "committed"` when it is recorded. Its payload carries interpretation state:
+
+```ts
+UserActionPayload {
+  clientActionId: string;
+  normalizedMessage: string;
+  targetAgentId: string;
+  interpretationStatus: "pending" | "accepted" | "observed_only";
+  failureReason?: "model_failed" | "validation_failed";
+}
+```
 
 ### CommitWorldRunTransaction
 
@@ -413,20 +494,36 @@ This is the only primary state mutation node.
 Inside one SQLite transaction:
 
 ```text
-1. Create or load decision_id and world_run_id.
-2. Commit the source event if absent.
+1. Load the pre-created decision_id and world_run_id from the run envelope.
+2. Commit the source event if required and absent.
 3. Commit validated derived events with stable sequences.
 4. Apply reducer over [source event + derived events] in sequence order.
 5. Insert/update world_state_snapshots.
 6. Insert/update character_states.
 7. Insert actor_commands.
-8. Insert world_decision_logs.
+8. Insert world_decision_logs for accepted/rejected/model_failed outcomes.
 9. Commit transaction.
 ```
 
 If any step fails, the full transaction rolls back.
 
 The transaction owns user action submission. `WorldInteractionFlow` must not pre-commit `user_action`.
+
+If the transaction itself fails, `transaction_failed` cannot be written inside the rolled-back transaction. The caller must perform a separate best-effort log insert after rollback:
+
+```ts
+try {
+  db.transaction(() => {
+    commitEvents();
+    applyReducer();
+    persistCommands();
+    insertDecisionLog("accepted");
+  })();
+} catch (error) {
+  insertDecisionLogBestEffort("transaction_failed", error);
+  throw error;
+}
+```
 
 ### ConsolidateWorldMemorySecondary
 
@@ -503,6 +600,26 @@ ORDER BY sequence ASC
 
 `tick` is a world-clock concept. `sequence` is the total order for replay.
 
+### Stable Fact Keys
+
+Facts that can be hidden, revealed, summarized, or known by a character require a stable `factKey`.
+
+```ts
+WorldFact {
+  factKey: string;
+  summary: string;
+  visibility: VisibilityScope;
+  sourceEventId: string;
+}
+```
+
+Rules:
+
+- `knowledge_reveal` events reveal an existing `factKey` or create a new public/private `factKey`.
+- `character_states.knowledgeKeys` stores only `factKey` values.
+- Hidden facts become actor-visible only after a committed `knowledge_reveal` event updates ACL and reducer state.
+- Event payloads that create or reveal facts must include `factKey`.
+
 ## Reducer
 
 Reducers are deterministic TypeScript functions. They consume committed events and return new state.
@@ -565,6 +682,7 @@ ActorCommand {
   visibility: VisibilityScope;
   actorInstruction: string;
   privateReason: string | null;
+  cause: CommandCause;
   payload: unknown;
   relatedEventId: string | null;
   status: "pending" | "claimed" | "done" | "failed" | "expired";
@@ -580,6 +698,14 @@ ActorCommand {
 }
 ```
 
+```ts
+CommandCause =
+  | { type: "proposed_event"; clientEventId: string }
+  | { type: "committed_event"; eventId: string }
+  | { type: "source_action"; sourceActionId: string }
+  | { type: "director_no_event"; reasonCode: string };
+```
+
 Required constraints:
 
 ```text
@@ -589,6 +715,8 @@ INDEX(status, run_after)
 ```
 
 `actorInstruction` is the only field that may be injected into a character prompt, and only after ACL filtering. `privateReason` is for director/debug context only.
+
+`CommandCause` is required for every command. A command's content is not its cause. Even `speak_to_user` without a derived event must reference the source action or use a specific `director_no_event` reason code.
 
 ### Command Execution
 
@@ -643,6 +771,20 @@ else:
 ```
 
 This contract prevents hidden `privateReason` or hidden world facts from leaking into character prompts.
+
+The WorldMind chat request DTO must include a client action id:
+
+```ts
+{
+  user_id: string;
+  agent_id: string;
+  domain_id: string;
+  message: string;
+  client_action_id: string;
+}
+```
+
+The frontend generates `client_action_id` before sending. It must remain stable across retries for the same outbound user action. Without this client-provided id, WorldMind mode cannot claim exactly-once semantics and must reject the request.
 
 ## Visibility and ACL
 
@@ -791,6 +933,7 @@ user_id TEXT NOT NULL
 world_id TEXT NOT NULL
 tick INTEGER NOT NULL
 snapshot_kind TEXT NOT NULL DEFAULT 'latest'
+is_latest INTEGER NOT NULL DEFAULT 0
 applied_event_sequence INTEGER NOT NULL
 applied_event_ids_json TEXT NOT NULL
 reducer_version INTEGER NOT NULL
@@ -798,10 +941,18 @@ state_json TEXT NOT NULL
 checksum TEXT
 created_at INTEGER NOT NULL
 updated_at INTEGER NOT NULL
-UNIQUE(user_id, world_id, tick)
+UNIQUE(user_id, world_id, snapshot_kind, applied_event_sequence)
 ```
 
-There may be multiple historical snapshots, but one latest row per world/user can be materialized through query convention or a later `is_latest` flag.
+The latest snapshot is enforced with a partial unique index:
+
+```sql
+CREATE UNIQUE INDEX latest_world_snapshot_idx
+ON world_state_snapshots(user_id, world_id)
+WHERE is_latest = 1;
+```
+
+This permits multiple snapshots in the same tick when `applied_event_sequence` changes and permits checkpoint/rebuild rows for the same tick.
 
 ### character_states
 
@@ -835,6 +986,7 @@ visible_to_actor_ids_json TEXT NOT NULL DEFAULT '[]'
 visible_to_user INTEGER NOT NULL DEFAULT 0
 actor_instruction TEXT NOT NULL
 private_reason TEXT
+cause_json TEXT NOT NULL
 payload_json TEXT NOT NULL
 related_event_id TEXT
 status TEXT NOT NULL
@@ -884,7 +1036,18 @@ Use the fields defined in the Decision Logs section.
 
 ### world_summaries
 
-Stores compressed summaries of older event windows. Phase 1 creates the table only if needed by replay tests; automatic summarization can wait.
+Stores compressed summaries of older event windows. Summary rows must include visibility ACL fields:
+
+```text
+visibility TEXT NOT NULL
+visible_to_actor_ids_json TEXT NOT NULL DEFAULT '[]'
+visible_to_user INTEGER NOT NULL DEFAULT 0
+summary_scope TEXT NOT NULL -- director | actor | user
+source_event_sequence_from INTEGER NOT NULL
+source_event_sequence_to INTEGER NOT NULL
+```
+
+Director summaries may include hidden facts. Actor and user summaries are ACL-filtered. A summary generated for one scope must not be reused for another scope. Phase 1 can skip automatic summarization; the table becomes necessary when context compression is implemented.
 
 ## Task Queue Requirements
 
@@ -926,9 +1089,12 @@ Core transaction failures roll back the run.
 
 Rules:
 
-- If model generation fails, write a `model_failed` decision log if possible and do not change world state.
-- If validation fails, write a rejected decision log and do not commit proposed events, snapshots, or commands.
-- If `CommitWorldRunTransaction` fails, roll back events, snapshots, character states, commands, and decision logs for that run.
+- If parameter validation fails or `PreSafetyCheck` returns high risk, do not create a world run envelope and do not write world ledger rows.
+- If model generation fails for a legal user action, commit only the source `user_action` as `observed_only`, apply the reducer to that source event, and write a `model_failed` decision log in the core transaction.
+- If validation fails for a legal user action, commit only the source `user_action` as `observed_only`, apply the reducer to that source event, and write a rejected decision log in the core transaction.
+- If model generation or validation fails for a scheduled tick or system trigger, write the relevant failure decision log and do not commit derived events or commands unless that source type explicitly requires a source event.
+- If `CommitWorldRunTransaction` fails, roll back events, snapshots, character states, commands, and in-transaction decision logs for that run.
+- After a transaction rollback, write `transaction_failed` with an independent best-effort insert using the existing run envelope.
 - Command row creation is part of the core transaction.
 - Command execution is outside the core transaction and may fail or retry independently.
 - Memory consolidation failure does not roll back committed events or snapshots.
@@ -936,7 +1102,7 @@ Rules:
 
 ## Safety and Product Boundaries
 
-The existing safety check in chat remains required. WorldMind must not bypass it.
+The existing safety behavior remains required, but WorldMind cannot rely on the downstream `ChatFlow` safety node because WorldMind runs before chat generation. `PreSafetyCheck` is therefore a mandatory WorldInteractionFlow node before `CreateWorldRunEnvelope` and `RunWorldMind`.
 
 Additional constraints:
 
@@ -1005,6 +1171,7 @@ Build:
 - `world_decision_logs`
 - `world_context_builder`
 - `world_decision_validator`
+- `world_memories` repository with read-only recall; before memories exist, the adapter returns an empty list.
 
 ### Phase 4: Background Tick and Long-Term Loop
 
@@ -1022,8 +1189,8 @@ Build:
 - task lease/idempotency upgrade
 - `world_tick_worker`
 - `ActorCommandWorker`
-- `world_memories`
 - `WorldMemoryConsolidator`
+- world memory embedding, supersession, and type-specific merge strategies
 - optional feed command integration
 
 ## Testing Strategy
@@ -1033,18 +1200,23 @@ Build:
 - `world-event-repository.test.ts`: sequence allocation, idempotent inserts, ordered reads.
 - `world-reducer.test.ts`: deterministic events produce expected snapshots.
 - `world-replay-service.test.ts`: rebuild snapshot from committed events.
+- `world-state-repository.test.ts`: multiple snapshots in one tick can coexist by `applied_event_sequence`, with only one latest snapshot.
 
 ### Phase 2 Tests
 
 - `world-interaction-flow.test.ts`: mock director commits user action, event, command, and snapshot in one transaction.
+- `world-interaction-safety.test.ts`: high-risk input returns safety response before WorldMind and creates no world ledger rows.
+- `world-interaction-idempotency.test.ts`: same `client_action_id` retries do not duplicate source events.
 - `chat-world-directive.test.ts`: only `actorInstruction` reaches prompt construction.
 - `visibility-acl.test.ts`: hidden/private facts are filtered.
+- `knowledge-reveal.test.ts`: character `knowledgeKeys` change only through committed `knowledge_reveal` events with `factKey`.
 
 ### Phase 3 Tests
 
 - `world-decision-validator.test.ts`: rejects invalid agents, hidden leakage, over-limit events, invalid command references.
-- `world-decision-log-repository.test.ts`: accepted and rejected runs are inspectable.
+- `world-decision-log-repository.test.ts`: accepted, rejected, model_failed, and transaction_failed runs are inspectable under the same run envelope.
 - `world-director-structured-output.test.ts`: model purpose and schema are wired.
+- `world-summary-visibility.test.ts`: summaries are scoped by visibility and actor/user summaries cannot include hidden facts.
 
 ### Phase 4 Tests
 
@@ -1056,6 +1228,7 @@ Build:
 
 - Chat route with `ENABLE_WORLD_MIND=false` keeps existing behavior.
 - Chat route with `ENABLE_WORLD_MIND=true` uses strict world loading.
+- Chat route with `ENABLE_WORLD_MIND=true` requires stable `client_action_id` for exactly-once semantics.
 - A hidden event is not visible in selected character response.
 - Retried user action does not duplicate events or commands.
 - Retried tick task does not duplicate events or commands.
@@ -1064,18 +1237,24 @@ Build:
 
 The design is implemented when:
 
-1. A user action records exactly one committed `user_action` event inside `CommitWorldRunTransaction`.
-2. The director can commit a `world_incident` event in the same transaction.
-3. All committed events in a run share `decision_id` and `world_run_id`.
-4. Every committed event has a stable `sequence`.
-5. Snapshot rebuild uses `ORDER BY sequence ASC`.
-6. Reducer updates world snapshot and character states only from committed events.
-7. Actor commands are persisted in the same transaction as events and snapshots.
-8. Command execution effects create new committed events before state changes.
-9. `privateReason` never enters ChatFlow prompt construction.
-10. Visibility ACL controls private and hidden context.
-11. WorldMind mode forbids fallback to `default` world.
-12. Task claiming is lease-based and idempotent before world ticks run in background.
+1. PreSafetyCheck runs before WorldMind and high-risk input creates no world ledger rows.
+2. A request with stable `client_action_id` records exactly one committed `user_action` event inside `CommitWorldRunTransaction`.
+3. Legal user input with model_failed or validation_failed records the source `user_action` as `observed_only` and creates no derived events or commands.
+4. The director can commit a `world_incident` event in the same transaction as the source event.
+5. All committed events in a run share `decision_id` and `world_run_id`.
+6. Every committed event has a stable `sequence`.
+7. Snapshot rebuild uses `ORDER BY sequence ASC`.
+8. Multiple snapshots can exist in the same tick by `applied_event_sequence`, with only one `is_latest = 1` row per user/world.
+9. Reducer updates world snapshot and character states only from committed events.
+10. Actor commands are persisted in the same transaction as events and snapshots.
+11. Command execution effects create new committed events before state changes.
+12. Every command has a typed `CommandCause`.
+13. `privateReason` never enters ChatFlow prompt construction.
+14. Visibility ACL controls private and hidden context.
+15. `knowledgeKeys` refer to stable `factKey` values and change only through committed events.
+16. WorldMind mode forbids fallback to `default` world.
+17. Transaction failure is logged with best-effort `transaction_failed` after rollback.
+18. Task claiming is lease-based and idempotent before world ticks run in background.
 
 ## Resolved Design Choices
 
