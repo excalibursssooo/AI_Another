@@ -99,15 +99,17 @@ export type CreateActorCommandInput = Omit<
 export class ActorCommandRepository {
   constructor(private readonly db: AppDatabase) {}
 
-  createMany(commands: CreateActorCommandInput[]): ActorCommandRecord[] {
+  createMany(commands: CreateActorCommandInput[], opts?: { forceInsert?: boolean }): ActorCommandRecord[] {
     const now = Date.now();
     const results: ActorCommandRecord[] = [];
 
     for (const input of commands) {
-      const existing = this.getByIdempotencyKey(input.idempotencyKey);
-      if (existing) {
-        results.push(existing);
-        continue;
+      if (!opts?.forceInsert) {
+        const existing = this.getByIdempotencyKey(input.idempotencyKey);
+        if (existing) {
+          results.push(existing);
+          continue;
+        }
       }
 
       const id = `acmd-${randomUUID()}`;
