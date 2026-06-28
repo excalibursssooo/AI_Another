@@ -70,7 +70,7 @@ export class WorldStateRepository {
       const now = Date.now();
       const id = `wsnap-${randomUUID()}`;
       const stateJson = JSON.stringify(input.state);
-      const checksum = input.checksum ?? checksumState(input.state);
+      const checksum = checksumState(input.state);
       this.db.sqlite
         .prepare("UPDATE world_state_snapshots SET is_latest = 0, updated_at = ? WHERE user_id = ? AND world_id = ? AND is_latest = 1")
         .run(now, input.userId, input.worldId);

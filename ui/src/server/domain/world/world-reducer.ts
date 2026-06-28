@@ -1,4 +1,12 @@
-import type { UserActionPayload, WorldIncidentPayload, WorldReducerInput, WorldReductionResult, WorldRuntimeState } from "./types";
+import type {
+  UserActionPayload,
+  VisibilityScope,
+  WorldFact,
+  WorldIncidentPayload,
+  WorldReducerInput,
+  WorldReductionResult,
+  WorldRuntimeState,
+} from "./types";
 
 export function reduceWorldEvents(input: WorldReducerInput): WorldReductionResult {
   const ordered = [...input.events]
@@ -7,6 +15,7 @@ export function reduceWorldEvents(input: WorldReducerInput): WorldReductionResul
   const state: WorldRuntimeState = structuredClone(input.previousSnapshot.state);
   const appliedEventIds = [...input.previousSnapshot.appliedEventIds];
   let appliedEventSequence = input.previousSnapshot.appliedEventSequence;
+  let appliedAnyEvent = false;
   const warnings: string[] = [];
 
   for (const event of ordered) {
@@ -20,10 +29,11 @@ export function reduceWorldEvents(input: WorldReducerInput): WorldReductionResul
       }
     }
     if (event.type === "world_incident") {
-      applyWorldIncident(state, event.id, event.payload as WorldIncidentPayload);
+      applyWorldIncident(state, event.id, event.payload as WorldIncidentPayload, event.visibility);
     }
     appliedEventIds.push(event.id);
     appliedEventSequence = event.sequence;
+    appliedAnyEvent = true;
   }
 
   return {
@@ -36,28 +46,42 @@ export function reduceWorldEvents(input: WorldReducerInput): WorldReductionResul
       appliedEventIds,
       reducerVersion: input.reducerVersion,
       state,
+      checksum: appliedAnyEvent ? null : input.previousSnapshot.checksum,
       updatedAt: Date.now(),
     },
   };
 }
 
-function applyWorldIncident(state: WorldRuntimeState, eventId: string, payload: WorldIncidentPayload): void {
+function applyWorldIncident(
+  state: WorldRuntimeState,
+  eventId: string,
+  payload: WorldIncidentPayload,
+  visibility: VisibilityScope,
+): void {
   state.tension = clamp01(state.tension + (payload.tensionDelta ?? 0));
   state.stability = clamp01(state.stability + (payload.stabilityDelta ?? 0));
   if (payload.unresolved && !state.unresolvedEventIds.includes(eventId)) {
     state.unresolvedEventIds.push(eventId);
   }
   if (payload.factKey) {
-    const exists = state.publicFacts.some((fact) => fact.factKey === payload.factKey);
+    const targetFacts = selectFactBucket(state, visibility);
+    const exists = targetFacts.some((fact) => fact.factKey === payload.factKey);
     if (!exists) {
-      state.publicFacts.push({
+      targetFacts.push({
         factKey: payload.factKey,
         summary: payload.description,
-        visibility: { level: "public", visibleToActorIds: [], visibleToUser: true },
+        visibility,
         sourceEventId: eventId,
       });
     }
   }
+}
+
+function selectFactBucket(state: WorldRuntimeState, visibility: VisibilityScope): WorldFact[] {
+  if (visibility.level === "public" && visibility.visibleToUser) {
+    return state.publicFacts;
+  }
+  return state.hiddenFacts;
 }
 
 function clamp01(value: number): number {

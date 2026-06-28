@@ -12,10 +12,11 @@ export type WorldEventType =
   | "character_action"
   | "relationship_shift"
   | "knowledge_reveal"
+  | "fact_correction"
   | "arc_progress"
   | "system_note";
 
-export type WorldEventStatus = "committed" | "rejected" | "superseded";
+export type WorldEventStatus = "committed";
 
 export interface UserActionPayload {
   clientActionId: string;

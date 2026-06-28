@@ -82,6 +82,48 @@ describe("WorldEventRepository", () => {
     expect(second.summary).toBe("user said hello");
   });
 
+  it("throws on sequence conflicts that are not idempotent retries", () => {
+    const db = createTestDatabase();
+    const events = new WorldEventRepository(db);
+
+    events.createCommitted({
+      decisionId: "decision-1",
+      worldRunId: "run-1",
+      userId: "u001",
+      worldId: "default",
+      tick: 0,
+      sequence: 1,
+      type: "user_action",
+      payload: {
+        clientActionId: "client-1",
+        normalizedMessage: "hello",
+        targetAgentId: "agent-default",
+        interpretationStatus: "accepted",
+      },
+      summary: "user said hello",
+      visibility: PUBLIC_VISIBILITY,
+      actorIds: ["agent-default"],
+      idempotencyKey: "world:u001:default:client-1",
+    });
+
+    expect(() =>
+      events.createCommitted({
+        decisionId: "decision-2",
+        worldRunId: "run-2",
+        userId: "u001",
+        worldId: "default",
+        tick: 0,
+        sequence: 1,
+        type: "world_incident",
+        payload: { title: "conflict", description: "same sequence" },
+        summary: "conflicting event",
+        visibility: PUBLIC_VISIBILITY,
+        actorIds: [],
+        idempotencyKey: "event-conflict",
+      }),
+    ).toThrow(/UNIQUE constraint failed/);
+  });
+
   it("lists committed events by sequence rather than created_at", () => {
     const db = createTestDatabase();
     const events = new WorldEventRepository(db);

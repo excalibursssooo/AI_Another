@@ -39,4 +39,24 @@ describe("WorldStateRepository", () => {
       { applied_event_sequence: 2, is_latest: 1 },
     ]);
   });
+
+  it("recomputes checksum from state instead of trusting caller input", () => {
+    const db = createTestDatabase();
+    const snapshots = new WorldStateRepository(db);
+    const initial = createInitialWorldSnapshot({ userId: "u001", worldId: "default", now: 1000 });
+
+    const saved = snapshots.saveLatest({
+      ...initial,
+      appliedEventSequence: 1,
+      appliedEventIds: ["event-1"],
+      state: {
+        ...initial.state,
+        tension: 0.2,
+      },
+      checksum: initial.checksum,
+    });
+
+    expect(saved.checksum).not.toBe(initial.checksum);
+    expect(saved.checksum).toMatch(/^[a-f0-9]{64}$/);
+  });
 });

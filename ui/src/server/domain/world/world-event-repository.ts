@@ -66,39 +66,52 @@ export class WorldEventRepository {
 
     const id = `wevt-${randomUUID()}`;
     const now = Date.now();
-    this.db.sqlite
-      .prepare(
-        `INSERT OR IGNORE INTO world_events
+    try {
+      this.db.sqlite
+        .prepare(
+          `INSERT INTO world_events
           (id, decision_id, world_run_id, user_id, world_id, tick, sequence, schema_version, reducer_version,
            type, payload_json, summary, visibility, visible_to_actor_ids_json, visible_to_user, actor_ids_json,
            location_key, caused_by_event_id, caused_by_user_action_id, idempotency_key, status, created_at)
          VALUES
           (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'committed', ?)`,
-      )
-      .run(
-        id,
-        input.decisionId,
-        input.worldRunId,
-        input.userId,
-        input.worldId,
-        input.tick,
-        input.sequence,
-        input.schemaVersion ?? 1,
-        input.reducerVersion ?? 1,
-        input.type,
-        JSON.stringify(input.payload),
-        input.summary,
-        input.visibility.level,
-        JSON.stringify(input.visibility.visibleToActorIds),
-        input.visibility.visibleToUser ? 1 : 0,
-        JSON.stringify(input.actorIds),
-        input.locationKey ?? null,
-        input.causedByEventId ?? null,
-        input.causedByUserActionId ?? null,
-        input.idempotencyKey,
-        now,
-      );
-    return this.getById(id) ?? (this.getByIdempotencyKey(input.idempotencyKey) as WorldEventRecord);
+        )
+        .run(
+          id,
+          input.decisionId,
+          input.worldRunId,
+          input.userId,
+          input.worldId,
+          input.tick,
+          input.sequence,
+          input.schemaVersion ?? 1,
+          input.reducerVersion ?? 1,
+          input.type,
+          JSON.stringify(input.payload),
+          input.summary,
+          input.visibility.level,
+          JSON.stringify(input.visibility.visibleToActorIds),
+          input.visibility.visibleToUser ? 1 : 0,
+          JSON.stringify(input.actorIds),
+          input.locationKey ?? null,
+          input.causedByEventId ?? null,
+          input.causedByUserActionId ?? null,
+          input.idempotencyKey,
+          now,
+        );
+    } catch (error) {
+      const idempotentRetry = this.getByIdempotencyKey(input.idempotencyKey);
+      if (idempotentRetry) {
+        return idempotentRetry;
+      }
+      throw error;
+    }
+
+    const created = this.getById(id);
+    if (!created) {
+      throw new Error(`Committed world event was not readable after insert: ${id}`);
+    }
+    return created;
   }
 
   getById(id: string): WorldEventRecord | null {

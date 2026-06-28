@@ -37,6 +37,15 @@ describe("world phase 1 tables", () => {
     expect(uniqueNames).toContain("world_events_idempotency_uidx");
   });
 
+  it("constrains world_events status to committed", () => {
+    const db = createTestDatabase();
+    const row = db.sqlite.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'world_events'").get() as {
+      sql: string;
+    };
+
+    expect(row.sql).toContain("status TEXT NOT NULL CHECK (status = 'committed')");
+  });
+
   it("creates world_state_snapshots with latest partial index", () => {
     const db = createTestDatabase();
     const columns = db.sqlite.prepare("PRAGMA table_info(world_state_snapshots)").all() as Array<{

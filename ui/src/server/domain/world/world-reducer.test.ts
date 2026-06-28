@@ -81,6 +81,58 @@ describe("reduceWorldEvents", () => {
     expect(result.worldSnapshot.state.unresolvedEventIds).toEqual(["event-1"]);
   });
 
+  it("keeps hidden incident facts out of public facts", () => {
+    const previousSnapshot = createInitialWorldSnapshot({ userId: "u001", worldId: "default", now: 1000 });
+    const result = reduceWorldEvents({
+      previousSnapshot,
+      reducerVersion: 1,
+      events: [
+        event({
+          id: "event-1",
+          sequence: 1,
+          type: "world_incident",
+          visibility: { level: "hidden", visibleToActorIds: [], visibleToUser: false },
+          payload: {
+            title: "hidden fire",
+            description: "A hidden warehouse burns.",
+            factKey: "secret-fire",
+          },
+          summary: "hidden incident",
+        }),
+      ],
+    });
+
+    expect(result.worldSnapshot.state.publicFacts).toEqual([]);
+    expect(result.worldSnapshot.state.hiddenFacts).toEqual([
+      {
+        factKey: "secret-fire",
+        summary: "A hidden warehouse burns.",
+        visibility: { level: "hidden", visibleToActorIds: [], visibleToUser: false },
+        sourceEventId: "event-1",
+      },
+    ]);
+  });
+
+  it("clears stale checksum when reducer changes snapshot state", () => {
+    const previousSnapshot = createInitialWorldSnapshot({ userId: "u001", worldId: "default", now: 1000 });
+    const result = reduceWorldEvents({
+      previousSnapshot,
+      reducerVersion: 1,
+      events: [
+        event({
+          id: "event-1",
+          sequence: 1,
+          type: "world_incident",
+          payload: { title: "first", description: "first", tensionDelta: 0.2 },
+          summary: "first",
+        }),
+      ],
+    });
+
+    expect(previousSnapshot.checksum).not.toBeNull();
+    expect(result.worldSnapshot.checksum).toBeNull();
+  });
+
   it("sorts input events by sequence before reducing", () => {
     const previousSnapshot = createInitialWorldSnapshot({ userId: "u001", worldId: "default", now: 1000 });
     const result = reduceWorldEvents({

@@ -241,7 +241,7 @@ function initializeDatabase(db: AppDatabase): void {
       caused_by_event_id TEXT,
       caused_by_user_action_id TEXT,
       idempotency_key TEXT NOT NULL,
-      status TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status = 'committed'),
       created_at INTEGER NOT NULL
     );
     CREATE UNIQUE INDEX IF NOT EXISTS world_events_user_world_sequence_uidx
