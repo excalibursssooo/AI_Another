@@ -218,6 +218,60 @@ function initializeDatabase(db: AppDatabase): void {
     );
     CREATE INDEX IF NOT EXISTS idx_feed_topics_scope_last_used
       ON feed_topics(user_id, world_id, agent_id, last_used_at DESC);
+
+    -- WorldMind phase 1: event ledger
+    CREATE TABLE IF NOT EXISTS world_events (
+      id TEXT PRIMARY KEY,
+      decision_id TEXT NOT NULL,
+      world_run_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      world_id TEXT NOT NULL,
+      tick INTEGER NOT NULL,
+      sequence INTEGER NOT NULL,
+      schema_version INTEGER NOT NULL DEFAULT 1,
+      reducer_version INTEGER NOT NULL DEFAULT 1,
+      type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      visibility TEXT NOT NULL,
+      visible_to_actor_ids_json TEXT NOT NULL DEFAULT '[]',
+      visible_to_user INTEGER NOT NULL DEFAULT 0,
+      actor_ids_json TEXT NOT NULL DEFAULT '[]',
+      location_key TEXT,
+      caused_by_event_id TEXT,
+      caused_by_user_action_id TEXT,
+      idempotency_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS world_events_user_world_sequence_uidx
+      ON world_events(user_id, world_id, sequence);
+    CREATE UNIQUE INDEX IF NOT EXISTS world_events_idempotency_uidx
+      ON world_events(idempotency_key);
+    CREATE INDEX IF NOT EXISTS world_events_replay_idx
+      ON world_events(user_id, world_id, status, sequence);
+
+    -- WorldMind phase 1: replay snapshots
+    CREATE TABLE IF NOT EXISTS world_state_snapshots (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      world_id TEXT NOT NULL,
+      tick INTEGER NOT NULL,
+      snapshot_kind TEXT NOT NULL DEFAULT 'latest',
+      is_latest INTEGER NOT NULL DEFAULT 0,
+      applied_event_sequence INTEGER NOT NULL,
+      applied_event_ids_json TEXT NOT NULL,
+      reducer_version INTEGER NOT NULL,
+      state_json TEXT NOT NULL,
+      checksum TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS world_state_snapshots_kind_sequence_uidx
+      ON world_state_snapshots(user_id, world_id, snapshot_kind, applied_event_sequence);
+    CREATE UNIQUE INDEX IF NOT EXISTS latest_world_snapshot_idx
+      ON world_state_snapshots(user_id, world_id)
+      WHERE is_latest = 1;
   `);
   migrateMemoryEmbeddingColumns(db);
   migrateAgentLiveStatesScope(db);
