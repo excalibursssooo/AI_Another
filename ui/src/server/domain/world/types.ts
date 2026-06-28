@@ -249,3 +249,11 @@ export interface VisibleActorDirective {
   actorInstruction: string;
   relatedEventSummary?: string;
 }
+
+export interface DirectorContext {
+  system: string;
+  prompt: string;
+  promptContextHash: string;
+  hiddenFactSummaries: string[]; // always the full list (validator uses this)
+  activeAgentIds: string[];
+}
