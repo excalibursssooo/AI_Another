@@ -139,6 +139,39 @@ export class WorldEventRepository {
       .all(input.userId, input.worldId) as WorldEventRow[];
     return rows.map(mapWorldEvent);
   }
+
+  listRecentForWorld(input: { userId: string; worldId: string; limit: number }): WorldEventRecord[] {
+    const rows = this.db.sqlite
+      .prepare(
+        `SELECT *
+         FROM world_events
+         WHERE user_id = ?
+           AND world_id = ?
+           AND status = 'committed'
+         ORDER BY sequence DESC
+         LIMIT ?`,
+      )
+      .all(input.userId, input.worldId, input.limit) as WorldEventRow[];
+    // Reverse to get ascending order
+    return [...rows].reverse().map(mapWorldEvent);
+  }
+
+  listRecentForActor(input: { userId: string; worldId: string; agentId: string; limit: number }): WorldEventRecord[] {
+    const rows = this.db.sqlite
+      .prepare(
+        `SELECT *
+         FROM world_events
+         WHERE user_id = ?
+           AND world_id = ?
+           AND status = 'committed'
+           AND EXISTS (SELECT 1 FROM json_each(actor_ids_json) WHERE value = ?)
+         ORDER BY sequence DESC
+         LIMIT ?`,
+      )
+      .all(input.userId, input.worldId, input.agentId, input.limit) as WorldEventRow[];
+    // Reverse to get ascending order
+    return [...rows].reverse().map(mapWorldEvent);
+  }
 }
 
 function parseJson<T>(value: string, fallback: T): T {
