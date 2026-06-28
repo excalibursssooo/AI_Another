@@ -91,7 +91,7 @@ describe("reduceWorldEvents", () => {
           id: "event-1",
           sequence: 1,
           type: "world_incident",
-          visibility: { level: "hidden", visibleToActorIds: [], visibleToUser: false },
+          visibility: { mode: "hidden", visibleToActorIds: [], visibleToUser: false },
           payload: {
             title: "hidden fire",
             description: "A hidden warehouse burns.",
@@ -107,7 +107,7 @@ describe("reduceWorldEvents", () => {
       {
         factKey: "secret-fire",
         summary: "A hidden warehouse burns.",
-        visibility: { level: "hidden", visibleToActorIds: [], visibleToUser: false },
+        visibility: { mode: "hidden", visibleToActorIds: [], visibleToUser: false },
         sourceEventId: "event-1",
       },
     ]);
