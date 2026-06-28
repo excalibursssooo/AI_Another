@@ -191,3 +191,113 @@ export const worldStateSnapshots = sqliteTable("world_state_snapshots", {
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 });
+
+// WorldMind phase 2: retry envelopes
+export const worldRuns = sqliteTable("world_runs", {
+  id: text("id").primaryKey(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  userId: text("user_id").notNull(),
+  worldId: text("world_id").notNull(),
+  sourceType: text("source_type").notNull(),
+  sourceActionId: text("source_action_id").notNull(),
+  decisionId: text("decision_id").notNull(),
+  agentId: text("agent_id"),
+  status: text("status").notNull(),
+  resultJson: text("result_json"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+// WorldMind phase 2: per-actor character state
+export const characterStates = sqliteTable("character_states", {
+  userId: text("user_id").notNull(),
+  worldId: text("world_id").notNull(),
+  agentId: text("agent_id").notNull(),
+  locationKey: text("location_key").notNull(),
+  currentGoal: text("current_goal").notNull(),
+  emotionalStateJson: text("emotional_state_json").notNull(),
+  relationshipToUserJson: text("relationship_to_user_json").notNull(),
+  knowledgeKeysJson: text("knowledge_keys_json").notNull().default("[]"),
+  activeCommandId: text("active_command_id"),
+  lastActedAt: integer("last_acted_at"),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+// WorldMind phase 2: command queue
+export const actorCommands = sqliteTable("actor_commands", {
+  id: text("id").primaryKey(),
+  decisionId: text("decision_id").notNull(),
+  worldRunId: text("world_run_id").notNull(),
+  userId: text("user_id").notNull(),
+  worldId: text("world_id").notNull(),
+  targetAgentId: text("target_agent_id").notNull(),
+  commandType: text("command_type").notNull(),
+  priority: text("priority").notNull(),
+  visibility: text("visibility").notNull(),
+  visibleToActorIdsJson: text("visible_to_actor_ids_json").notNull().default("[]"),
+  visibleToUser: integer("visible_to_user").notNull().default(0),
+  actorInstruction: text("actor_instruction").notNull(),
+  privateReason: text("private_reason"),
+  causeJson: text("cause_json").notNull(),
+  payloadJson: text("payload_json").notNull().default("{}"),
+  relatedEventId: text("related_event_id"),
+  status: text("status").notNull(),
+  runAfter: integer("run_after").notNull(),
+  expiresAt: integer("expires_at"),
+  idempotencyKey: text("idempotency_key").notNull(),
+  claimedBy: text("claimed_by"),
+  claimedAt: integer("claimed_at"),
+  claimExpiresAt: integer("claim_expires_at"),
+  resultEventId: text("result_event_id"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+// WorldMind phase 2: decision audit log
+export const worldDecisionLogs = sqliteTable("world_decision_logs", {
+  id: text("id").primaryKey(),
+  decisionId: text("decision_id").notNull(),
+  worldRunId: text("world_run_id").notNull(),
+  userId: text("user_id").notNull(),
+  worldId: text("world_id").notNull(),
+  sourceType: text("source_type").notNull(),
+  sourceEventId: text("source_event_id"),
+  sourceTaskId: text("source_task_id"),
+  modelProvider: text("model_provider").notNull(),
+  modelName: text("model_name").notNull(),
+  promptContextHash: text("prompt_context_hash").notNull(),
+  rawDecisionJson: text("raw_decision_json"),
+  validatedDecisionJson: text("validated_decision_json"),
+  validationStatus: text("validation_status").notNull(),
+  validationErrorsJson: text("validation_errors_json").notNull().default("[]"),
+  errorCode: text("error_code"),
+  errorMessage: text("error_message"),
+  createdEventIdsJson: text("created_event_ids_json").notNull().default("[]"),
+  createdCommandIdsJson: text("created_command_ids_json").notNull().default("[]"),
+  createdAt: integer("created_at").notNull(),
+});
+
+// WorldMind phase 2: persistent world memories
+export const worldMemories = sqliteTable("world_memories", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  worldId: text("world_id").notNull(),
+  subjectType: text("subject_type").notNull(),
+  subjectKey: text("subject_key").notNull(),
+  memoryType: text("memory_type").notNull(),
+  canonicalKey: text("canonical_key"),
+  content: text("content").notNull(),
+  visibility: text("visibility").notNull(),
+  visibleToActorIdsJson: text("visible_to_actor_ids_json").notNull().default("[]"),
+  visibleToUser: integer("visible_to_user").notNull().default(0),
+  importance: real("importance").notNull().default(0.5),
+  confidence: real("confidence").notNull().default(0.5),
+  validFromTick: integer("valid_from_tick").notNull().default(0),
+  sourceEventId: text("source_event_id"),
+  sourceDecisionId: text("source_decision_id"),
+  supersededBy: text("superseded_by"),
+  embeddingJson: text("embedding_json"),
+  embeddingQuality: text("embedding_quality"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});

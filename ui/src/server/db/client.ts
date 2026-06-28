@@ -272,6 +272,131 @@ function initializeDatabase(db: AppDatabase): void {
     CREATE UNIQUE INDEX IF NOT EXISTS latest_world_snapshot_idx
       ON world_state_snapshots(user_id, world_id)
       WHERE is_latest = 1;
+
+    -- WorldMind phase 2: retry envelopes
+    CREATE TABLE IF NOT EXISTS world_runs (
+      id TEXT PRIMARY KEY,
+      idempotency_key TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      world_id TEXT NOT NULL,
+      source_type TEXT NOT NULL CHECK (source_type IN ('user_action', 'scheduled_tick', 'system_trigger')),
+      source_action_id TEXT NOT NULL,
+      decision_id TEXT NOT NULL,
+      agent_id TEXT,
+      status TEXT NOT NULL CHECK (status IN ('running', 'committed', 'failed', 'rejected')),
+      result_json TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS world_runs_idempotency_uidx
+      ON world_runs(idempotency_key);
+    CREATE INDEX IF NOT EXISTS world_runs_scope_idx
+      ON world_runs(user_id, world_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS character_states (
+      user_id TEXT NOT NULL,
+      world_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      location_key TEXT NOT NULL,
+      current_goal TEXT NOT NULL,
+      emotional_state_json TEXT NOT NULL,
+      relationship_to_user_json TEXT NOT NULL,
+      knowledge_keys_json TEXT NOT NULL DEFAULT '[]',
+      active_command_id TEXT,
+      last_acted_at INTEGER,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, world_id, agent_id)
+    );
+    CREATE INDEX IF NOT EXISTS character_states_user_world_idx
+      ON character_states(user_id, world_id);
+
+    CREATE TABLE IF NOT EXISTS actor_commands (
+      id TEXT PRIMARY KEY,
+      decision_id TEXT NOT NULL,
+      world_run_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      world_id TEXT NOT NULL,
+      target_agent_id TEXT NOT NULL,
+      command_type TEXT NOT NULL,
+      priority TEXT NOT NULL CHECK (priority IN ('low', 'normal', 'high')),
+      visibility TEXT NOT NULL,
+      visible_to_actor_ids_json TEXT NOT NULL DEFAULT '[]',
+      visible_to_user INTEGER NOT NULL DEFAULT 0,
+      actor_instruction TEXT NOT NULL,
+      private_reason TEXT,
+      cause_json TEXT NOT NULL,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      related_event_id TEXT,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'claimed', 'done', 'failed', 'expired')),
+      run_after INTEGER NOT NULL,
+      expires_at INTEGER,
+      idempotency_key TEXT NOT NULL,
+      claimed_by TEXT,
+      claimed_at INTEGER,
+      claim_expires_at INTEGER,
+      result_event_id TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS actor_commands_idempotency_uidx
+      ON actor_commands(idempotency_key);
+    CREATE INDEX IF NOT EXISTS actor_commands_claim_idx
+      ON actor_commands(user_id, world_id, target_agent_id, status, priority, run_after);
+    CREATE INDEX IF NOT EXISTS actor_commands_due_idx
+      ON actor_commands(status, run_after);
+
+    CREATE TABLE IF NOT EXISTS world_decision_logs (
+      id TEXT PRIMARY KEY,
+      decision_id TEXT NOT NULL,
+      world_run_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      world_id TEXT NOT NULL,
+      source_type TEXT NOT NULL,
+      source_event_id TEXT,
+      source_task_id TEXT,
+      model_provider TEXT NOT NULL,
+      model_name TEXT NOT NULL,
+      prompt_context_hash TEXT NOT NULL,
+      raw_decision_json TEXT,
+      validated_decision_json TEXT,
+      validation_status TEXT NOT NULL CHECK (validation_status IN ('accepted', 'rejected', 'model_failed', 'transaction_failed')),
+      validation_errors_json TEXT NOT NULL DEFAULT '[]',
+      error_code TEXT,
+      error_message TEXT,
+      created_event_ids_json TEXT NOT NULL DEFAULT '[]',
+      created_command_ids_json TEXT NOT NULL DEFAULT '[]',
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS world_decision_logs_run_idx
+      ON world_decision_logs(world_run_id, created_at);
+    CREATE INDEX IF NOT EXISTS world_decision_logs_scope_idx
+      ON world_decision_logs(user_id, world_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS world_memories (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      world_id TEXT NOT NULL,
+      subject_type TEXT NOT NULL,
+      subject_key TEXT NOT NULL,
+      memory_type TEXT NOT NULL,
+      canonical_key TEXT,
+      content TEXT NOT NULL,
+      visibility TEXT NOT NULL,
+      visible_to_actor_ids_json TEXT NOT NULL DEFAULT '[]',
+      visible_to_user INTEGER NOT NULL DEFAULT 0,
+      importance REAL NOT NULL DEFAULT 0.5,
+      confidence REAL NOT NULL DEFAULT 0.5,
+      valid_from_tick INTEGER NOT NULL DEFAULT 0,
+      source_event_id TEXT,
+      source_decision_id TEXT,
+      superseded_by TEXT,
+      embedding_json TEXT,
+      embedding_quality TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS world_memories_recall_idx
+      ON world_memories(user_id, world_id, subject_type, subject_key, memory_type, superseded_by);
   `);
   migrateMemoryEmbeddingColumns(db);
   migrateAgentLiveStatesScope(db);
