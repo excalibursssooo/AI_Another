@@ -135,9 +135,10 @@ WorldInteractionFlow
   -> RequireClientActionId
   -> CreateWorldRunEnvelope
   -> RunWorldMind(source = "user_action", sourceActionId)
-  -> LoadVisibleActorDirective
+  -> ClaimVisibleSpeakCommand
   -> RunChatFlowWithWorldDirective
-  -> MarkSpeakCommandDoneAfterChatSuccess
+  -> if chat success: MarkSpeakCommandDone
+  -> if chat failure: ReleaseSpeakCommandClaim or let claimExpiresAt expire
   -> ReturnChatResult
 ```
 
@@ -192,7 +193,7 @@ WorldRunEnvelope {
 
 The envelope is created after `PreSafetyCheck` for user input and before `GenerateDirectorDecision`. Model failures, validation failures, transaction failures, and accepted decisions all use the same `worldRunId` and `decisionId`.
 
-An optional `world_runs` table may persist envelopes. If Phase 1 skips that table, `world_decision_logs` must still receive stable envelope identifiers for every logged attempt.
+Phase 1 can skip persistent envelopes because it does not expose `/api/chat` retry behavior. Phase 2 must persist envelopes in `world_runs` before enabling WorldInteractionFlow. The same `client_action_id` retry must load the existing run instead of creating a different `worldRunId` or `decisionId`.
 
 ## WorldMind Flow
 
@@ -406,12 +407,16 @@ If a future design needs patch-like behavior, it must be represented as a typed 
 
 ```ts
 ProposedWorldEvent {
+  clientEventId: string;
   type: "arc_progress";
   payload: {
     patchType: "resolve_thread";
     threadKey: string;
     resolution: string;
   };
+  visibility: VisibilityScope;
+  actorIds: string[];
+  summary: string;
 }
 ```
 
@@ -433,7 +438,9 @@ Rules:
 - Events must use known event types.
 - Commands must use known command types.
 - Event payloads must match typed schemas for their event type.
+- `decision.events[].clientEventId` must be unique inside one `WorldMindDecision`.
 - Commands must include a typed `CommandCause`.
+- Every command cause with `{ type: "proposed_event" }` must reference an existing `clientEventId`.
 - Hidden facts cannot be included in public command instructions, public events, feed content, or actor-visible memory.
 - Command `actorInstruction` must be safe to inject into the target actor prompt after ACL filtering.
 - Command `privateReason` must never be injected into chat prompts.
@@ -565,6 +572,7 @@ WorldEvent {
     | "character_action"
     | "relationship_shift"
     | "knowledge_reveal"
+    | "fact_correction"
     | "arc_progress"
     | "system_note";
   visibility: VisibilityScope;
@@ -575,10 +583,14 @@ WorldEvent {
   causedByEventId: string | null;
   causedByUserActionId: string | null;
   idempotencyKey: string;
-  status: "committed" | "rejected" | "superseded";
+  status: "committed";
   createdAt: number;
 }
 ```
+
+`world_events` does not store rejected proposals. Rejected proposals live only in `world_decision_logs`.
+
+Committed events are immutable. They must not be rewritten to `superseded`. If later interpretation corrects or overturns an old fact, the system commits a new `system_note`, `arc_progress`, `fact_correction`, or `knowledge_reveal` event that references the old event. Replay keeps the old event and applies the correction event after it in sequence order.
 
 Required constraints:
 
@@ -594,11 +606,16 @@ SELECT *
 FROM world_events
 WHERE user_id = ?
   AND world_id = ?
-  AND status = 'committed'
 ORDER BY sequence ASC
 ```
 
 `tick` is a world-clock concept. `sequence` is the total order for replay.
+
+Committed event idempotency keys for proposed events are derived from:
+
+```text
+worldRunId:clientEventId
+```
 
 ### Stable Fact Keys
 
@@ -740,6 +757,33 @@ ActorCommand(move_location)
 
 `speak_to_user` is the narrow exception because it mainly affects conversation. If the speech reveals knowledge, changes a relationship, or advances an arc, that effect must later be represented as a `world_event` through a transcript extraction or command-result event.
 
+### `speak_to_user` Claim Semantics
+
+`speak_to_user` commands must be claimed before they are injected into ChatFlow.
+
+Required flow:
+
+```text
+ClaimVisibleSpeakCommand
+  -> status: pending -> claimed
+  -> claimed_by = current request/run id
+  -> claimed_at = now
+  -> claim_expires_at = now + short lease
+RunChatFlowWithWorldDirective
+if chat success:
+  MarkSpeakCommandDone
+else:
+  ReleaseSpeakCommandClaim or let claimExpiresAt expire
+```
+
+Rules:
+
+- Only a claimed `speak_to_user` command can become `VisibleActorDirective`.
+- A claimed command must have `claimExpiresAt`.
+- A done `speak_to_user` command must not be injected again.
+- If ChatFlow fails before producing a response, the command must return to `pending` or become claimable after `claimExpiresAt`.
+- Claiming and marking done are separate operations; neither is part of the WorldMind core transaction that created the command.
+
 ## ChatFlow Integration Contract
 
 `ChatContext` needs a filtered directive field:
@@ -866,10 +910,12 @@ WorldDecisionLog {
   modelProvider: string;
   modelName: string;
   promptContextHash: string;
-  rawDecisionJson: string;
+  rawDecisionJson: string | null;
   validatedDecisionJson: string | null;
   validationStatus: "accepted" | "rejected" | "model_failed" | "transaction_failed";
   validationErrorsJson: string;
+  errorCode: string | null;
+  errorMessage: string | null;
   createdEventIdsJson: string;
   createdCommandIdsJson: string;
   createdAt: number;
@@ -878,11 +924,14 @@ WorldDecisionLog {
 
 Rejected decisions are logged even when no events or commands are committed.
 
+`rawDecisionJson` is null when the model fails before returning a structured decision. `validatedDecisionJson` is null for rejected, model_failed, and transaction_failed outcomes. `errorCode` and `errorMessage` carry model and transaction failures so those failures are not hidden inside validation errors.
+
 ## Database Changes
 
 Add these tables in runtime initialization and Drizzle schema:
 
 ```text
+world_runs
 world_state_snapshots
 character_states
 world_events
@@ -891,6 +940,26 @@ world_memories
 world_decision_logs
 world_summaries
 ```
+
+### world_runs
+
+Required from Phase 2 onward:
+
+```text
+id TEXT PRIMARY KEY
+idempotency_key TEXT NOT NULL UNIQUE
+user_id TEXT NOT NULL
+world_id TEXT NOT NULL
+source_type TEXT NOT NULL
+source_action_id TEXT NOT NULL
+decision_id TEXT NOT NULL
+status TEXT NOT NULL -- running | committed | failed | rejected
+result_json TEXT
+created_at INTEGER NOT NULL
+updated_at INTEGER NOT NULL
+```
+
+`world_runs` is the authoritative retry envelope store. If two requests share the same `client_action_id`, they must resolve to the same `world_runs` row.
 
 ### world_events
 
@@ -917,11 +986,13 @@ location_key TEXT
 caused_by_event_id TEXT
 caused_by_user_action_id TEXT
 idempotency_key TEXT NOT NULL
-status TEXT NOT NULL
+status TEXT NOT NULL DEFAULT 'committed'
 created_at INTEGER NOT NULL
 UNIQUE(user_id, world_id, sequence)
 UNIQUE(idempotency_key)
 ```
+
+`status` is reserved for the literal value `committed` in normal operation. Rejected proposals are not inserted into this table. Correction is represented by later committed events, not by mutating old event status.
 
 ### world_state_snapshots
 
@@ -1032,7 +1103,7 @@ updated_at INTEGER NOT NULL
 
 ### world_decision_logs
 
-Use the fields defined in the Decision Logs section.
+Use the fields defined in the Decision Logs section. Phase 2 may start with the minimal fields needed for mock-director accepted/rejected runs; Phase 3 extends the same table with model/context details if those columns were not already created.
 
 ### world_summaries
 
@@ -1148,6 +1219,8 @@ Build:
 
 - `actor_commands`
 - `character_states`
+- `world_runs`
+- `world_decision_logs` minimal repository
 - `WorldInteractionFlow`
 - `WorldMindFlow` with mock director
 - `ChatContext.worldDirective`
@@ -1168,7 +1241,7 @@ Build:
 
 - `WorldMindDecisionSchema`
 - `worldDirector` model purpose and `WORLD_DIRECTOR_MODEL`
-- `world_decision_logs`
+- enhanced `world_decision_logs` fields for context hash, raw decision JSON, validated decision JSON, and model error details
 - `world_context_builder`
 - `world_decision_validator`
 - `world_memories` repository with read-only recall; before memories exist, the adapter returns an empty list.
