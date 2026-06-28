@@ -4,9 +4,25 @@ Date: 2026-06-28
 
 ## Goal
 
-Build a long-running, closed-loop world director for Another-World. The director is the system-level mind of a virtual otherworld: it observes world state, interprets user actions, advances events, dispatches commands to characters, preserves long-term world memory, and keeps the world internally consistent over time.
+Build a long-running, closed-loop world director for Another-World. The director is the system-level mind of a virtual otherworld: it observes world state, interprets user actions, proposes world events, creates commands for characters, preserves long-term world memory, and keeps the world internally consistent over time.
 
 The first version must fit the current Next.js + TypeScript + SQLite architecture. It must extend the existing lightweight Flow Runner instead of replacing it.
+
+## Core Correction
+
+WorldMind v1 is not an agent that directly pushes the world forward. It is a proposal engine. The world changes only through a validated event ledger, a deterministic reducer, and command records that can be executed later.
+
+The governing rule is:
+
+```text
+LLM proposes.
+Validator accepts or rejects.
+One transaction commits events, snapshots, character states, command records, and decision logs.
+Reducers derive state only from committed events.
+Workers execute commands later and report effects as new events.
+```
+
+This keeps the world auditable, replayable, recoverable, and resistant to prompt/context leakage.
 
 ## Non-Goals
 
@@ -14,25 +30,25 @@ The first version will not implement a full simulation engine with economy, geog
 
 The first version must prove the core loop:
 
-1. A user action can affect world state.
-2. The world director can create committed world events.
-3. The world director can dispatch commands to any character in the same world.
-4. Character-facing replies and posts can be driven by director commands.
-5. World memory can influence future director decisions.
-6. World state can be replayed from committed events.
+1. A user action is committed exactly once as a world event.
+2. A director decision can create derived events.
+3. A deterministic reducer can rebuild snapshots from ordered events.
+4. A director decision can persist actor commands without executing them inline.
+5. A visible actor directive can be injected into chat without leaking hidden facts.
+6. World memory can influence future director decisions without becoming the source of state truth.
 
 ## Current System Fit
 
-The existing codebase already has the right foundation:
+The existing codebase has the right foundation:
 
 - `server/flow/runner.ts` provides a simple linear `Flow<TContext>`.
 - `server/flow/chat-flow.ts` handles agent chat, memory recall, live state update, persistence, and async memory extraction.
-- `server/flow/feed-flow.ts` generates character posts and can be reused as an outward signal for world events.
-- `server/flow/memory-extract-flow.ts` and `MemoryConsolidator` provide a pattern for extracting and consolidating long-term facts.
-- `domain/chat/task-repository.ts` provides a basic task queue.
-- SQLite is already the default persistence layer.
+- `server/flow/feed-flow.ts` generates character posts and can later execute `publish_post` commands.
+- `server/flow/memory-extract-flow.ts` and `MemoryConsolidator` provide useful patterns, but world memory needs its own consolidation rules.
+- `domain/chat/task-repository.ts` provides a basic task queue, but it must be upgraded before it can safely run world ticks.
+- SQLite is the default persistence layer.
 
-The new world layer should live beside the current chat layer:
+The world layer should live beside the current chat layer:
 
 ```text
 ui/src/server/domain/world/
@@ -40,87 +56,117 @@ ui/src/server/domain/world/
   world-state-repository.ts
   character-state-repository.ts
   actor-command-repository.ts
+  world-decision-log-repository.ts
   world-memory-repository.ts
+  world-memory-consolidator.ts
   world-reducer.ts
+  world-replay-service.ts
   world-context-builder.ts
+  world-decision-validator.ts
 
 ui/src/server/flow/
   world-mind-flow.ts
   world-interaction-flow.ts
+  actor-command-worker.ts
   world-tick-worker.ts
 ```
 
-The existing `domain/chat/repositories.ts` is already broad. New world concepts should not be added to that file except through narrow adapter calls.
+The existing `domain/chat/repositories.ts` is already broad. New world concepts should not be added to that file except through narrow adapters.
 
-## Core Architecture
+## Hard Invariants
 
-The central rule is:
+These invariants are mandatory for the first implementation:
+
+1. `world_events` is the source of truth for world and character state.
+2. Every state-changing action must first become a committed `world_event`.
+3. `WorldMindDecision` must not include free-floating state patches.
+4. Commands are intent records, not facts. Commands do not update `world_state_snapshots` or `character_states` directly.
+5. Command execution effects must be reported as new committed events.
+6. User action events and director-derived events from the same run share one `decision_id` and one `world_run_id`.
+7. User action event creation, derived event creation, reducer application, actor command persistence, and decision log insertion happen in one SQLite transaction.
+8. World memory consolidation and next tick scheduling happen after the core transaction and cannot invalidate committed world state.
+9. Event replay order is logical and deterministic, based on `sequence`, not `created_at`.
+10. Visibility is enforced with explicit ACL fields, not only a `public/private/hidden` enum.
+
+## Flow Runner Boundary
+
+The current `Flow<TCtx>` is intentionally thin. It only orders nodes and emits node lifecycle events. It must not be treated as a transaction manager, retry engine, checkpoint engine, rollback engine, or compensation system.
+
+World state consistency belongs inside one explicit transaction node:
 
 ```text
-LLM proposes. Code validates. Events commit. Reducer mutates state.
+CommitWorldRunTransaction
 ```
 
-The world director must never directly update `world_state`, `character_states`, or memories. It emits a structured `WorldMindDecision`. The system validates that decision, writes committed events and commands transactionally, and applies deterministic reducers to update snapshots.
-
-The control loop is:
-
-```text
-WorldInput
-  -> Load runtime state
-  -> Build director context
-  -> Generate structured decision
-  -> Validate decision
-  -> Commit event ledger entries
-  -> Apply deterministic world reducer
-  -> Dispatch actor commands
-  -> Consolidate world memory
-  -> Schedule next tick
-```
-
-This makes the world debuggable, replayable, and recoverable after failures.
+All earlier nodes prepare data. All later nodes handle secondary effects.
 
 ## Entry Points
 
-### User Interaction
+### Chat Route Integration
 
-User messages should pass through `WorldInteractionFlow` before normal character chat.
+The current `/api/chat` route should branch by feature flag:
 
 ```text
-POST /api/chat
-  -> WorldInteractionFlow(source = "user_action")
-    -> WorldMindFlow
-    -> Actor command lookup for selected character
-    -> ChatFlow or CharacterCommandFlow
-    -> SSE response
+if ENABLE_WORLD_MIND:
+  route -> createWorldInteractionFlow()
+else:
+  route -> createChatFlow()
 ```
 
-For the first version, `ChatFlow` can remain the response generator. The integration point is prompt construction: if a pending actor command exists for the selected agent, the command is injected into the chat prompt as a high-priority world directive.
+In WorldMind mode, world loading is strict:
+
+```text
+LoadWorldStrict(worldId)
+```
+
+The existing `ChatFlow` may keep its `default` fallback for non-WorldMind mode. WorldMind mode must not fallback to `default`, because that can mutate the wrong world.
+
+### User Interaction
+
+`WorldInteractionFlow` must not pre-commit a `user_action` event. It normalizes user input and delegates all world mutation to `WorldMindFlow`.
+
+```text
+WorldInteractionFlow
+  -> NormalizeUserActionInput
+  -> RunWorldMind(source = "user_action", sourceActionId)
+  -> LoadVisibleActorDirective
+  -> RunChatFlowWithWorldDirective
+  -> MarkSpeakCommandDoneAfterChatSuccess
+  -> ReturnChatResult
+```
+
+`sourceActionId` is an idempotency key supplied by the caller or generated before the run. It is used to ensure that retrying the same user action does not duplicate events.
 
 ### Background Tick
 
-The world also advances without user input through scheduled tasks.
+The world advances without user input through scheduled tasks:
 
 ```text
 task kind: world_tick
 payload: { worldId, userId, reason, scheduledTick }
 ```
 
-`world-tick-worker.ts` drains these tasks and runs `WorldMindFlow(source = "scheduled_tick")`.
+World ticks must use the same `WorldMindFlow`, but with:
+
+```text
+source = "scheduled_tick"
+sourceActionId = task.id or task.idempotency_key
+```
 
 ### System Trigger
 
-World creation, role creation, feed interaction, and debug endpoints may enqueue system triggers.
+World creation, role creation, feed interaction, and debug endpoints may enqueue system triggers:
 
 ```text
 task kind: world_trigger
 payload: { worldId, userId, triggerType, payload }
 ```
 
-This gives the director a uniform way to react to new characters, newly created worlds, and feed-triggered topics.
+System triggers use the same transaction rules as user actions and ticks.
 
 ## WorldMind Flow
 
-`WorldMindFlow` should be a linear flow at first:
+`WorldMindFlow` is linear, but only one node mutates primary world state.
 
 ```text
 LoadWorldRuntime
@@ -131,43 +177,48 @@ RecallWorldMemory
 BuildDirectorContext
 GenerateDirectorDecision
 ValidateDirectorDecision
-CommitWorldEvents
-ApplyWorldReducer
-DispatchActorCommands
-ConsolidateWorldMemory
-ScheduleNextTick
+CommitWorldRunTransaction
+ConsolidateWorldMemorySecondary
+ScheduleNextTickSecondary
 ```
 
 ### LoadWorldRuntime
 
-Loads the `WorldRecord` from the existing `WorldRepository`. If no world exists, fail fast. The director must not silently fall back to `default`, because hidden cross-world mutation is worse than a failed tick.
+Loads the `WorldRecord` from the existing `WorldRepository`. If no world exists, fail fast. This node never falls back to `default`.
 
 ### LoadWorldStateSnapshot
 
-Loads the latest snapshot for the target `worldId` and `userId`. If no snapshot exists, create an initial snapshot from the persisted world record:
+Loads the latest snapshot for `worldId` and `userId`. If no snapshot exists, prepare an initial state in memory. The initial state is persisted only inside `CommitWorldRunTransaction`.
 
 ```ts
 WorldStateSnapshot {
   worldId: string;
   userId: string;
   tick: number;
-  clock: {
-    day: number;
-    phase: "dawn" | "day" | "dusk" | "night";
-    updatedAt: number;
+  snapshotKind: "latest" | "checkpoint" | "rebuild";
+  appliedEventSequence: number;
+  appliedEventIds: string[];
+  reducerVersion: number;
+  state: {
+    clock: {
+      day: number;
+      phase: "dawn" | "day" | "dusk" | "night";
+      updatedAt: number;
+    };
+    stability: number;
+    tension: number;
+    activeArcIds: string[];
+    publicFacts: WorldFact[];
+    hiddenFacts: WorldFact[];
+    unresolvedEventIds: string[];
   };
-  stability: number;
-  tension: number;
-  activeArcIds: string[];
-  publicFacts: WorldFact[];
-  hiddenFacts: WorldFact[];
-  unresolvedEventIds: string[];
+  checksum: string | null;
   createdAt: number;
   updatedAt: number;
 }
 ```
 
-First-version state should stay compact. Large historical detail belongs in the event ledger and world memory, not the snapshot.
+First-version snapshots are compact. History belongs in `world_events`; durable non-state facts belong in `world_memories`.
 
 ### LoadActiveActors
 
@@ -196,25 +247,29 @@ CharacterState {
 }
 ```
 
-If a character has no state yet, create one from the existing agent profile with conservative defaults.
+If a character has no state yet, prepare a default state in memory. Persist it only through `CommitWorldRunTransaction`.
 
 ### LoadRecentEventLedger
 
-Loads committed events for the same world/user scope.
+Loads recent committed events for context:
 
-First-version limits:
+- Last 24 committed events for the world.
+- Last 8 committed events involving the selected agent.
+- Last 8 unresolved event or thread events.
 
-- Last 24 committed events.
-- Last 8 events involving the selected agent.
-- Last 8 unresolved events.
+The query order must be:
 
-Events beyond this window are retrieved through world memory or summaries.
+```sql
+ORDER BY sequence ASC
+```
+
+`created_at` is only observability metadata and must not determine replay order.
 
 ### RecallWorldMemory
 
-Uses a dedicated `WorldMemoryRepository`, not the existing chat-scoped `MemoryRepository`.
+Uses `WorldMemoryRepository`, not the chat-scoped `MemoryRepository`.
 
-World memory stores durable facts:
+World memory stores durable facts that help context construction. It is not the source of replayable state.
 
 ```ts
 WorldMemory {
@@ -223,13 +278,15 @@ WorldMemory {
   userId: string;
   subjectType: "world" | "arc" | "faction" | "location" | "character" | "user";
   subjectKey: string;
-  memoryType: "lore" | "event" | "rule" | "relationship" | "secret" | "unresolved_thread";
+  memoryType: "lore" | "rule" | "relationship" | "secret" | "unresolved_thread";
   canonicalKey: string | null;
   content: string;
-  visibility: "public" | "private" | "hidden";
+  visibility: VisibilityScope;
   importance: number;
   confidence: number;
   validFromTick: number;
+  sourceEventId: string | null;
+  sourceDecisionId: string | null;
   supersededBy: string | null;
   embeddingJson: string | null;
   embeddingQuality: string | null;
@@ -238,17 +295,13 @@ WorldMemory {
 }
 ```
 
-World memory is queried by:
+`sourceEventId` is required for memories derived from world activity. It may be null only for seed memories created during system initialization.
 
-- current user action text,
-- active arc names,
-- involved actor names,
-- unresolved event topics,
-- pending command reasons.
+`event` is deliberately not a `memoryType`. Events belong in `world_events`; memories may reference events.
 
 ### BuildDirectorContext
 
-The director context is deliberately layered:
+The director context is layered and visibility-aware:
 
 ```text
 1. Immutable canon
@@ -256,13 +309,11 @@ The director context is deliberately layered:
 3. Actor slice
 4. Recent committed event ledger
 5. Retrieved world memory
-6. Current input or tick reason
+6. Current source input or tick reason
 7. Output contract and hard constraints
 ```
 
-The context builder owns compression and budget limits. Flow nodes must not assemble prompts ad hoc.
-
-Recommended first-version budget:
+Budget guidance:
 
 - Canon and world rules: 1200 tokens.
 - Runtime snapshot: 1000 tokens.
@@ -272,7 +323,7 @@ Recommended first-version budget:
 - Current input: uncropped unless it exceeds a hard request limit.
 - Output schema instructions: fixed and short.
 
-The context builder may summarize recent events into `world_summaries` once the event ledger grows, but it must not summarize the current user action or immutable canon.
+The context builder may use `world_summaries` for older event windows. It must not summarize the current user action or immutable canon.
 
 ### GenerateDirectorDecision
 
@@ -288,7 +339,13 @@ type ModelPurpose =
   | "worldDirector";
 ```
 
-The decision schema:
+Environment mapping must include:
+
+```env
+WORLD_DIRECTOR_MODEL=
+```
+
+The decision schema deliberately excludes `statePatch`:
 
 ```ts
 WorldMindDecision {
@@ -297,16 +354,27 @@ WorldMindDecision {
     | "no_op"
     | "advance_scene"
     | "trigger_event"
-    | "dispatch_commands"
-    | "update_state";
+    | "dispatch_commands";
   events: ProposedWorldEvent[];
   commands: ProposedActorCommand[];
-  statePatch: ProposedWorldStatePatch | null;
   memories: WorldMemoryCandidate[];
   nextTick: {
     delayMs: number;
     reason: string;
   } | null;
+}
+```
+
+If a future design needs patch-like behavior, it must be represented as a typed event payload, not a free-floating patch:
+
+```ts
+ProposedWorldEvent {
+  type: "arc_progress";
+  payload: {
+    patchType: "resolve_thread";
+    threadKey: string;
+    resolution: string;
+  };
 }
 ```
 
@@ -320,33 +388,80 @@ Hard output limits:
 
 ### ValidateDirectorDecision
 
-Validation must reject unsafe or incoherent decisions before commit.
+Validation rejects unsafe or incoherent decisions before the transaction.
 
 Rules:
 
 - All `agentId` values must exist and belong to the target world.
 - Events must use known event types.
 - Commands must use known command types.
-- Hidden facts cannot be included in public commands or feed content.
-- `statePatch` cannot mutate immutable canon.
-- `statePatch` cannot remove committed event references.
+- Event payloads must match typed schemas for their event type.
+- Commands must reference either a proposed event client id, an existing committed event id, or a public actor instruction.
+- Hidden facts cannot be included in public command instructions, public events, feed content, or actor-visible memory.
+- Command `actorInstruction` must be safe to inject into the target actor prompt after ACL filtering.
+- Command `privateReason` must never be injected into chat prompts.
 - Event count and command count must stay within schema limits.
-- A user action may create at most one major event unless explicitly marked as a chain reaction.
+- A user action may create at most one major event unless an event is explicitly marked as a chain reaction.
 - Scheduled ticks may create zero events; no-op is valid.
-- Every command must reference either a committed event id, proposed event client id, or a clear reason.
 
-If validation fails, the flow writes a rejected decision log and falls back to `no_op`; it does not partially commit.
+If validation fails, `CommitWorldRunTransaction` writes a rejected decision log but commits no proposed events, no snapshot updates, and no commands.
 
-### CommitWorldEvents
+### CommitWorldRunTransaction
 
-Events are the source of truth.
+This is the only primary state mutation node.
+
+Inside one SQLite transaction:
+
+```text
+1. Create or load decision_id and world_run_id.
+2. Commit the source event if absent.
+3. Commit validated derived events with stable sequences.
+4. Apply reducer over [source event + derived events] in sequence order.
+5. Insert/update world_state_snapshots.
+6. Insert/update character_states.
+7. Insert actor_commands.
+8. Insert world_decision_logs.
+9. Commit transaction.
+```
+
+If any step fails, the full transaction rolls back.
+
+The transaction owns user action submission. `WorldInteractionFlow` must not pre-commit `user_action`.
+
+### ConsolidateWorldMemorySecondary
+
+World memory consolidation happens after the core transaction. It may fail without rolling back committed events or snapshots.
+
+The consolidator receives:
+
+- committed event ids,
+- `decision_id`,
+- accepted memory candidates,
+- current world state metadata.
+
+Failures are logged in `world_decision_logs` or a dedicated operation log.
+
+### ScheduleNextTickSecondary
+
+Next tick scheduling happens after the core transaction. It may fail without rolling back committed events or snapshots.
+
+Ticks are scheduled only when there is a committed event, unresolved thread, or explicit accepted `nextTick`. Quiet worlds do not schedule endless work.
+
+## Event Ledger
+
+Events are immutable facts. Reducers replay events in `sequence` order.
 
 ```ts
 WorldEvent {
   id: string;
+  decisionId: string;
+  worldRunId: string;
   worldId: string;
   userId: string;
   tick: number;
+  sequence: number;
+  schemaVersion: number;
+  reducerVersion: number;
   type:
     | "user_action"
     | "world_incident"
@@ -355,7 +470,7 @@ WorldEvent {
     | "knowledge_reveal"
     | "arc_progress"
     | "system_note";
-  visibility: "public" | "private" | "hidden";
+  visibility: VisibilityScope;
   actorIds: string[];
   locationKey: string | null;
   payload: unknown;
@@ -368,34 +483,40 @@ WorldEvent {
 }
 ```
 
-`idempotencyKey` is required. For user actions:
+Required constraints:
 
 ```text
-worldId:userId:source:userActionId:proposedEventClientId
+UNIQUE(user_id, world_id, sequence)
+UNIQUE(idempotency_key)
 ```
 
-For scheduled ticks:
+Recommended replay query:
 
-```text
-worldId:userId:scheduledTick:tick:proposedEventClientId
+```sql
+SELECT *
+FROM world_events
+WHERE user_id = ?
+  AND world_id = ?
+  AND status = 'committed'
+ORDER BY sequence ASC
 ```
 
-The repository enforces uniqueness on `idempotency_key`. This prevents duplicate events when tasks retry.
+`tick` is a world-clock concept. `sequence` is the total order for replay.
 
-### ApplyWorldReducer
+## Reducer
 
-Reducers are deterministic TypeScript functions. They consume committed events and validated patches.
+Reducers are deterministic TypeScript functions. They consume committed events and return new state.
 
-Reducer responsibilities:
+Reducer input:
 
-- Increment world tick.
-- Update clock phase.
-- Update `stability` and `tension`.
-- Add or resolve unresolved events.
-- Update public and hidden facts.
-- Update active arcs.
-- Update character states.
-- Record which event ids affected each snapshot.
+```ts
+WorldReducerInput {
+  previousSnapshot: WorldStateSnapshot;
+  previousCharacterStates: CharacterState[];
+  events: WorldEvent[];
+  reducerVersion: number;
+}
+```
 
 Reducer output:
 
@@ -408,15 +529,28 @@ WorldReductionResult {
 }
 ```
 
-Reducers must be pure with respect to inputs. Repository code persists the result inside a transaction.
+Reducer responsibilities:
 
-### DispatchActorCommands
+- Increment world tick when event semantics require it.
+- Update clock phase.
+- Update `stability` and `tension`.
+- Add or resolve unresolved events.
+- Update public and hidden facts.
+- Update active arcs.
+- Update character states.
+- Record `appliedEventSequence` and `appliedEventIds`.
 
-Commands translate world-level intent into actor-level work.
+No command may directly update state. If a command changes location, knowledge, relationship, or arc progress, command execution must create a new `world_event`, and the reducer handles that event.
+
+## Actor Commands
+
+Commands are pending intents. Persisting a command does not mean the action happened.
 
 ```ts
 ActorCommand {
   id: string;
+  decisionId: string;
+  worldRunId: string;
   worldId: string;
   userId: string;
   targetAgentId: string;
@@ -428,103 +562,179 @@ ActorCommand {
     | "publish_post"
     | "initiate_event";
   priority: "low" | "normal" | "high";
-  visibility: "public" | "private" | "hidden";
+  visibility: VisibilityScope;
+  actorInstruction: string;
+  privateReason: string | null;
   payload: unknown;
-  reason: string;
   relatedEventId: string | null;
   status: "pending" | "claimed" | "done" | "failed" | "expired";
   runAfter: number;
   expiresAt: number | null;
   idempotencyKey: string;
+  claimedBy: string | null;
+  claimedAt: number | null;
+  claimExpiresAt: number | null;
+  resultEventId: string | null;
   createdAt: number;
   updatedAt: number;
 }
 ```
 
-First-version command handling:
+Required constraints:
 
-- `speak_to_user`: injected into the selected character's chat prompt.
-- `publish_post`: calls or enqueues the existing feed generation flow with director-provided topic and event context.
-- `remember`: writes a world memory candidate or character-scoped memory.
-- `move_location`, `investigate`, and `initiate_event`: update character state or enqueue a future `world_trigger`.
+```text
+UNIQUE(idempotency_key)
+INDEX(user_id, world_id, target_agent_id, status, priority, run_after)
+INDEX(status, run_after)
+```
 
-### ConsolidateWorldMemory
+`actorInstruction` is the only field that may be injected into a character prompt, and only after ACL filtering. `privateReason` is for director/debug context only.
 
-The director can output `WorldMemoryCandidate` records, but consolidation must be deterministic.
+### Command Execution
+
+Command execution is separate from command persistence.
+
+Workers and adapters:
+
+- `ChatFlow` command adapter handles visible `speak_to_user` commands.
+- `ActorCommandWorker` handles `move_location`, `investigate`, `remember`, and `initiate_event`.
+- Feed worker handles `publish_post`.
+
+State-changing command results must create committed events:
+
+```text
+ActorCommand(move_location)
+  -> worker claims command
+  -> worker creates character_action event
+  -> reducer updates character_states.locationKey
+  -> command.result_event_id points to the committed event
+```
+
+`speak_to_user` is the narrow exception because it mainly affects conversation. If the speech reveals knowledge, changes a relationship, or advances an arc, that effect must later be represented as a `world_event` through a transcript extraction or command-result event.
+
+## ChatFlow Integration Contract
+
+`ChatContext` needs a filtered directive field:
 
 ```ts
-WorldMemoryCandidate {
-  subjectType: "world" | "arc" | "faction" | "location" | "character" | "user";
-  subjectKey: string;
-  memoryType: "lore" | "event" | "rule" | "relationship" | "secret" | "unresolved_thread";
-  canonicalKey?: string;
-  content: string;
-  visibility: "public" | "private" | "hidden";
-  importance: number;
-  confidence: number;
+ChatContext {
+  worldDirective?: VisibleActorDirective | null;
+}
+
+VisibleActorDirective {
+  commandId: string;
+  actorInstruction: string;
+  relatedEventSummary?: string;
 }
 ```
 
-Consolidation mirrors the existing memory consolidator:
+`buildSystemPrompt` and `buildUserPrompt` may only receive `VisibleActorDirective`, never raw `ActorCommand`.
 
-- Empty content is skipped.
-- Similar semantic memories are merged.
-- Contradictory high-confidence facts supersede old facts.
-- Hidden memories remain hidden during prompt construction unless the target actor is allowed to know them.
-- Every created or merged memory references a source event id or task id.
-
-### ScheduleNextTick
-
-If `nextTick` is present, enqueue a `world_tick` task. The scheduler clamps delay:
-
-- Minimum: 30 seconds.
-- Default if absent: no automatic tick.
-- Maximum: 24 hours.
-
-For the first version, worlds should only auto-schedule a next tick after a committed event or unresolved arc. A quiet world should not consume background work forever.
-
-## WorldInteractionFlow
-
-`WorldInteractionFlow` wraps user-facing chat. It creates a `user_action` event, asks the director to interpret it, then hands any relevant actor command to chat generation.
-
-Flow:
+WorldMind mode route behavior:
 
 ```text
-ValidateInput
-RecordUserActionEvent
-RunWorldMind
-LoadSelectedActorCommand
-RunChatFlowWithWorldDirective
-MarkActorCommandDone
-ReturnChatResult
+if ENABLE_WORLD_MIND:
+  createWorldInteractionFlow({
+    strictWorld: true,
+    chatFlowFactory: createChatFlow
+  })
+else:
+  createChatFlow()
 ```
 
-This keeps the existing SSE route simple while introducing world causality.
+This contract prevents hidden `privateReason` or hidden world facts from leaking into character prompts.
 
-If the director returns `no_op`, chat proceeds normally. If the director commits an event, the assistant response should know the event happened only if the selected character has visibility.
+## Visibility and ACL
 
-## Context Visibility Rules
+Visibility is explicit:
 
-Visibility is the hardest correctness boundary.
+```ts
+VisibilityScope {
+  level: "public" | "private" | "hidden";
+  visibleToActorIds: string[];
+  visibleToUser: boolean;
+}
+```
 
-World director can see all world facts. Characters cannot.
+Database representation:
 
-Prompt builders must enforce:
+```text
+visibility TEXT NOT NULL
+visible_to_actor_ids_json TEXT NOT NULL DEFAULT '[]'
+visible_to_user INTEGER NOT NULL DEFAULT 0
+```
 
-- Public facts are visible to everyone.
-- Private facts are visible only to listed actors or the user.
-- Hidden facts are visible only to the director unless explicitly revealed by a committed event.
-- A character cannot act on a hidden fact by accident.
-- A command with hidden reason must provide a separate public-facing instruction if it reaches a character prompt.
+Rules:
+
+- `public` is visible to all actors and the user.
+- `private` is visible only to listed actors and/or the user.
+- `hidden` is visible only to the director unless later revealed by a committed `knowledge_reveal` event.
+- Hidden facts cannot appear in actor prompt context.
+- Hidden facts cannot appear in `actorInstruction`.
+- `privateReason` can include hidden director rationale, but it is never actor-visible.
 
 Example:
 
 ```text
 Hidden fact: The queen ordered the fire.
 Public event: The port warehouse burned at night.
-Command to guard: Ask the user what they saw near the port.
-The guard prompt must not include that the queen ordered the fire.
+Actor instruction: Ask the user what they saw near the port.
+Private reason: The director is testing whether the user saw signs of the queen's agents.
 ```
+
+Only the actor instruction can reach the guard's prompt.
+
+## World Memory
+
+World memory cannot reuse chat memory rules wholesale. Chat memory consolidation is optimized for user/agent preferences, boundaries, goals, and semantic deduplication. World memory has different semantics.
+
+First-version `WorldMemoryConsolidator` strategies:
+
+- `rule`: `canonicalKey` is strongly unique. Conflicts supersede old rules.
+- `secret`: default no semantic merge. Update only by `canonicalKey`.
+- `relationship`: store structured relationship dimensions where possible; avoid text concatenation.
+- `unresolved_thread`: merge into a thread timeline keyed by `canonicalKey`.
+- `lore`: low-frequency; prefer seed/system-confirmed facts and conservative supersession.
+
+`event` is not a memory type. Events remain in `world_events`.
+
+Each world memory should include:
+
+```text
+source_event_id
+source_decision_id
+```
+
+Only seed/system initialization memories may omit `source_event_id`.
+
+## Decision Logs
+
+Decision logs are required for debugging why the world changed.
+
+```ts
+WorldDecisionLog {
+  id: string;
+  decisionId: string;
+  worldRunId: string;
+  worldId: string;
+  userId: string;
+  sourceType: "user_action" | "scheduled_tick" | "system_trigger";
+  sourceEventId: string | null;
+  sourceTaskId: string | null;
+  modelProvider: string;
+  modelName: string;
+  promptContextHash: string;
+  rawDecisionJson: string;
+  validatedDecisionJson: string | null;
+  validationStatus: "accepted" | "rejected" | "model_failed" | "transaction_failed";
+  validationErrorsJson: string;
+  createdEventIdsJson: string;
+  createdCommandIdsJson: string;
+  createdAt: number;
+}
+```
+
+Rejected decisions are logged even when no events or commands are committed.
 
 ## Database Changes
 
@@ -540,99 +750,189 @@ world_decision_logs
 world_summaries
 ```
 
+### world_events
+
+Required fields:
+
+```text
+id TEXT PRIMARY KEY
+decision_id TEXT NOT NULL
+world_run_id TEXT NOT NULL
+user_id TEXT NOT NULL
+world_id TEXT NOT NULL
+tick INTEGER NOT NULL
+sequence INTEGER NOT NULL
+schema_version INTEGER NOT NULL DEFAULT 1
+reducer_version INTEGER NOT NULL DEFAULT 1
+type TEXT NOT NULL
+payload_json TEXT NOT NULL
+summary TEXT NOT NULL
+visibility TEXT NOT NULL
+visible_to_actor_ids_json TEXT NOT NULL DEFAULT '[]'
+visible_to_user INTEGER NOT NULL DEFAULT 0
+actor_ids_json TEXT NOT NULL DEFAULT '[]'
+location_key TEXT
+caused_by_event_id TEXT
+caused_by_user_action_id TEXT
+idempotency_key TEXT NOT NULL
+status TEXT NOT NULL
+created_at INTEGER NOT NULL
+UNIQUE(user_id, world_id, sequence)
+UNIQUE(idempotency_key)
+```
+
 ### world_state_snapshots
 
-Stores the latest compact state and optional historical snapshots.
+Required fields:
 
-Indexes:
+```text
+id TEXT PRIMARY KEY
+user_id TEXT NOT NULL
+world_id TEXT NOT NULL
+tick INTEGER NOT NULL
+snapshot_kind TEXT NOT NULL DEFAULT 'latest'
+applied_event_sequence INTEGER NOT NULL
+applied_event_ids_json TEXT NOT NULL
+reducer_version INTEGER NOT NULL
+state_json TEXT NOT NULL
+checksum TEXT
+created_at INTEGER NOT NULL
+updated_at INTEGER NOT NULL
+UNIQUE(user_id, world_id, tick)
+```
 
-- `(user_id, world_id, tick DESC)`
-- unique `(user_id, world_id, tick)`
+There may be multiple historical snapshots, but one latest row per world/user can be materialized through query convention or a later `is_latest` flag.
 
 ### character_states
 
-Stores one row per user/world/agent.
+Required fields:
 
-Indexes:
-
-- unique `(user_id, world_id, agent_id)`
-- `(user_id, world_id, updated_at DESC)`
-
-### world_events
-
-Stores immutable event ledger entries.
-
-Indexes:
-
-- unique `(idempotency_key)`
-- `(user_id, world_id, tick, created_at)`
-- `(user_id, world_id, status, created_at DESC)`
+```text
+id TEXT PRIMARY KEY
+user_id TEXT NOT NULL
+world_id TEXT NOT NULL
+agent_id TEXT NOT NULL
+state_json TEXT NOT NULL
+updated_at INTEGER NOT NULL
+UNIQUE(user_id, world_id, agent_id)
+```
 
 ### actor_commands
 
-Stores director commands.
+Required fields:
 
-Indexes:
-
-- unique `(idempotency_key)`
-- `(user_id, world_id, target_agent_id, status, priority, run_after)`
-- `(status, run_after)`
+```text
+id TEXT PRIMARY KEY
+decision_id TEXT NOT NULL
+world_run_id TEXT NOT NULL
+user_id TEXT NOT NULL
+world_id TEXT NOT NULL
+target_agent_id TEXT NOT NULL
+command_type TEXT NOT NULL
+priority TEXT NOT NULL
+visibility TEXT NOT NULL
+visible_to_actor_ids_json TEXT NOT NULL DEFAULT '[]'
+visible_to_user INTEGER NOT NULL DEFAULT 0
+actor_instruction TEXT NOT NULL
+private_reason TEXT
+payload_json TEXT NOT NULL
+related_event_id TEXT
+status TEXT NOT NULL
+run_after INTEGER NOT NULL
+expires_at INTEGER
+idempotency_key TEXT NOT NULL
+claimed_by TEXT
+claimed_at INTEGER
+claim_expires_at INTEGER
+result_event_id TEXT
+created_at INTEGER NOT NULL
+updated_at INTEGER NOT NULL
+UNIQUE(idempotency_key)
+```
 
 ### world_memories
 
-Stores durable world facts with embedding metadata.
+Required fields:
 
-Indexes:
-
-- `(user_id, world_id, subject_type, subject_key)`
-- `(user_id, world_id, visibility, updated_at DESC)`
-- optional FTS5 table for `content`
+```text
+id TEXT PRIMARY KEY
+user_id TEXT NOT NULL
+world_id TEXT NOT NULL
+subject_type TEXT NOT NULL
+subject_key TEXT NOT NULL
+memory_type TEXT NOT NULL
+canonical_key TEXT
+content TEXT NOT NULL
+visibility TEXT NOT NULL
+visible_to_actor_ids_json TEXT NOT NULL DEFAULT '[]'
+visible_to_user INTEGER NOT NULL DEFAULT 0
+importance REAL NOT NULL
+confidence REAL NOT NULL
+valid_from_tick INTEGER NOT NULL
+source_event_id TEXT
+source_decision_id TEXT
+superseded_by TEXT
+embedding_json TEXT
+embedding_quality TEXT
+created_at INTEGER NOT NULL
+updated_at INTEGER NOT NULL
+```
 
 ### world_decision_logs
 
-Stores raw structured decisions and validation outcomes for observability.
-
-This table is append-only and can be pruned later.
+Use the fields defined in the Decision Logs section.
 
 ### world_summaries
 
-Stores compressed summaries of older event windows.
-
-The first version can create this table without automatic summarization. Summarization can be added when event volume justifies it.
+Stores compressed summaries of older event windows. Phase 1 creates the table only if needed by replay tests; automatic summarization can wait.
 
 ## Task Queue Requirements
 
-The existing `tasks` table needs small but important extensions before background world ticks are reliable:
+The existing `tasks` table is sufficient for memory extraction but not for long-running world ticks. It needs leasing and idempotency.
+
+Required fields:
 
 ```text
-idempotency_key TEXT
+idempotency_key TEXT UNIQUE
+locked_by TEXT
 locked_at INTEGER
 lock_expires_at INTEGER
 max_attempts INTEGER NOT NULL DEFAULT 3
 next_attempt_at INTEGER
+completed_at INTEGER
+failed_permanently_at INTEGER
 ```
 
 Required behavior:
 
-- `enqueue` accepts an optional idempotency key.
-- duplicate idempotency keys return the existing task.
-- `claimNext` only claims unlocked or expired-lock tasks.
-- failed tasks retry with bounded backoff until `max_attempts`.
-- permanently failed tasks remain inspectable.
+- `enqueue` accepts optional `idempotencyKey`.
+- Duplicate `idempotencyKey` returns the existing task.
+- `claimNext` uses a SQLite transaction or atomic update, not select-then-update.
+- Claimable tasks are pending or retryable and either unlocked or lock-expired.
+- Claiming sets `status = 'running'`, `locked_by`, `locked_at`, and `lock_expires_at`.
+- Failed tasks retry with bounded backoff until `max_attempts`.
+- Permanently failed tasks remain inspectable.
 
-Without this, a long-running world can duplicate events or stall after a transient failure.
+Worker modes:
+
+- Development: route-triggered drain with small limits for easy testing.
+- Long-running: independent worker loop, cron, or Electron background process.
+
+World tick correctness must not rely on best-effort `void drain...` calls after HTTP responses.
 
 ## Error Handling
 
-World ticks must prefer safe no-op over partial mutation.
+Core transaction failures roll back the run.
 
 Rules:
 
-- If model generation fails, log a failed decision and do not change world state.
-- If validation fails, commit no proposed events and write a rejected decision log.
-- If event commit succeeds but reducer fails, the transaction must roll back both event and reducer state.
-- If command dispatch fails after event commit, mark the decision partially failed and enqueue a repair task.
-- If memory consolidation fails, keep committed events and state, then log memory failure; memory is secondary.
+- If model generation fails, write a `model_failed` decision log if possible and do not change world state.
+- If validation fails, write a rejected decision log and do not commit proposed events, snapshots, or commands.
+- If `CommitWorldRunTransaction` fails, roll back events, snapshots, character states, commands, and decision logs for that run.
+- Command row creation is part of the core transaction.
+- Command execution is outside the core transaction and may fail or retry independently.
+- Memory consolidation failure does not roll back committed events or snapshots.
+- Next tick scheduling failure does not roll back committed events or snapshots.
 
 ## Safety and Product Boundaries
 
@@ -645,84 +945,146 @@ Additional constraints:
 - Character autonomy is fictional. The product should not claim that characters are conscious or independently alive.
 - Hidden world facts are allowed, but user personal data must remain scoped to that user.
 
+## Phased Implementation
+
+### Phase 1: Event Ledger and Replayable Reducer
+
+Goal:
+
+```text
+user_action event can be committed
+world_incident event can be committed
+snapshot can be rebuilt from events
+```
+
+Build:
+
+- `world_events`
+- `world_state_snapshots`
+- `world_event_repository`
+- `world_reducer`
+- `world_replay_service`
+- deterministic sequence allocator
+
+No ChatFlow integration, no tick, no memory, no feed, no real LLM.
+
+### Phase 2: Mock WorldMind and Chat Contract
+
+Goal:
+
+```text
+WorldInteractionFlow behind flag
+mock director outputs fixed event and command
+selected actor receives only visible directive
+```
+
+Build:
+
+- `actor_commands`
+- `character_states`
+- `WorldInteractionFlow`
+- `WorldMindFlow` with mock director
+- `ChatContext.worldDirective`
+- strict world loading in WorldMind mode
+- visible directive adapter
+
+### Phase 3: Structured Director and Validator
+
+Goal:
+
+```text
+real LLM only proposes
+validator rejects invalid agents, visibility violations, over-limit events, and invalid commands
+decision logs explain accepted and rejected runs
+```
+
+Build:
+
+- `WorldMindDecisionSchema`
+- `worldDirector` model purpose and `WORLD_DIRECTOR_MODEL`
+- `world_decision_logs`
+- `world_context_builder`
+- `world_decision_validator`
+
+### Phase 4: Background Tick and Long-Term Loop
+
+Goal:
+
+```text
+leased world_tick tasks
+idempotent tick execution
+unresolved_thread can advance without user input
+quiet worlds do not consume tasks forever
+```
+
+Build:
+
+- task lease/idempotency upgrade
+- `world_tick_worker`
+- `ActorCommandWorker`
+- `world_memories`
+- `WorldMemoryConsolidator`
+- optional feed command integration
+
 ## Testing Strategy
 
-### Unit Tests
+### Phase 1 Tests
 
-- `world-reducer.test.ts`: replay deterministic events into expected snapshots.
-- `world-context-builder.test.ts`: visibility filtering and token-budget truncation.
-- `world-decision-validator.test.ts`: rejects invalid agents, hidden leakage, over-limit events, invalid patches.
-- `world-event-repository.test.ts`: idempotent inserts and transaction behavior.
-- `actor-command-repository.test.ts`: command claim, expiration, idempotency.
-- `world-memory-repository.test.ts`: visibility, merge, supersede, FTS recall.
+- `world-event-repository.test.ts`: sequence allocation, idempotent inserts, ordered reads.
+- `world-reducer.test.ts`: deterministic events produce expected snapshots.
+- `world-replay-service.test.ts`: rebuild snapshot from committed events.
 
-### Flow Tests
+### Phase 2 Tests
 
-- `world-mind-flow.test.ts`: user action creates event, command, state update, memory, next tick.
-- `world-interaction-flow.test.ts`: selected actor receives only visible command context.
-- `world-tick-worker.test.ts`: tick task advances unresolved event and schedules next tick.
+- `world-interaction-flow.test.ts`: mock director commits user action, event, command, and snapshot in one transaction.
+- `chat-world-directive.test.ts`: only `actorInstruction` reaches prompt construction.
+- `visibility-acl.test.ts`: hidden/private facts are filtered.
+
+### Phase 3 Tests
+
+- `world-decision-validator.test.ts`: rejects invalid agents, hidden leakage, over-limit events, invalid command references.
+- `world-decision-log-repository.test.ts`: accepted and rejected runs are inspectable.
+- `world-director-structured-output.test.ts`: model purpose and schema are wired.
+
+### Phase 4 Tests
+
+- `task-repository-lease.test.ts`: atomic claim, lock expiry, retry backoff, permanent failure.
+- `world-tick-worker.test.ts`: tick advances unresolved thread and schedules next tick idempotently.
+- `actor-command-worker.test.ts`: command execution creates result events before state changes.
 
 ### Integration Tests
 
-- Chat route with world layer enabled still returns SSE done event.
+- Chat route with `ENABLE_WORLD_MIND=false` keeps existing behavior.
+- Chat route with `ENABLE_WORLD_MIND=true` uses strict world loading.
 - A hidden event is not visible in selected character response.
-- Retried tick task does not create duplicate world events.
-- Snapshot can be rebuilt from committed event ledger.
-
-## Migration Strategy
-
-Use feature flags:
-
-```env
-ENABLE_WORLD_MIND=false
-ENABLE_WORLD_TICKS=false
-WORLD_DIRECTOR_MODEL=
-```
-
-Rollout:
-
-1. Add schema, repositories, reducer, validator, and tests behind flags.
-2. Add `WorldMindFlow` and run it from tests only.
-3. Add `WorldInteractionFlow` behind `ENABLE_WORLD_MIND`.
-4. Add `world_tick` worker behind `ENABLE_WORLD_TICKS`.
-5. Add minimal debug endpoints for event ledger, snapshots, and commands.
-6. Update UI only after backend behavior is verified.
-
-## First Implementation Slice
-
-The first implementation plan should be limited to:
-
-1. Schema and repositories for event ledger, snapshots, character states, commands, memories, decision logs.
-2. Deterministic reducer and validator.
-3. Structured AI schema and mock director.
-4. `WorldMindFlow`.
-5. `WorldInteractionFlow` adapter for `/api/chat` behind a flag.
-6. Tick worker and idempotent task queue improvements.
-7. Tests proving replay, visibility, idempotency, and command dispatch.
-
-Feed integration and UI visualization can follow after the loop is correct.
+- Retried user action does not duplicate events or commands.
+- Retried tick task does not duplicate events or commands.
 
 ## Acceptance Criteria
 
-The design is complete when these behaviors are implemented and tested:
+The design is implemented when:
 
-1. A user action records a committed `user_action` event.
-2. The world director can commit a `world_incident` event in response.
-3. The reducer updates world snapshot and at least one character state.
-4. The director can dispatch a command to a non-selected character.
-5. A selected character can receive a visible `speak_to_user` command in chat.
-6. Hidden facts do not enter character prompts unless revealed.
-7. A scheduled tick can advance an unresolved event without user input.
-8. Retrying a task does not duplicate events or commands.
-9. World memory recall changes a later director decision in a test-controlled way.
-10. A world snapshot can be rebuilt from committed events.
+1. A user action records exactly one committed `user_action` event inside `CommitWorldRunTransaction`.
+2. The director can commit a `world_incident` event in the same transaction.
+3. All committed events in a run share `decision_id` and `world_run_id`.
+4. Every committed event has a stable `sequence`.
+5. Snapshot rebuild uses `ORDER BY sequence ASC`.
+6. Reducer updates world snapshot and character states only from committed events.
+7. Actor commands are persisted in the same transaction as events and snapshots.
+8. Command execution effects create new committed events before state changes.
+9. `privateReason` never enters ChatFlow prompt construction.
+10. Visibility ACL controls private and hidden context.
+11. WorldMind mode forbids fallback to `default` world.
+12. Task claiming is lease-based and idempotent before world ticks run in background.
 
-## Open Design Choices Resolved
+## Resolved Design Choices
 
-The first version will use one world director per user/world scope. It will not run a global cross-user world. This preserves privacy and keeps SQLite state manageable.
+The first version uses one world director per user/world scope. It does not run a global cross-user world. This preserves privacy and keeps SQLite state manageable.
 
-The first version will keep the Flow Runner linear. Branching belongs inside validated node logic for now. A graph runner can be introduced only if multiple world flows become hard to maintain.
+The first version keeps the Flow Runner linear. Transaction semantics live in `CommitWorldRunTransaction`, not in the runner.
 
-The first version will use structured output for director decisions. Free-form model text is only allowed inside event summaries, memory content, and command reasons after schema validation.
+The first version removes free-floating `statePatch`. State changes are expressed as typed event payloads and applied by reducers.
 
-The first version will treat role autonomy as command-driven. Characters can appear autonomous because the director schedules actions, but persistence and causality remain centralized through the event ledger.
+The first version treats role autonomy as command-driven. Characters can appear autonomous because the director schedules commands, but persistence and causality remain centralized through events and reducers.
+
+The first version starts with event ledger and reducer, then mock director, then structured LLM director, then background ticks. It should not start by connecting a real model to an autonomous world tick loop.
