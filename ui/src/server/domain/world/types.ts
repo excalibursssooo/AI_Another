@@ -99,12 +99,14 @@ export interface WorldReducerInput {
   previousSnapshot: WorldStateSnapshotRecord;
   events: WorldEventRecord[];
   reducerVersion: number;
+  previousCharacterStates?: CharacterStateRecord[];
 }
 
 export interface WorldReductionResult {
   worldSnapshot: WorldStateSnapshotRecord;
   appliedEventIds: string[];
   warnings: string[];
+  characterStates?: CharacterStateRecord[];
 }
 
 export const PUBLIC_VISIBILITY: VisibilityScope = {

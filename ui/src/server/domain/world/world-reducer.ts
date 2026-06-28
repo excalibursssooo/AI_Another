@@ -1,4 +1,5 @@
 import type {
+  CharacterStateRecord,
   UserActionPayload,
   VisibilityScope,
   WorldFact,
@@ -18,6 +19,12 @@ export function reduceWorldEvents(input: WorldReducerInput): WorldReductionResul
   let appliedAnyEvent = false;
   const warnings: string[] = [];
 
+  // Clone character states for mutation during reduction
+  const characterStates: CharacterStateRecord[] = (input.previousCharacterStates ?? []).map((s) => ({
+    ...s,
+    knowledgeKeys: [...s.knowledgeKeys],
+  }));
+
   for (const event of ordered) {
     if (event.sequence <= appliedEventSequence) {
       continue;
@@ -31,6 +38,27 @@ export function reduceWorldEvents(input: WorldReducerInput): WorldReductionResul
     if (event.type === "world_incident") {
       applyWorldIncident(state, event.id, event.payload as WorldIncidentPayload, event.visibility);
     }
+    if (event.type === "knowledge_reveal") {
+      const payload = event.payload as { factKey?: string };
+      if (payload.factKey) {
+        for (const char of characterStates) {
+          if (event.actorIds.includes(char.agentId) && !char.knowledgeKeys.includes(payload.factKey)) {
+            char.knowledgeKeys.push(payload.factKey);
+          }
+        }
+      }
+    }
+    if (event.type === "character_action") {
+      const payload = event.payload as { action?: string; locationKey?: string };
+      if (payload.action === "move_location" && payload.locationKey) {
+        for (const char of characterStates) {
+          if (event.actorIds.includes(char.agentId)) {
+            char.locationKey = payload.locationKey;
+            char.lastActedAt = Date.now();
+          }
+        }
+      }
+    }
     appliedEventIds.push(event.id);
     appliedEventSequence = event.sequence;
     appliedAnyEvent = true;
@@ -39,6 +67,7 @@ export function reduceWorldEvents(input: WorldReducerInput): WorldReductionResul
   return {
     appliedEventIds,
     warnings,
+    characterStates,
     worldSnapshot: {
       ...input.previousSnapshot,
       tick: input.previousSnapshot.tick,
