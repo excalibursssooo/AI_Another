@@ -125,6 +125,8 @@ export interface WorldRunEnvelope {
   userId: string;
   worldId: string;
   agentId?: string;
+  status: WorldRunStatus;
+  resultJson: string | null;
   startedAt: number;
 }
 
@@ -184,6 +186,61 @@ export interface ActorCommandRecord {
   createdAt: number;
   updatedAt: number;
 }
+
+export type WorldDecisionLogValidationStatus = "accepted" | "rejected" | "model_failed" | "transaction_failed";
+
+export interface WorldDecisionLogRecord {
+  id: string;
+  decisionId: string;
+  worldRunId: string;
+  userId: string;
+  worldId: string;
+  sourceType: string;
+  sourceEventId: string | null;
+  sourceTaskId: string | null;
+  modelProvider: string;
+  modelName: string;
+  promptContextHash: string;
+  rawDecisionJson: string | null;
+  validatedDecisionJson: string | null;
+  validationStatus: WorldDecisionLogValidationStatus;
+  validationErrorsJson: string[];
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdEventIdsJson: string[];
+  createdCommandIdsJson: string[];
+  createdAt: number;
+}
+
+export type CreateWorldDecisionLogInput = Omit<WorldDecisionLogRecord, "id" | "createdAt">;
+
+export type WorldMemoryVisibility = "public" | "private" | "hidden";
+
+export interface WorldMemoryRecord {
+  id: string;
+  userId: string;
+  worldId: string;
+  subjectType: string;
+  subjectKey: string;
+  memoryType: string;
+  canonicalKey: string | null;
+  content: string;
+  visibility: WorldMemoryVisibility;
+  visibleToActorIds: string[];
+  visibleToUser: boolean;
+  importance: number;
+  confidence: number;
+  validFromTick: number;
+  sourceEventId: string | null;
+  sourceDecisionId: string | null;
+  supersededBy: string | null;
+  embeddingJson: string | null;
+  embeddingQuality: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type CreateWorldMemoryInput = Omit<WorldMemoryRecord, "id" | "createdAt" | "updatedAt">;
 
 export interface VisibleActorDirective {
   commandId: string;
