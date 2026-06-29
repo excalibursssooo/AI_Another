@@ -401,8 +401,9 @@ describe("buildWorldDirectorContext", () => {
     expect(context.prompt).toContain("## Runtime Snapshot");
     expect(context.prompt).toContain("## Actor Slice");
     expect(context.prompt).toContain("## Recent World Events");
-    expect(context.prompt).toContain("## Retrieved World Memory");
+    expect(context.prompt).toContain("## Recent Actor Events");
     expect(context.prompt).toContain("## Current Source");
+    expect(context.prompt).toContain("## Retrieved World Memory");
     expect(context.prompt).toContain("## Output Contract");
 
     // Public content appears in prompt
