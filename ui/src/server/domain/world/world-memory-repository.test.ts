@@ -316,6 +316,12 @@ describe("WorldMemoryRepository", () => {
       expect(memories).toHaveLength(1);
       expect(memories[0].content).toBe("The hero is named Kael.");
     });
+
+    it("returns an empty list when no director memories exist", () => {
+      const repo = new WorldMemoryRepository(createTestDatabase());
+
+      expect(repo.recallForDirector({ userId: "u001", worldId: "default", subjectType: "world" })).toEqual([]);
+    });
   });
 
   describe("recallForActor", () => {
@@ -467,6 +473,19 @@ describe("WorldMemoryRepository", () => {
 
       expect(memories).toHaveLength(2);
       expect(memories.map((memory) => memory.subjectKey).sort()).toEqual(["private_note_for_agent", "public_fact"]);
+    });
+
+    it("returns an empty list when no actor memories exist", () => {
+      const repo = new WorldMemoryRepository(createTestDatabase());
+
+      expect(
+        repo.recallForActor({
+          userId: "u001",
+          worldId: "default",
+          agentId: "agent-default",
+          subjectType: "world",
+        }),
+      ).toEqual([]);
     });
   });
 });

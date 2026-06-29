@@ -250,4 +250,168 @@ describe("buildWorldDirectorContext", () => {
     expect(aliceContext.hiddenFactSummaries).toContain("The chancellor forged the treaty.");
     expect(aliceContext.hiddenFactSummaries).toContain("Hidden event: the queen ordered the fire.");
   });
+
+  it("prompt contains all layered sections in correct order and respects ACL filtering", () => {
+    const db = createTestDatabase();
+    const worldRepo = new WorldRepository(db);
+    const snapshots = new WorldStateRepository(db);
+    const events = new WorldEventRepository(db);
+    const memories = new WorldMemoryRepository(db);
+    const characters = new CharacterStateRepository(db);
+
+    // Create a world with lore and constraints
+    worldRepo.upsert({
+      id: "layeredworld",
+      name: "Layered World",
+      lore: "Ancient lore of the realm.",
+      tone: "epic",
+      constraints: ["no cowardice", "honor the old ways"],
+      seedMemories: [],
+    });
+
+    // Save a snapshot with public and hidden facts
+    const snapshot = createInitialWorldSnapshot({ userId: "u001", worldId: "layeredworld", now: 1000 });
+    snapshots.saveLatest({
+      ...snapshot,
+      tick: 3,
+      appliedEventSequence: 2,
+      appliedEventIds: [],
+      state: {
+        ...snapshot.state,
+        clock: { day: 5, phase: "day", updatedAt: 1000 },
+        stability: 0.75,
+        tension: 0.3,
+        publicFacts: [{ factKey: "pub_fact1", summary: "The river runs south.", visibility: PUBLIC_VISIBILITY, sourceEventId: "e1" }],
+        hiddenFacts: [
+          {
+            factKey: "hidden_fact1",
+            summary: "hidden director memory",
+            visibility: { mode: "hidden", visibleToActorIds: [], visibleToUser: false },
+            sourceEventId: "e2",
+          },
+        ],
+      },
+    });
+
+    // Create character state
+    characters.getOrCreateDefault({ userId: "u001", worldId: "layeredworld", agentId: "alice" });
+
+    // Create one public world event
+    events.createCommitted({
+      decisionId: "d1",
+      worldRunId: "r1",
+      userId: "u001",
+      worldId: "layeredworld",
+      tick: 1,
+      sequence: 1,
+      type: "world_incident",
+      payload: {},
+      summary: "A public world event occurred.",
+      visibility: PUBLIC_VISIBILITY,
+      actorIds: [],
+      idempotencyKey: "ctx-layered-we1",
+    });
+
+    // Create one actor-specific event
+    events.createCommitted({
+      decisionId: "d2",
+      worldRunId: "r1",
+      userId: "u001",
+      worldId: "layeredworld",
+      tick: 2,
+      sequence: 2,
+      type: "character_action",
+      payload: {},
+      summary: "Alice performed an action.",
+      visibility: PUBLIC_VISIBILITY,
+      actorIds: ["alice"],
+      idempotencyKey: "ctx-layered-ce1",
+    });
+
+    // Create one hidden event
+    events.createCommitted({
+      decisionId: "d3",
+      worldRunId: "r1",
+      userId: "u001",
+      worldId: "layeredworld",
+      tick: 3,
+      sequence: 3,
+      type: "world_incident",
+      payload: {},
+      summary: "A secret event unfolded.",
+      visibility: { mode: "hidden", visibleToActorIds: [], visibleToUser: false },
+      actorIds: [],
+      idempotencyKey: "ctx-layered-he1",
+    });
+
+    // Create one public world memory
+    memories.create({
+      userId: "u001",
+      worldId: "layeredworld",
+      subjectType: "world",
+      subjectKey: "public_mem",
+      memoryType: "lore",
+      content: "public world memory",
+      visibility: "public",
+      visibleToActorIds: [],
+      visibleToUser: true,
+      importance: 0.5,
+      confidence: 1.0,
+      validFromTick: 0,
+      sourceEventId: null,
+      sourceDecisionId: null,
+      supersededBy: null,
+      embeddingJson: null,
+      embeddingQuality: null,
+    });
+
+    // Create one hidden world memory
+    memories.create({
+      userId: "u001",
+      worldId: "layeredworld",
+      subjectType: "world",
+      subjectKey: "hidden_mem",
+      memoryType: "lore",
+      content: "hidden director memory",
+      visibility: "hidden",
+      visibleToActorIds: [],
+      visibleToUser: false,
+      importance: 0.8,
+      confidence: 1.0,
+      validFromTick: 0,
+      sourceEventId: null,
+      sourceDecisionId: null,
+      supersededBy: null,
+      embeddingJson: null,
+      embeddingQuality: null,
+    });
+
+    const context = buildWorldDirectorContext({
+      userId: "u001",
+      worldId: "layeredworld",
+      sourceInput: { message: "What happens next?", targetAgentId: "alice" },
+      db,
+    });
+
+    // System prompt must contain Output Contract
+    expect(context.system).toContain("Output Contract");
+
+    // All required prompt sections must be present
+    expect(context.prompt).toContain("## Immutable Canon");
+    expect(context.prompt).toContain("## Runtime Snapshot");
+    expect(context.prompt).toContain("## Actor Slice");
+    expect(context.prompt).toContain("## Recent World Events");
+    expect(context.prompt).toContain("## Retrieved World Memory");
+    expect(context.prompt).toContain("## Current Source");
+    expect(context.prompt).toContain("## Output Contract");
+
+    // Public content appears in prompt
+    expect(context.prompt).toContain("public world memory");
+
+    // Hidden content does NOT appear in actor-facing prompt
+    expect(context.prompt).not.toContain("hidden director memory");
+
+    // But hidden content IS in hiddenFactSummaries for validator
+    expect(context.hiddenFactSummaries).toContain("hidden director memory");
+  });
 });

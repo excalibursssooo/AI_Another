@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 
-import { createTestDatabase } from "@/server/db/client";
 import type { AppDatabase } from "@/server/db/client";
 import type { WorldRecord } from "@/server/domain/chat/repositories";
 import { WorldRepository } from "@/server/domain/chat/repositories";
@@ -28,35 +27,48 @@ export function buildWorldDirectorContext(input: BuildDirectorContextInput): Dir
     throw new Error(`World not found: ${worldId}`);
   }
 
-  // Build system prompt
+  // Build system prompt with immutable canon and output contract
   const system = buildSystemPrompt(world);
 
   // Load latest snapshot
   const snapshotRepo = new WorldStateRepository(db);
   const snapshot = snapshotRepo.getLatest({ userId, worldId });
 
-  // Load recent events
+  // Load recent world events
   const eventRepo = new WorldEventRepository(db);
-  const allRecentEvents = eventRepo.listRecentForWorld({ userId, worldId, limit: 24 });
-  const recentEvents = targetAgentId
-    ? allRecentEvents.filter((event) => isVisibleToActor(event, targetAgentId))
-    : allRecentEvents;
+  const allRecentWorldEvents = eventRepo.listRecentForWorld({ userId, worldId, limit: 24 });
+
+  // When targetAgentId is set, filter world events to only what the actor can see
+  // hiddenFactSummaries still gets ALL hidden events (unfiltered) for the validator
+  const visibleWorldEvents = targetAgentId
+    ? allRecentWorldEvents.filter((event) => isVisibleToActor(event, targetAgentId))
+    : allRecentWorldEvents;
+
+  // Load actor-specific events when targetAgentId is set
+  const recentActorEvents = targetAgentId
+    ? eventRepo.listRecentForActor({ userId, worldId, agentId: targetAgentId, limit: 8 })
+    : [];
 
   // Load world memory
   const memoryRepo = new WorldMemoryRepository(db);
   const directorMemories = memoryRepo.recallForDirector({ userId, worldId, subjectType: "world" });
 
   // hiddenFactSummaries is always the full list available to the validator.
+  // Collect hidden memories from director recall
+  const hiddenMemorySummaries = directorMemories.filter((m) => m.visibility === "hidden").map((m) => m.content);
   const hiddenFactSummaries = [
-    ...directorMemories.filter((m) => m.visibility === "hidden").map((m) => m.content),
+    ...hiddenMemorySummaries,
     ...(snapshot?.state.hiddenFacts.map((fact) => fact.summary) ?? []),
-    ...allRecentEvents.filter((event) => event.visibility.mode === "hidden").map((event) => event.summary),
+    ...allRecentWorldEvents.filter((event) => event.visibility.mode === "hidden").map((event) => event.summary),
   ];
 
   // Determine which memories to include in prompt
+  // Hidden memories are always excluded from the actor-facing prompt.
+  // When targetAgentId is set we use recallForActor (already excludes hidden).
+  // When not set we must filter them out ourselves.
   let promptMemories = directorMemories;
   if (targetAgentId !== undefined) {
-    // Use actor-filtered memories for the prompt
+    // Use actor-filtered memories for the prompt; still collect hidden via director recall above
     const actorMemories = memoryRepo.recallForActor({
       userId,
       worldId,
@@ -64,21 +76,24 @@ export function buildWorldDirectorContext(input: BuildDirectorContextInput): Dir
       subjectType: "world",
     });
     promptMemories = actorMemories;
+  } else {
+    // Filter out hidden memories when no actor is specified
+    promptMemories = directorMemories.filter((m) => m.visibility !== "hidden");
   }
 
   // Load character states
   const charRepo = new CharacterStateRepository(db);
   const characterStates = charRepo.listForWorld({ userId, worldId });
 
-  // Build the prompt
+  // Build the prompt with layered sections
   const prompt = buildPrompt({
     world,
     snapshot,
-    recentEvents,
+    recentEvents: visibleWorldEvents,
+    recentActorEvents,
     promptMemories,
     characterStates,
     sourceInput,
-    targetAgentId,
   });
 
   // Compute deterministic hash
@@ -123,28 +138,49 @@ function buildSystemPrompt(world: WorldRecord): string {
     ``,
   ].filter((line) => line !== "");
 
-  return lines.join("\n");
+  const outputContract = [
+    `## Output Contract`,
+    ``,
+    `Return JSON matching WorldMindDecision:`,
+    `- observations: string[], max 6`,
+    `- intent: no_op | advance_scene | trigger_event | dispatch_commands`,
+    `- events: ProposedWorldEvent[], max 3`,
+    `- commands: ProposedActorCommand[], max 5`,
+    `- memories: WorldMemoryCandidate[], max 8`,
+    `- nextTick: { delayMs, reason } | null`,
+    `Do not include statePatch.`,
+    `Commands are intent records, not facts.`,
+  ];
+
+  return [...lines, ...outputContract].join("\n");
 }
 
 interface BuildPromptOptions {
   world: WorldRecord;
   snapshot: ReturnType<WorldStateRepository["getLatest"]>;
   recentEvents: ReturnType<WorldEventRepository["listRecentForWorld"]>;
+  recentActorEvents: ReturnType<WorldEventRepository["listRecentForActor"]>;
   promptMemories: ReturnType<WorldMemoryRepository["recallForDirector"]>;
   characterStates: ReturnType<CharacterStateRepository["listForWorld"]>;
   sourceInput?: { message: string; targetAgentId: string };
-  targetAgentId?: string;
 }
 
 function buildPrompt(opts: BuildPromptOptions): string {
-  const { world, snapshot, recentEvents, promptMemories, characterStates, sourceInput, targetAgentId } = opts;
+  const { world, snapshot, recentEvents, recentActorEvents, promptMemories, characterStates, sourceInput } = opts;
 
   const sections: string[] = [];
 
-  // Clock / world state
+  // 1. Immutable Canon (lore and constraints from world — already in system, but brief expects it in prompt too)
+  sections.push(`## Immutable Canon`);
+  sections.push(``);
+  sections.push(`**基调**: ${world.tone ?? "未指定"}`);
+  sections.push(`**约束**: ${world.constraints.join("; ")}`);
+  sections.push(``);
+
+  // 2. Runtime Snapshot
   if (snapshot) {
     const { clock, stability, tension, publicFacts } = snapshot.state;
-    sections.push(`## 当前世界状态`);
+    sections.push(`## Runtime Snapshot`);
     sections.push(``);
     sections.push(`**时间**: 第 ${clock.day} 天 - ${clock.phase}`);
     sections.push(`**稳定度**: ${stability.toFixed(2)}`);
@@ -159,9 +195,9 @@ function buildPrompt(opts: BuildPromptOptions): string {
     sections.push(``);
   }
 
-  // Character states
+  // 3. Actor Slice
   if (characterStates.length > 0) {
-    sections.push(`## 当前角色`);
+    sections.push(`## Actor Slice`);
     sections.push(``);
     for (const char of characterStates) {
       sections.push(`**${char.agentId}** @ ${char.locationKey}`);
@@ -170,9 +206,9 @@ function buildPrompt(opts: BuildPromptOptions): string {
     sections.push(``);
   }
 
-  // Recent events
+  // 4. Recent World Events
   if (recentEvents.length > 0) {
-    sections.push(`## 最近事件`);
+    sections.push(`## Recent World Events`);
     sections.push(``);
     for (const event of recentEvents) {
       sections.push(`- [Tick ${event.tick}] ${event.summary}`);
@@ -180,9 +216,19 @@ function buildPrompt(opts: BuildPromptOptions): string {
     sections.push(``);
   }
 
-  // World memories
+  // 5. Recent Actor Events
+  if (recentActorEvents.length > 0) {
+    sections.push(`## Recent Actor Events`);
+    sections.push(``);
+    for (const event of recentActorEvents) {
+      sections.push(`- [Tick ${event.tick}] ${event.summary}`);
+    }
+    sections.push(``);
+  }
+
+  // 6. Retrieved World Memory
   if (promptMemories.length > 0) {
-    sections.push(`## 世界记忆`);
+    sections.push(`## Retrieved World Memory`);
     sections.push(``);
     for (const mem of promptMemories) {
       const vis = mem.visibility === "public" ? "" : `[${mem.visibility}] `;
@@ -191,13 +237,26 @@ function buildPrompt(opts: BuildPromptOptions): string {
     sections.push(``);
   }
 
-  // Source input
+  // 7. Current Source
   if (sourceInput) {
-    sections.push(`## 当前输入`);
+    sections.push(`## Current Source`);
     sections.push(``);
     sections.push(`> ${sourceInput.message}`);
     sections.push(``);
   }
+
+  // 8. Output Contract
+  sections.push(`## Output Contract`);
+  sections.push(``);
+  sections.push(`Return JSON matching WorldMindDecision:`);
+  sections.push(`- observations: string[], max 6`);
+  sections.push(`- intent: no_op | advance_scene | trigger_event | dispatch_commands`);
+  sections.push(`- events: ProposedWorldEvent[], max 3`);
+  sections.push(`- commands: ProposedActorCommand[], max 5`);
+  sections.push(`- memories: WorldMemoryCandidate[], max 8`);
+  sections.push(`- nextTick: { delayMs, reason } | null`);
+  sections.push(`Do not include statePatch.`);
+  sections.push(`Commands are intent records, not facts.`);
 
   return sections.join("\n");
 }
