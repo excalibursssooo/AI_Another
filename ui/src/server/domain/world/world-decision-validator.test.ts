@@ -76,7 +76,7 @@ describe("validateWorldMindDecision", () => {
           clientEventId: "evt-1",
           type: "world_incident",
           actorIds: ["agent-a"],
-          payload: {},
+          payload: { title: "User greeted", description: "The user said hello to the guard." },
           visibility: { mode: "public", visibleToActorIds: [] },
           summary: "User said hello",
         },
@@ -295,5 +295,126 @@ describe("validateWorldMindDecision", () => {
     if (!result.ok) {
       expect(result.errors.some((e) => e.includes("top-secret-keyword"))).toBe(true);
     }
+  });
+
+  it("rejects proposed event actor ids outside the active actor set", () => {
+    const decision = makeDecision({
+      events: [
+        {
+          clientEventId: "evt-1",
+          type: "world_incident",
+          actorIds: ["ghost-agent"],
+          payload: { title: "Incident", description: "Unknown actor appears." },
+          visibility: { mode: "public", visibleToActorIds: [], visibleToUser: true },
+          summary: "Unknown actor appears.",
+        },
+      ],
+    });
+
+    const result = validateWorldMindDecision({ decision, activeAgentIds: ["agent-default"], hiddenFactSummaries: [] });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors).toContain("Event evt-1 references unknown actor: ghost-agent");
+    }
+  });
+
+  it("rejects invalid world_incident payloads", () => {
+    const decision = makeDecision({
+      events: [
+        {
+          clientEventId: "evt-1",
+          type: "world_incident",
+          actorIds: [],
+          payload: { title: "Missing description" },
+          visibility: { mode: "public", visibleToActorIds: [], visibleToUser: true },
+          summary: "Invalid incident.",
+        },
+      ],
+    });
+
+    const result = validateWorldMindDecision({ decision, activeAgentIds: [], hiddenFactSummaries: [] });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((error) => error.includes("world_incident payload"))).toBe(true);
+    }
+  });
+
+  it("rejects knowledge_reveal events without a factKey", () => {
+    const decision = makeDecision({
+      events: [
+        {
+          clientEventId: "evt-1",
+          type: "knowledge_reveal",
+          actorIds: ["agent-default"],
+          payload: { summary: "A secret is revealed." },
+          visibility: { mode: "private", visibleToActorIds: ["agent-default"], visibleToUser: false },
+          summary: "A secret is revealed.",
+        },
+      ],
+    });
+
+    const result = validateWorldMindDecision({ decision, activeAgentIds: ["agent-default"], hiddenFactSummaries: [] });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((error) => error.includes("knowledge_reveal payload"))).toBe(true);
+    }
+  });
+
+  it("rejects public events that include hidden fact summaries", () => {
+    const decision = makeDecision({
+      events: [
+        {
+          clientEventId: "evt-1",
+          type: "world_incident",
+          actorIds: [],
+          payload: { title: "Leak", description: "The queen ordered the fire." },
+          visibility: { mode: "public", visibleToActorIds: [], visibleToUser: true },
+          summary: "The queen ordered the fire.",
+        },
+      ],
+    });
+
+    const result = validateWorldMindDecision({
+      decision,
+      activeAgentIds: [],
+      hiddenFactSummaries: ["The queen ordered the fire."],
+    });
+
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects a user action that creates more than one major event without a chain reaction", () => {
+    const decision = makeDecision({
+      events: [
+        {
+          clientEventId: "evt-1",
+          type: "world_incident",
+          actorIds: [],
+          payload: { title: "First", description: "First major event." },
+          visibility: { mode: "public", visibleToActorIds: [], visibleToUser: true },
+          summary: "First major event.",
+        },
+        {
+          clientEventId: "evt-2",
+          type: "arc_progress",
+          actorIds: [],
+          payload: { patchType: "resolve_thread", threadKey: "thread-1", resolution: "Resolved." },
+          visibility: { mode: "public", visibleToActorIds: [], visibleToUser: true },
+          summary: "Second major event.",
+        },
+      ],
+    });
+
+    const result = validateWorldMindDecision({
+      decision,
+      activeAgentIds: [],
+      hiddenFactSummaries: [],
+      sourceType: "user_action",
+    });
+
+    expect(result.ok).toBe(false);
   });
 });
