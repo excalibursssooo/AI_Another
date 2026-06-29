@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createTestDatabase } from "@/server/db/client";
 import { ActorCommandRepository } from "./actor-command-repository";
+import type { CreateActorCommandInput } from "./actor-command-repository";
 import { WorldRunRepository } from "./world-run-repository";
 
 function makeEnvelope(repo: WorldRunRepository) {
@@ -13,6 +14,29 @@ function makeEnvelope(repo: WorldRunRepository) {
     sourceActionId: "client-1",
     idempotencyKey: `wrun:${Math.random()}`,
   });
+}
+
+function makeCommand(overrides: Partial<CreateActorCommandInput> = {}): CreateActorCommandInput {
+  const now = Date.now();
+  return {
+    decisionId: "wdec-test",
+    worldRunId: "wrun-test",
+    userId: "u001",
+    worldId: "default",
+    targetAgentId: "agent-default",
+    commandType: "move_location",
+    priority: "normal",
+    visibility: { mode: "public", visibleToActorIds: [], visibleToUser: true },
+    actorInstruction: "Move to the square.",
+    privateReason: null,
+    cause: { type: "director_no_event", reasonCode: "test" },
+    payload: { locationKey: "square" },
+    relatedEventId: null,
+    runAfter: now,
+    expiresAt: null,
+    idempotencyKey: "cmd:test",
+    ...overrides,
+  };
 }
 
 describe("ActorCommandRepository", () => {
@@ -566,6 +590,49 @@ describe("ActorCommandRepository", () => {
 
       const released = repo.releaseClaim({ commandId: cmd.id, claimedBy: "agent-other" });
       expect(released).toBeNull();
+    });
+  });
+
+  describe("worker command claims", () => {
+    it("claims due non-speak commands for workers and skips speak_to_user", () => {
+      const db = createTestDatabase();
+      const repo = new ActorCommandRepository(db);
+      repo.createMany([
+        makeCommand({ commandType: "speak_to_user", idempotencyKey: "cmd:speak" }),
+        makeCommand({ commandType: "move_location", idempotencyKey: "cmd:move" }),
+      ]);
+
+      const claimed = repo.claimNextExecutableCommand({ workerId: "actor-worker", leaseMs: 30_000 });
+
+      expect(claimed?.commandType).toBe("move_location");
+      expect(claimed?.status).toBe("claimed");
+      expect(claimed?.claimedBy).toBe("actor-worker");
+      expect(repo.claimNextExecutableCommand({ workerId: "actor-worker-2", leaseMs: 30_000 })).toBeNull();
+    });
+
+    it("reclaims worker commands after claim expiry", () => {
+      const db = createTestDatabase();
+      const repo = new ActorCommandRepository(db);
+      const [command] = repo.createMany([makeCommand({ commandType: "move_location", idempotencyKey: "cmd:move" })]);
+      repo.claimNextExecutableCommand({ workerId: "actor-worker", leaseMs: 1 });
+      db.sqlite.prepare("UPDATE actor_commands SET claim_expires_at = ? WHERE id = ?").run(Date.now() - 1_000, command.id);
+
+      const reclaimed = repo.claimNextExecutableCommand({ workerId: "actor-worker-2", leaseMs: 30_000 });
+
+      expect(reclaimed?.id).toBe(command.id);
+      expect(reclaimed?.claimedBy).toBe("actor-worker-2");
+    });
+
+    it("marks claimed commands failed with worker ownership", () => {
+      const db = createTestDatabase();
+      const repo = new ActorCommandRepository(db);
+      const [command] = repo.createMany([makeCommand({ commandType: "move_location", idempotencyKey: "cmd:move" })]);
+      repo.claimNextExecutableCommand({ workerId: "actor-worker", leaseMs: 30_000 });
+
+      const failed = repo.markFailed({ commandId: command.id, claimedBy: "actor-worker", reason: "bad payload" });
+
+      expect(failed?.status).toBe("failed");
+      expect(failed?.privateReason).toContain("bad payload");
     });
   });
 });

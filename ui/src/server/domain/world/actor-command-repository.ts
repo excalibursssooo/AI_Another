@@ -249,12 +249,105 @@ export class ActorCommandRepository {
     return this.getById(input.commandId);
   }
 
-  private getById(id: string): ActorCommandRecord | null {
+  claimNextExecutableCommand(input: {
+    workerId: string;
+    leaseMs: number;
+    commandTypes?: ActorCommandType[];
+  }): ActorCommandRecord | null {
+    const now = Date.now();
+    const claimExpiresAt = now + input.leaseMs;
+    const commandTypes = input.commandTypes ?? ["move_location", "investigate", "remember", "publish_post", "initiate_event"];
+
+    return this.db.sqlite.transaction(() => {
+      const row = this.db.sqlite
+        .prepare(
+          `SELECT * FROM actor_commands
+           WHERE command_type IN (${commandTypes.map(() => "?").join(", ")})
+             AND run_after <= ?
+             AND (expires_at IS NULL OR expires_at > ?)
+             AND (
+               status = 'pending'
+               OR (status = 'claimed' AND claim_expires_at IS NOT NULL AND claim_expires_at <= ?)
+             )
+           ORDER BY
+             (CASE priority WHEN 'high' THEN 3 WHEN 'normal' THEN 2 ELSE 1 END) DESC,
+             run_after ASC,
+             created_at ASC
+           LIMIT 1`,
+        )
+        .get(...commandTypes, now, now, now) as ActorCommandRow | undefined;
+      if (!row) {
+        return null;
+      }
+
+      const result = this.db.sqlite
+        .prepare(
+          `UPDATE actor_commands
+           SET status = 'claimed',
+               claimed_by = ?,
+               claimed_at = ?,
+               claim_expires_at = ?,
+               updated_at = ?
+           WHERE id = ?
+             AND (
+               status = 'pending'
+               OR (status = 'claimed' AND claim_expires_at IS NOT NULL AND claim_expires_at <= ?)
+             )`,
+        )
+        .run(input.workerId, now, claimExpiresAt, now, row.id, now);
+
+      return result.changes === 0 ? null : this.getById(row.id);
+    })();
+  }
+
+  markDoneByWorker(input: {
+    commandId: string;
+    claimedBy: string;
+    resultEventId?: string | null;
+  }): ActorCommandRecord | null {
+    const now = Date.now();
+    const result = this.db.sqlite
+      .prepare(
+        `UPDATE actor_commands
+         SET status = 'done',
+             result_event_id = ?,
+             claimed_at = NULL,
+             claim_expires_at = NULL,
+             updated_at = ?
+         WHERE id = ?
+           AND status = 'claimed'
+           AND claimed_by = ?`,
+      )
+      .run(input.resultEventId ?? null, now, input.commandId, input.claimedBy);
+    return result.changes === 0 ? null : this.getById(input.commandId);
+  }
+
+  markFailed(input: { commandId: string; claimedBy: string; reason: string }): ActorCommandRecord | null {
+    const now = Date.now();
+    const current = this.getById(input.commandId);
+    const nextPrivateReason = [current?.privateReason, `failure: ${input.reason}`].filter(Boolean).join("\n");
+    const result = this.db.sqlite
+      .prepare(
+        `UPDATE actor_commands
+         SET status = 'failed',
+             private_reason = ?,
+             claimed_at = NULL,
+             claim_expires_at = NULL,
+             updated_at = ?
+         WHERE id = ?
+           AND status = 'claimed'
+           AND claimed_by = ?`,
+      )
+      .run(nextPrivateReason, now, input.commandId, input.claimedBy);
+    return result.changes === 0 ? null : this.getById(input.commandId);
+  }
+
+  getById(id: string): ActorCommandRecord | null {
     const row = this.db.sqlite.prepare("SELECT * FROM actor_commands WHERE id = ?").get(id) as ActorCommandRow | undefined;
     return row ? mapActorCommand(row) : null;
   }
 
-  private getByIdempotencyKey(idempotencyKey: string): ActorCommandRecord | null {
+  getByIdempotencyKey(idempotencyKey: string): ActorCommandRecord | null {
     const row = this.db.sqlite
       .prepare("SELECT * FROM actor_commands WHERE idempotency_key = ?")
       .get(idempotencyKey) as ActorCommandRow | undefined;
