@@ -400,6 +400,10 @@ describe("WorldMindFlow", () => {
     expect(logs[0].createdEventIdsJson).toEqual([evt.id]);
     expect(result.decisionLogId).toBe(logs[0].id);
     expect(result.createdEventIds).toEqual([evt.id]);
+    expect(logs[0].modelProvider).toBe("mock");
+    expect(logs[0].modelName).toBe("mock");
+    expect(logs[0].rawDecisionJson).toBeNull();
+    expect(logs[0].errorCode).toBe("MODEL_ERROR");
 
     const run = runRepo.getById(envelope.worldRunId);
     expect(run?.status).toBe("failed");
@@ -486,6 +490,10 @@ describe("WorldMindFlow", () => {
     const logs = logRepo.listForRun(envelope.worldRunId);
     expect(logs).toHaveLength(1);
     expect(logs[0].validationStatus).toBe("transaction_failed");
+    expect(logs[0].modelProvider).toBe("test");
+    expect(logs[0].modelName).toBe("test-director");
+    expect(logs[0].rawDecisionJson).toContain('"intent"');
+    expect(logs[0].errorCode).toBe("TRANSACTION_FAILED");
 
     const run = runRepo.getById(envelope.worldRunId);
     expect(run?.status).toBe("failed");
