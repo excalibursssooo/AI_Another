@@ -100,6 +100,50 @@ describe("ActorCommandRepository", () => {
       expect(second[0].id).toBe(first[0].id);
       expect(second[0].actorInstruction).toBe("say hello");
     });
+
+    it("enforces the actor_commands SQL idempotency constraint below the repository layer", () => {
+      const db = createTestDatabase();
+      const runRepo = new WorldRunRepository(db);
+      const repo = new ActorCommandRepository(db);
+      const envelope = makeEnvelope(runRepo);
+
+      repo.createMany([
+        {
+          decisionId: envelope.decisionId,
+          worldRunId: envelope.worldRunId,
+          userId: "u001",
+          worldId: "default",
+          targetAgentId: "agent-default",
+          commandType: "speak_to_user",
+          priority: "normal",
+          visibility: { mode: "public", visibleToActorIds: [], visibleToUser: true },
+          actorInstruction: "say hello",
+          privateReason: null,
+          cause: { type: "source_action", sourceActionId: "client-1" },
+          payload: {},
+          relatedEventId: null,
+          runAfter: 0,
+          expiresAt: null,
+          idempotencyKey: "acmd:sql-unique",
+        },
+      ]);
+
+      expect(() =>
+        db.sqlite
+          .prepare(
+            `INSERT INTO actor_commands
+              (id, decision_id, world_run_id, user_id, world_id, target_agent_id, command_type, priority,
+               visibility, visible_to_actor_ids_json, visible_to_user, actor_instruction, private_reason,
+               cause_json, payload_json, related_event_id, status, run_after, expires_at, idempotency_key,
+               created_at, updated_at)
+             VALUES
+              ('acmd-sql-dupe', ?, ?, 'u001', 'default', 'agent-default', 'speak_to_user', 'normal',
+               'public', '[]', 1, 'dupe', NULL, '{}', '{}', NULL, 'pending', 0, NULL, 'acmd:sql-unique',
+               1, 1)`,
+          )
+          .run(envelope.decisionId, envelope.worldRunId),
+      ).toThrow(/UNIQUE constraint failed/);
+    });
   });
 
   describe("claimVisibleSpeakCommand", () => {
@@ -220,6 +264,100 @@ describe("ActorCommandRepository", () => {
       });
 
       expect(claimed).toBeNull();
+    });
+
+    it("does not claim hidden commands even when targetAgentId matches", () => {
+      const db = createTestDatabase();
+      const runRepo = new WorldRunRepository(db);
+      const repo = new ActorCommandRepository(db);
+      const envelope = makeEnvelope(runRepo);
+
+      repo.createMany([
+        {
+          decisionId: envelope.decisionId,
+          worldRunId: envelope.worldRunId,
+          userId: "u001",
+          worldId: "default",
+          targetAgentId: "agent-default",
+          commandType: "speak_to_user",
+          priority: "high",
+          visibility: { mode: "hidden", visibleToActorIds: [], visibleToUser: false },
+          actorInstruction: "hidden instruction",
+          privateReason: "director-only",
+          cause: { type: "source_action", sourceActionId: "client-1" },
+          payload: {},
+          relatedEventId: null,
+          runAfter: 0,
+          expiresAt: null,
+          idempotencyKey: "acmd:hidden",
+        },
+      ]);
+
+      const claimed = repo.claimVisibleSpeakCommand({
+        userId: "u001",
+        worldId: "default",
+        agentId: "agent-default",
+        claimedBy: "agent-default",
+        leaseMs: 5000,
+      });
+
+      expect(claimed).toBeNull();
+    });
+
+    it("claims private commands only when the target actor is in the ACL", () => {
+      const db = createTestDatabase();
+      const runRepo = new WorldRunRepository(db);
+      const repo = new ActorCommandRepository(db);
+      const envelope = makeEnvelope(runRepo);
+
+      repo.createMany([
+        {
+          decisionId: envelope.decisionId,
+          worldRunId: envelope.worldRunId,
+          userId: "u001",
+          worldId: "default",
+          targetAgentId: "agent-default",
+          commandType: "speak_to_user",
+          priority: "normal",
+          visibility: { mode: "private", visibleToActorIds: ["agent-other"], visibleToUser: false },
+          actorInstruction: "private for other",
+          privateReason: null,
+          cause: { type: "source_action", sourceActionId: "client-1" },
+          payload: {},
+          relatedEventId: null,
+          runAfter: 0,
+          expiresAt: null,
+          idempotencyKey: "acmd:private-other",
+        },
+        {
+          decisionId: envelope.decisionId,
+          worldRunId: envelope.worldRunId,
+          userId: "u001",
+          worldId: "default",
+          targetAgentId: "agent-default",
+          commandType: "speak_to_user",
+          priority: "normal",
+          visibility: { mode: "private", visibleToActorIds: ["agent-default"], visibleToUser: false },
+          actorInstruction: "private for default",
+          privateReason: null,
+          cause: { type: "source_action", sourceActionId: "client-1" },
+          payload: {},
+          relatedEventId: null,
+          runAfter: 0,
+          expiresAt: null,
+          idempotencyKey: "acmd:private-default",
+        },
+      ]);
+
+      const claimed = repo.claimVisibleSpeakCommand({
+        userId: "u001",
+        worldId: "default",
+        agentId: "agent-default",
+        claimedBy: "agent-default",
+        leaseMs: 5000,
+      });
+
+      expect(claimed?.actorInstruction).toBe("private for default");
     });
 
     it("claims high priority before normal before low", () => {

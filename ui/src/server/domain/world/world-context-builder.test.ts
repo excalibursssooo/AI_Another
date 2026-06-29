@@ -125,7 +125,7 @@ describe("buildWorldDirectorContext", () => {
     expect(context.promptContextHash).toBe(expectedHash);
   });
 
-  it("actor-facing section excludes hidden facts unless actor ACL allows them", () => {
+  it("actor-facing section excludes hidden facts while validator summaries retain them", () => {
     const db = createTestDatabase();
     const worldRepo = new WorldRepository(db);
     const snapshots = new WorldStateRepository(db);
@@ -144,7 +144,23 @@ describe("buildWorldDirectorContext", () => {
 
     // Save a snapshot
     const snapshot = createInitialWorldSnapshot({ userId: "u001", worldId: "aclworld", now: 1000 });
-    snapshots.saveLatest({ ...snapshot, tick: 1, appliedEventSequence: 1, appliedEventIds: [] });
+    snapshots.saveLatest({
+      ...snapshot,
+      tick: 1,
+      appliedEventSequence: 1,
+      appliedEventIds: [],
+      state: {
+        ...snapshot.state,
+        hiddenFacts: [
+          {
+            factKey: "hidden-snapshot-fact",
+            summary: "The chancellor forged the treaty.",
+            visibility: { mode: "hidden", visibleToActorIds: [], visibleToUser: false },
+            sourceEventId: "evt-hidden-snapshot",
+          },
+        ],
+      },
+    });
 
     // Create a hidden memory only visible to alice
     memories.create({
@@ -165,6 +181,21 @@ describe("buildWorldDirectorContext", () => {
       supersededBy: null,
       embeddingJson: null,
       embeddingQuality: null,
+    });
+
+    events.createCommitted({
+      decisionId: "d-hidden",
+      worldRunId: "r-hidden",
+      userId: "u001",
+      worldId: "aclworld",
+      tick: 1,
+      sequence: 1,
+      type: "world_incident",
+      payload: {},
+      summary: "Hidden event: the queen ordered the fire.",
+      visibility: { mode: "hidden", visibleToActorIds: ["alice"], visibleToUser: false },
+      actorIds: ["alice"],
+      idempotencyKey: "ctx-hidden-event",
     });
 
     // Create a public memory
@@ -188,7 +219,7 @@ describe("buildWorldDirectorContext", () => {
       embeddingQuality: null,
     });
 
-    // Call with bob as targetAgentId — hidden fact should be excluded
+    // Call with bob as targetAgentId — hidden facts should be excluded
     const bobContext = buildWorldDirectorContext({
       userId: "u001",
       worldId: "aclworld",
@@ -198,10 +229,13 @@ describe("buildWorldDirectorContext", () => {
 
     expect(bobContext.prompt).toContain("public knowledge");
     expect(bobContext.prompt).not.toContain("secret visible only to alice");
-    // Bob's ACL list should not contain alice's secret
+    expect(bobContext.prompt).not.toContain("forged the treaty");
+    expect(bobContext.prompt).not.toContain("queen ordered the fire");
     expect(bobContext.hiddenFactSummaries).toContain("This is a secret visible only to alice");
+    expect(bobContext.hiddenFactSummaries).toContain("The chancellor forged the treaty.");
+    expect(bobContext.hiddenFactSummaries).toContain("Hidden event: the queen ordered the fire.");
 
-    // Call with alice as targetAgentId — hidden fact SHOULD be included
+    // Call with alice as targetAgentId — hidden facts still stay out of actor-facing prompt
     const aliceContext = buildWorldDirectorContext({
       userId: "u001",
       worldId: "aclworld",
@@ -209,8 +243,11 @@ describe("buildWorldDirectorContext", () => {
       db,
     });
 
-    expect(aliceContext.prompt).toContain("secret visible only to alice");
     expect(aliceContext.prompt).toContain("public knowledge");
+    expect(aliceContext.prompt).not.toContain("secret visible only to alice");
+    expect(aliceContext.prompt).not.toContain("queen ordered the fire");
     expect(aliceContext.hiddenFactSummaries).toContain("This is a secret visible only to alice");
+    expect(aliceContext.hiddenFactSummaries).toContain("The chancellor forged the treaty.");
+    expect(aliceContext.hiddenFactSummaries).toContain("Hidden event: the queen ordered the fire.");
   });
 });

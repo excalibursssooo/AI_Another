@@ -5,7 +5,7 @@ import type { AppDatabase } from "@/server/db/client";
 import type { WorldRecord } from "@/server/domain/chat/repositories";
 import { WorldRepository } from "@/server/domain/chat/repositories";
 import { CharacterStateRepository } from "./character-state-repository";
-import type { DirectorContext } from "./types";
+import type { DirectorContext, WorldEventRecord } from "./types";
 import { WorldEventRepository } from "./world-event-repository";
 import { WorldMemoryRepository } from "./world-memory-repository";
 import { WorldStateRepository } from "./world-state-repository";
@@ -37,16 +37,21 @@ export function buildWorldDirectorContext(input: BuildDirectorContextInput): Dir
 
   // Load recent events
   const eventRepo = new WorldEventRepository(db);
-  const recentEvents = eventRepo.listRecentForWorld({ userId, worldId, limit: 24 });
+  const allRecentEvents = eventRepo.listRecentForWorld({ userId, worldId, limit: 24 });
+  const recentEvents = targetAgentId
+    ? allRecentEvents.filter((event) => isVisibleToActor(event, targetAgentId))
+    : allRecentEvents;
 
   // Load world memory
   const memoryRepo = new WorldMemoryRepository(db);
   const directorMemories = memoryRepo.recallForDirector({ userId, worldId, subjectType: "world" });
 
-  // hiddenFactSummaries is always the full list
-  const hiddenFactSummaries = directorMemories
-    .filter((m) => m.visibility === "hidden")
-    .map((m) => m.content);
+  // hiddenFactSummaries is always the full list available to the validator.
+  const hiddenFactSummaries = [
+    ...directorMemories.filter((m) => m.visibility === "hidden").map((m) => m.content),
+    ...(snapshot?.state.hiddenFacts.map((fact) => fact.summary) ?? []),
+    ...allRecentEvents.filter((event) => event.visibility.mode === "hidden").map((event) => event.summary),
+  ];
 
   // Determine which memories to include in prompt
   let promptMemories = directorMemories;
@@ -90,6 +95,16 @@ export function buildWorldDirectorContext(input: BuildDirectorContextInput): Dir
     hiddenFactSummaries,
     activeAgentIds,
   };
+}
+
+function isVisibleToActor(event: WorldEventRecord, agentId: string): boolean {
+  if (event.visibility.mode === "public") {
+    return true;
+  }
+  if (event.visibility.mode === "private") {
+    return event.visibility.visibleToActorIds.includes(agentId);
+  }
+  return false;
 }
 
 function buildSystemPrompt(world: WorldRecord): string {

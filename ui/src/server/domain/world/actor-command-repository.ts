@@ -171,12 +171,12 @@ export class ActorCommandRepository {
           `SELECT * FROM actor_commands
            WHERE user_id = ?
              AND world_id = ?
+             AND target_agent_id = ?
              AND command_type = 'speak_to_user'
              AND status = 'pending'
              AND (
-               visible_to_user = 1
-               OR target_agent_id = ?
-               OR (? IN (SELECT value FROM json_each(visible_to_actor_ids_json)))
+               visibility = 'public'
+               OR (visibility = 'private' AND ? IN (SELECT value FROM json_each(visible_to_actor_ids_json)))
              )
              AND (expires_at IS NULL OR expires_at > ?)
              AND run_after <= ?

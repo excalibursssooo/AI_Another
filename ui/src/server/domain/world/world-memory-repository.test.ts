@@ -40,9 +40,9 @@ describe("WorldMemoryRepository", () => {
         repo.create({
           userId: "u001",
           worldId: "default",
-          subjectType: "event",
+          subjectType: "arc",
           subjectKey: "battle_001",
-          memoryType: "event",
+          memoryType: "unresolved_thread",
           canonicalKey: null,
           content: "A great battle occurred.",
           visibility: "public",
@@ -57,7 +57,59 @@ describe("WorldMemoryRepository", () => {
           embeddingJson: null,
           embeddingQuality: null,
         }),
-      ).toThrow("sourceEventId is required for non-lore memory");
+      ).toThrow("sourceEventId is required for memories derived from world activity");
+    });
+
+    it("throws when creating a lore memory from world activity without sourceEventId", () => {
+      const repo = new WorldMemoryRepository(createTestDatabase());
+      expect(() =>
+        repo.create({
+          userId: "u001",
+          worldId: "default",
+          subjectType: "lore",
+          subjectKey: "battle_001",
+          memoryType: "lore",
+          canonicalKey: null,
+          content: "A great battle became local lore.",
+          visibility: "public",
+          visibleToActorIds: [],
+          visibleToUser: true,
+          importance: 0.8,
+          confidence: 0.9,
+          validFromTick: 42,
+          sourceEventId: null,
+          sourceDecisionId: "wdec-001",
+          supersededBy: null,
+          embeddingJson: null,
+          embeddingQuality: null,
+        }),
+      ).toThrow("sourceEventId is required for memories derived from world activity");
+    });
+
+    it("rejects event as a memory type", () => {
+      const repo = new WorldMemoryRepository(createTestDatabase());
+      expect(() =>
+        repo.create({
+          userId: "u001",
+          worldId: "default",
+          subjectType: "world",
+          subjectKey: "event_001",
+          memoryType: "event",
+          canonicalKey: null,
+          content: "Events belong in world_events.",
+          visibility: "public",
+          visibleToActorIds: [],
+          visibleToUser: true,
+          importance: 0.5,
+          confidence: 0.9,
+          validFromTick: 1,
+          sourceEventId: "evt-001",
+          sourceDecisionId: "wdec-001",
+          supersededBy: null,
+          embeddingJson: null,
+          embeddingQuality: null,
+        }),
+      ).toThrow("event is not a world memory type");
     });
 
     it("creates a derived memory with sourceEventId", () => {
@@ -65,9 +117,9 @@ describe("WorldMemoryRepository", () => {
       const memory = repo.create({
         userId: "u001",
         worldId: "default",
-        subjectType: "event",
+        subjectType: "arc",
         subjectKey: "battle_001",
-        memoryType: "event",
+        memoryType: "unresolved_thread",
         canonicalKey: null,
         content: "A great battle occurred.",
         visibility: "public",
@@ -85,7 +137,7 @@ describe("WorldMemoryRepository", () => {
 
       expect(memory.id).toMatch(/^wmem-/);
       expect(memory.sourceEventId).toBe("evt-001");
-      expect(memory.memoryType).toBe("event");
+      expect(memory.memoryType).toBe("unresolved_thread");
     });
   });
 
@@ -171,9 +223,9 @@ describe("WorldMemoryRepository", () => {
       repo.create({
         userId: "u001",
         worldId: "default",
-        subjectType: "event",
+        subjectType: "arc",
         subjectKey: "key2",
-        memoryType: "event",
+        memoryType: "unresolved_thread",
         canonicalKey: null,
         content: "event 1",
         visibility: "public",
@@ -201,7 +253,7 @@ describe("WorldMemoryRepository", () => {
       const keyedMemories = repo.recallForDirector({
         userId: "u001",
         worldId: "default",
-        subjectType: "event",
+        subjectType: "arc",
         subjectKey: "key2",
       });
 
@@ -226,7 +278,7 @@ describe("WorldMemoryRepository", () => {
         importance: 0.7,
         confidence: 0.8,
         validFromTick: 10,
-        sourceEventId: null,
+        sourceEventId: "evt-old-hero-name",
         sourceDecisionId: null,
         supersededBy: "wmem-new",
         embeddingJson: null,
@@ -247,7 +299,7 @@ describe("WorldMemoryRepository", () => {
         importance: 0.7,
         confidence: 0.9,
         validFromTick: 20,
-        sourceEventId: null,
+        sourceEventId: "evt-new-hero-name",
         sourceDecisionId: null,
         supersededBy: null,
         embeddingJson: null,
@@ -267,7 +319,7 @@ describe("WorldMemoryRepository", () => {
   });
 
   describe("recallForActor", () => {
-    it("excludes hidden memories unless actor is in visibleToActorIds", () => {
+    it("excludes hidden memories even when actor is in visibleToActorIds", () => {
       const repo = new WorldMemoryRepository(createTestDatabase());
 
       repo.create({
@@ -319,8 +371,7 @@ describe("WorldMemoryRepository", () => {
         subjectType: "lore",
       });
 
-      expect(allActorMemories).toHaveLength(1);
-      expect(allActorMemories[0].subjectKey).toBe("hidden_secret");
+      expect(allActorMemories).toHaveLength(0);
 
       const otherActorMemories = repo.recallForActor({
         userId: "u001",
@@ -329,8 +380,7 @@ describe("WorldMemoryRepository", () => {
         subjectType: "lore",
       });
 
-      expect(otherActorMemories).toHaveLength(1);
-      expect(otherActorMemories[0].subjectKey).toBe("another_secret");
+      expect(otherActorMemories).toHaveLength(0);
 
       const untrustedActorMemories = repo.recallForActor({
         userId: "u001",
@@ -342,7 +392,7 @@ describe("WorldMemoryRepository", () => {
       expect(untrustedActorMemories).toHaveLength(0);
     });
 
-    it("includes public and private memories for any actor", () => {
+    it("excludes private memories unless actor ACL allows them", () => {
       const repo = new WorldMemoryRepository(createTestDatabase());
 
       repo.create({
@@ -370,12 +420,33 @@ describe("WorldMemoryRepository", () => {
         userId: "u001",
         worldId: "default",
         subjectType: "lore",
-        subjectKey: "private_note",
+        subjectKey: "private_note_for_other",
         memoryType: "lore",
         canonicalKey: null,
         content: "The hero has a scar on their left hand.",
         visibility: "private",
-        visibleToActorIds: [],
+        visibleToActorIds: ["agent-other"],
+        visibleToUser: false,
+        importance: 0.6,
+        confidence: 0.8,
+        validFromTick: 0,
+        sourceEventId: null,
+        sourceDecisionId: null,
+        supersededBy: null,
+        embeddingJson: null,
+        embeddingQuality: null,
+      });
+
+      repo.create({
+        userId: "u001",
+        worldId: "default",
+        subjectType: "lore",
+        subjectKey: "private_note_for_agent",
+        memoryType: "lore",
+        canonicalKey: null,
+        content: "The actor knows the private signal.",
+        visibility: "private",
+        visibleToActorIds: ["agent-any"],
         visibleToUser: false,
         importance: 0.6,
         confidence: 0.8,
@@ -395,6 +466,7 @@ describe("WorldMemoryRepository", () => {
       });
 
       expect(memories).toHaveLength(2);
+      expect(memories.map((memory) => memory.subjectKey).sort()).toEqual(["private_note_for_agent", "public_fact"]);
     });
   });
 });

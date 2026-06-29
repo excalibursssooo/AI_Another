@@ -7,6 +7,7 @@ import type { WorldMindContext, WorldMindResult } from "./world-mind-flow";
 import { createWorldMindFlow } from "./world-mind-flow";
 import type { ChatContext } from "./chat-flow";
 import { createChatFlow } from "./chat-flow";
+import { AgentRepository, WorldRepository } from "@/server/domain/chat/repositories";
 
 // ---------------------------------------------------------------------------
 // Input & Deps
@@ -103,7 +104,17 @@ export async function createWorldInteractionFlow(
     throw new Error("Missing client_action_id");
   }
 
-  // ── 4. CreateWorldRunEnvelope ─────────────────────────────────────────────
+  // ── 4. LoadWorldStrict / LoadTargetAgentStrict ────────────────────────────
+  const world = new WorldRepository(db).get(input.worldId);
+  if (!world) {
+    throw new Error(`world not found: ${input.worldId}`);
+  }
+  const agent = new AgentRepository(db).get(targetAgentId);
+  if (!agent || agent.status !== "active" || agent.worldId !== input.worldId) {
+    throw new Error(`active agent not found in world: ${targetAgentId}`);
+  }
+
+  // ── 5. CreateWorldRunEnvelope ─────────────────────────────────────────────
   const runRepo = new WorldRunRepository(db);
   const envelope: WorldRunEnvelope = runRepo.createOrGet({
     userId: input.userId,
@@ -114,7 +125,7 @@ export async function createWorldInteractionFlow(
     idempotencyKey: `worldmind:${input.userId}:${input.worldId}:${input.clientActionId}`,
   });
 
-  // ── 5. RunWorldMind ───────────────────────────────────────────────────────
+  // ── 6. RunWorldMind ───────────────────────────────────────────────────────
   const worldMindResult = await runWorldMind({
     db,
     envelope,
@@ -124,7 +135,7 @@ export async function createWorldInteractionFlow(
   let claimedCommandId: string | undefined;
   let claimedCommandInstruction: string | undefined;
 
-  // ── 6. ClaimVisibleSpeakCommand ───────────────────────────────────────────
+  // ── 7. ClaimVisibleSpeakCommand ───────────────────────────────────────────
   if (worldMindResult.validationStatus === "accepted") {
     const claimed = cmdRepo.claimVisibleSpeakCommand({
       userId: input.userId,
@@ -140,7 +151,7 @@ export async function createWorldInteractionFlow(
     }
   }
 
-  // ── 7. RunChatFlowWithWorldDirective ─────────────────────────────────────
+  // ── 8. RunChatFlowWithWorldDirective ─────────────────────────────────────
   let chatResult: ChatContext;
 
   try {
@@ -155,14 +166,14 @@ export async function createWorldInteractionFlow(
           : null,
     });
   } catch (chatError) {
-    // ── 8a. Release claim on chat failure ───────────────────────────────────
+    // ── 9a. Release claim on chat failure ───────────────────────────────────
     if (claimedCommandId) {
       cmdRepo.releaseClaim({ commandId: claimedCommandId, claimedBy: `world-interaction:${envelope.worldRunId}` });
     }
     throw chatError;
   }
 
-  // ── 8b. MarkSpeakCommandDone on chat success ───────────────────────────────
+  // ── 9b. MarkSpeakCommandDone on chat success ───────────────────────────────
   if (claimedCommandId && chatResult.doneEvent) {
     cmdRepo.markDone({
       commandId: claimedCommandId,
@@ -170,7 +181,7 @@ export async function createWorldInteractionFlow(
     });
   }
 
-  // ── 9. ReturnChatResult ───────────────────────────────────────────────────
+  // ── 10. ReturnChatResult ──────────────────────────────────────────────────
   return {
     ...chatResult,
     worldRunId: envelope.worldRunId,

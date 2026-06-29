@@ -46,6 +46,7 @@ function makeValidWorldMindDecision(overrides: Partial<WorldMindDecision> = {}):
         payload: {
           title: "an incident",
           description: "something happened",
+          factKey: "incident-fact",
           tensionDelta: 0.1,
           stabilityDelta: -0.05,
         },
@@ -119,14 +120,18 @@ describe("WorldMindFlow", () => {
     expect(userAction.type).toBe("user_action");
     expect(userAction.decisionId).toBe(envelope.decisionId);
     expect(userAction.worldRunId).toBe(envelope.worldRunId);
+    expect((userAction.payload as { interpretationStatus: string }).interpretationStatus).toBe("accepted");
 
     expect(derivedEvent.type).toBe("world_incident");
     expect(derivedEvent.decisionId).toBe(envelope.decisionId);
     expect(derivedEvent.worldRunId).toBe(envelope.worldRunId);
+    expect(derivedEvent.idempotencyKey).toBe(`${envelope.worldRunId}:evt-derived-1`);
+    expect(derivedEvent.visibility.visibleToUser).toBe(true);
 
     const snapshotRepo = new WorldStateRepository(db);
     const snapshot = snapshotRepo.getLatest({ userId: "u001", worldId: "default" });
     expect(snapshot?.appliedEventSequence).toBe(2);
+    expect(snapshot?.state.publicFacts.map((fact) => fact.factKey)).toContain("incident-fact");
 
     const cmdRepo = new ActorCommandRepository(db);
     const commands = db.sqlite
@@ -145,6 +150,85 @@ describe("WorldMindFlow", () => {
 
     const run = runRepo.getById(envelope.worldRunId);
     expect(run?.status).toBe("committed");
+  });
+
+  it("scopes proposed event and command idempotency keys by worldRunId", async () => {
+    const db = createTestDatabase();
+    const worldRepo = new WorldRepository(db);
+    worldRepo.upsert({ id: "default", name: "Test World", lore: "", tone: "", constraints: [], seedMemories: [] });
+
+    const charRepo = new CharacterStateRepository(db);
+    charRepo.getOrCreateDefault({ userId: "u001", worldId: "default", agentId: "agent-default" });
+
+    const runRepo = new WorldRunRepository(db);
+    const firstEnvelope = runRepo.createOrGet({
+      userId: "u001",
+      worldId: "default",
+      agentId: "agent-default",
+      sourceType: "user_action",
+      sourceActionId: "client-1",
+      idempotencyKey: "test-run:client-1",
+    });
+    const secondEnvelope = runRepo.createOrGet({
+      userId: "u001",
+      worldId: "default",
+      agentId: "agent-default",
+      sourceType: "user_action",
+      sourceActionId: "client-2",
+      idempotencyKey: "test-run:client-2",
+    });
+
+    await createWorldMindFlow({
+      db,
+      envelope: firstEnvelope,
+      sourceInput: { message: "first", targetAgentId: "agent-default" },
+      generateDecision: async () => makeValidWorldMindDecision(),
+    });
+    await createWorldMindFlow({
+      db,
+      envelope: secondEnvelope,
+      sourceInput: { message: "second", targetAgentId: "agent-default" },
+      generateDecision: async () => makeValidWorldMindDecision(),
+    });
+
+    const eventRepo = new WorldEventRepository(db);
+    const events = eventRepo.listCommitted({ userId: "u001", worldId: "default" });
+    expect(events).toHaveLength(4);
+    expect(events.filter((event) => event.type === "world_incident").map((event) => event.worldRunId)).toEqual([
+      firstEnvelope.worldRunId,
+      secondEnvelope.worldRunId,
+    ]);
+
+    const commandRows = db.sqlite
+      .prepare("SELECT world_run_id, idempotency_key FROM actor_commands ORDER BY created_at ASC")
+      .all() as Array<{ world_run_id: string; idempotency_key: string }>;
+    expect(commandRows).toHaveLength(2);
+    expect(commandRows.map((row) => row.world_run_id)).toEqual([firstEnvelope.worldRunId, secondEnvelope.worldRunId]);
+    expect(commandRows[0].idempotency_key).not.toBe(commandRows[1].idempotency_key);
+  });
+
+  it("prepares default character state for active world agents before validation", async () => {
+    const db = createTestDatabase();
+    const runRepo = new WorldRunRepository(db);
+    const envelope = runRepo.createOrGet({
+      userId: "u001",
+      worldId: "default",
+      agentId: "agent-default",
+      sourceType: "user_action",
+      sourceActionId: "client-1",
+      idempotencyKey: "test-run:no-character-state",
+    });
+
+    const result = await createWorldMindFlow({
+      db,
+      envelope,
+      sourceInput: { message: "hello", targetAgentId: "agent-default" },
+      generateDecision: async () => makeValidWorldMindDecision(),
+    });
+
+    expect(result.validationStatus).toBe("accepted");
+    const characterStates = new CharacterStateRepository(db).listForWorld({ userId: "u001", worldId: "default" });
+    expect(characterStates.map((state) => state.agentId)).toContain("agent-default");
   });
 
   // -------------------------------------------------------------------------
@@ -186,7 +270,7 @@ describe("WorldMindFlow", () => {
       ],
     });
 
-    await createWorldMindFlow({
+    const result = await createWorldMindFlow({
       db,
       envelope,
       sourceInput: { message: "hello", targetAgentId: "agent-default" },
@@ -200,6 +284,11 @@ describe("WorldMindFlow", () => {
     const [evt] = events;
     expect(evt.type).toBe("user_action");
     expect((evt.payload as { interpretationStatus: string }).interpretationStatus).toBe("observed_only");
+    expect((evt.payload as { failureReason: string }).failureReason).toBe("validation_failed");
+
+    const snapshot = new WorldStateRepository(db).getLatest({ userId: "u001", worldId: "default" });
+    expect(snapshot?.appliedEventSequence).toBe(1);
+    expect(snapshot?.appliedEventIds).toEqual([evt.id]);
 
     const cmdRepo = new ActorCommandRepository(db);
     const commands = db.sqlite
@@ -211,6 +300,10 @@ describe("WorldMindFlow", () => {
     const logs = logRepo.listForRun(envelope.worldRunId);
     expect(logs).toHaveLength(1);
     expect(logs[0].validationStatus).toBe("rejected");
+    expect(logs[0].sourceEventId).toBe(evt.id);
+    expect(logs[0].createdEventIdsJson).toEqual([evt.id]);
+    expect(result.decisionLogId).toBe(logs[0].id);
+    expect(result.createdEventIds).toEqual([evt.id]);
 
     const run = runRepo.getById(envelope.worldRunId);
     expect(run?.status).toBe("rejected");
@@ -238,7 +331,7 @@ describe("WorldMindFlow", () => {
       idempotencyKey: `test-run:${Math.random()}`,
     });
 
-    await createWorldMindFlow({
+    const result = await createWorldMindFlow({
       db,
       envelope,
       sourceInput: { message: "hello", targetAgentId: "agent-default" },
@@ -254,6 +347,11 @@ describe("WorldMindFlow", () => {
     const [evt] = events;
     expect(evt.type).toBe("user_action");
     expect((evt.payload as { interpretationStatus: string }).interpretationStatus).toBe("observed_only");
+    expect((evt.payload as { failureReason: string }).failureReason).toBe("model_failed");
+
+    const snapshot = new WorldStateRepository(db).getLatest({ userId: "u001", worldId: "default" });
+    expect(snapshot?.appliedEventSequence).toBe(1);
+    expect(snapshot?.appliedEventIds).toEqual([evt.id]);
 
     const commands = db.sqlite
       .prepare("SELECT * FROM actor_commands WHERE world_run_id = ?")
@@ -264,6 +362,10 @@ describe("WorldMindFlow", () => {
     const logs = logRepo.listForRun(envelope.worldRunId);
     expect(logs).toHaveLength(1);
     expect(logs[0].validationStatus).toBe("model_failed");
+    expect(logs[0].sourceEventId).toBe(evt.id);
+    expect(logs[0].createdEventIdsJson).toEqual([evt.id]);
+    expect(result.decisionLogId).toBe(logs[0].id);
+    expect(result.createdEventIds).toEqual([evt.id]);
 
     const run = runRepo.getById(envelope.worldRunId);
     expect(run?.status).toBe("failed");
@@ -337,6 +439,9 @@ describe("WorldMindFlow", () => {
     const eventRepo = new WorldEventRepository(db);
     const events = eventRepo.listCommitted({ userId: "u001", worldId: "default" });
     expect(events).toHaveLength(0);
+
+    const snapshot = new WorldStateRepository(db).getLatest({ userId: "u001", worldId: "default" });
+    expect(snapshot).toBeNull();
 
     // A best-effort transaction_failed decision log was written outside the tx
     const logRepo = new WorldDecisionLogRepository(db);

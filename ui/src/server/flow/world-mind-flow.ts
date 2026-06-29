@@ -5,8 +5,8 @@ import type { WorldRunEnvelope } from "@/server/domain/world/types";
 import type { WorldMindDecision } from "@/server/domain/world/world-decision";
 import { ActorCommandRepository } from "@/server/domain/world/actor-command-repository";
 import type { CreateActorCommandInput } from "@/server/domain/world/actor-command-repository";
-import { CharacterStateRepository } from "@/server/domain/world/character-state-repository";
-import { WorldRepository } from "@/server/domain/chat/repositories";
+import { CharacterStateRepository, createDefaultCharacterState } from "@/server/domain/world/character-state-repository";
+import { AgentRepository, WorldRepository } from "@/server/domain/chat/repositories";
 import { buildWorldDirectorContext } from "@/server/domain/world/world-context-builder";
 import { WorldDecisionLogRepository } from "@/server/domain/world/world-decision-log-repository";
 import { validateWorldMindDecision } from "@/server/domain/world/world-decision-validator";
@@ -14,7 +14,7 @@ import { WorldEventRepository } from "@/server/domain/world/world-event-reposito
 import { WorldRunRepository } from "@/server/domain/world/world-run-repository";
 import { WorldStateRepository, createInitialWorldSnapshot } from "@/server/domain/world/world-state-repository";
 import { reduceWorldEvents } from "@/server/domain/world/world-reducer";
-import type { WorldEventRecord } from "@/server/domain/world/types";
+import type { CharacterStateRecord, VisibilityScope, WorldEventRecord } from "@/server/domain/world/types";
 import type { GenerateWorldDecision } from "@/server/ai/world-director";
 import { generateWorldDecision } from "@/server/ai/world-director";
 
@@ -62,18 +62,10 @@ export async function createWorldMindFlow(
   }
 
   // ── 3. LoadWorldStateSnapshot ─────────────────────────────────────────────
-  const snapshotRepo = new WorldStateRepository(db);
-  const charRepo = new CharacterStateRepository(db);
-
-  let snapshot = snapshotRepo.getLatest({ userId, worldId });
-  if (!snapshot) {
-    // Persist the initial snapshot so it is readable inside the transaction
-    snapshot = createInitialWorldSnapshot({ userId, worldId });
-    snapshot = snapshotRepo.saveLatest(snapshot);
-  }
+  new WorldStateRepository(db).getLatest({ userId, worldId });
 
   // ── 4. LoadActiveActors ───────────────────────────────────────────────────
-  const characterStates = charRepo.listForWorld({ userId, worldId });
+  const characterStates = loadActiveCharacterStates({ db, userId, worldId });
   const activeAgentIds = characterStates.map((c) => c.agentId);
 
   // ── 5. BuildDirectorContext ───────────────────────────────────────────────
@@ -106,6 +98,7 @@ export async function createWorldMindFlow(
         validationStatus: "model_failed",
         dirContext,
         ctx,
+        characterStates,
         error: err instanceof Error ? err : new Error(String(err)),
       });
     }
@@ -126,13 +119,14 @@ export async function createWorldMindFlow(
       validationStatus: "rejected",
       dirContext,
       ctx,
+      characterStates,
       validationErrors: validation.errors,
     });
   }
 
   // ── 8. CommitWorldRunTransaction (accepted path) ─────────────────────────
   try {
-    return await commitAcceptedPath({ db, envelope, decision, dirContext, ctx });
+    return await commitAcceptedPath({ db, envelope, decision, dirContext, ctx, characterStates });
   } catch (err) {
     // Transaction failed — route to the transaction_failed path
     return commitFailedPath({
@@ -141,6 +135,7 @@ export async function createWorldMindFlow(
       validationStatus: "transaction_failed",
       dirContext,
       ctx,
+      characterStates,
       error: err instanceof Error ? err : new Error(String(err)),
     });
   }
@@ -156,10 +151,11 @@ interface AcceptedPathInput {
   decision: WorldMindDecision;
   dirContext: ReturnType<typeof buildWorldDirectorContext>;
   ctx: WorldMindContext;
+  characterStates: CharacterStateRecord[];
 }
 
 async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindResult> {
-  const { db, envelope, decision, dirContext, ctx } = input;
+  const { db, envelope, decision, dirContext, ctx, characterStates } = input;
   const userId = envelope.userId;
   const worldId = envelope.worldId;
 
@@ -174,7 +170,7 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
   const userActionSequence = eventRepo.allocateNextSequence({ userId, worldId });
 
   // Idempotency key for the user_action event
-  const userActionIdempotencyKey = `wevt-${envelope.sourceActionId}`;
+  const userActionIdempotencyKey = `${envelope.worldRunId}:source:${envelope.sourceActionId}`;
 
   const result = db.sqlite.transaction(() => {
     // ── Insert user_action event ──────────────────────────────────────────
@@ -190,7 +186,7 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
         clientActionId: envelope.sourceActionId,
         normalizedMessage: ctx.sourceInput?.message ?? "",
         targetAgentId: ctx.sourceInput?.targetAgentId ?? "",
-        interpretationStatus: "pending",
+        interpretationStatus: "accepted",
       },
       summary: ctx.sourceInput?.message ?? "user action",
       visibility: { mode: "public", visibleToActorIds: [], visibleToUser: true },
@@ -203,7 +199,7 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
 
     for (const proposed of decision.proposedEvents) {
       const eventSequence = eventRepo.allocateNextSequence({ userId, worldId });
-      const eventIdempotencyKey = `wevt-${proposed.clientEventId}`;
+      const eventIdempotencyKey = `${envelope.worldRunId}:${proposed.clientEventId}`;
       const ev = eventRepo.createCommitted({
         decisionId: envelope.decisionId,
         worldRunId: envelope.worldRunId,
@@ -214,7 +210,7 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
         type: proposed.type as WorldEventRecord["type"],
         payload: proposed.payload,
         summary: proposed.summary,
-        visibility: { ...proposed.visibility, visibleToUser: false } as typeof proposed.visibility & { visibleToUser: boolean },
+        visibility: normalizeVisibility(proposed.visibility),
         actorIds: proposed.actorIds,
         idempotencyKey: eventIdempotencyKey,
         causedByUserActionId: userActionEvent.id,
@@ -224,11 +220,12 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
 
     // ── Compute new snapshot via reducer ───────────────────────────────────
     const allEvents = eventRepo.listCommitted({ userId, worldId });
+    const previousSnapshot = snapshotRepo.getLatest({ userId, worldId }) ?? createInitialWorldSnapshot({ userId, worldId });
     const reducerResult = reduceWorldEvents({
-      previousSnapshot: snapshotRepo.getLatest({ userId, worldId })!,
+      previousSnapshot,
       events: allEvents,
       reducerVersion: 1,
-      previousCharacterStates: charRepo.listForWorld({ userId, worldId }),
+      previousCharacterStates: characterStates,
     });
 
     snapshotRepo.saveLatest({
@@ -256,8 +253,7 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
       // the lever for the transaction_failed test.
       const causeKey =
         cmd.cause.type === "proposed_event" ? cmd.cause.clientEventId : cmd.cause.type;
-      const idempotencyKey = `cmd-${cmd.targetAgentId}-${cmd.commandType}-${causeKey}`;
-
+      const idempotencyKey = `${envelope.worldRunId}:cmd:${cmd.targetAgentId}:${cmd.commandType}:${causeKey}`;
       return {
         decisionId: envelope.decisionId,
         worldRunId: envelope.worldRunId,
@@ -266,7 +262,7 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
         targetAgentId: cmd.targetAgentId,
         commandType: cmd.commandType as CreateActorCommandInput["commandType"],
         priority: cmd.priority as CreateActorCommandInput["priority"],
-        visibility: { ...cmd.visibility, visibleToUser: false } as typeof cmd.visibility & { visibleToUser: boolean },
+        visibility: normalizeVisibility(cmd.visibility, cmd.visibleToUser),
         actorInstruction: cmd.actorInstruction,
         privateReason: cmd.privateReason,
         cause: cmd.cause,
@@ -333,12 +329,13 @@ interface FailedPathInput {
   validationStatus: "rejected" | "model_failed" | "transaction_failed";
   dirContext: ReturnType<typeof buildWorldDirectorContext>;
   ctx: WorldMindContext;
+  characterStates: CharacterStateRecord[];
   validationErrors?: string[];
   error?: Error | null;
 }
 
 async function commitFailedPath(input: FailedPathInput): Promise<WorldMindResult> {
-  const { db, envelope, validationStatus, dirContext, ctx, validationErrors, error } = input;
+  const { db, envelope, validationStatus, dirContext, ctx, characterStates, validationErrors, error } = input;
   const userId = envelope.userId;
   const worldId = envelope.worldId;
 
@@ -348,13 +345,15 @@ async function commitFailedPath(input: FailedPathInput): Promise<WorldMindResult
 
   // Allocate sequence for the observed_only user_action
   const sequence = eventRepo.allocateNextSequence({ userId, worldId });
-  const idempotencyKey = `wevt-${envelope.sourceActionId}`;
+  const idempotencyKey = `${envelope.worldRunId}:source:${envelope.sourceActionId}`;
+  let decisionLogId = "";
+  let createdEventIds: string[] = [];
 
   if (validationStatus !== "transaction_failed") {
     // rejected / model_failed — write observed_only user_action + decision log
     // inside a single transaction
     db.sqlite.transaction(() => {
-      eventRepo.createCommitted({
+      const sourceEvent = eventRepo.createCommitted({
         decisionId: envelope.decisionId,
         worldRunId: envelope.worldRunId,
         userId,
@@ -367,6 +366,7 @@ async function commitFailedPath(input: FailedPathInput): Promise<WorldMindResult
           normalizedMessage: ctx.sourceInput?.message ?? "",
           targetAgentId: ctx.sourceInput?.targetAgentId ?? "",
           interpretationStatus: "observed_only",
+          failureReason: validationStatus === "model_failed" ? "model_failed" : "validation_failed",
         },
         summary: ctx.sourceInput?.message ?? "user action",
         visibility: { mode: "public", visibleToActorIds: [], visibleToUser: true },
@@ -374,13 +374,36 @@ async function commitFailedPath(input: FailedPathInput): Promise<WorldMindResult
         idempotencyKey,
       });
 
-      logRepo.insert({
+      const snapshotRepo = new WorldStateRepository(db);
+      const charRepo = new CharacterStateRepository(db);
+      const previousSnapshot = snapshotRepo.getLatest({ userId, worldId }) ?? createInitialWorldSnapshot({ userId, worldId });
+      const reducerResult = reduceWorldEvents({
+        previousSnapshot,
+        events: [sourceEvent],
+        reducerVersion: 1,
+        previousCharacterStates: characterStates,
+      });
+      snapshotRepo.saveLatest({
+        ...reducerResult.worldSnapshot,
+        id: `wsnap-${randomUUID()}`,
+        appliedEventSequence: reducerResult.worldSnapshot.appliedEventSequence,
+        appliedEventIds: reducerResult.appliedEventIds,
+        reducerVersion: 1,
+        updatedAt: Date.now(),
+      });
+      if (reducerResult.characterStates && reducerResult.characterStates.length > 0) {
+        charRepo.upsertMany(reducerResult.characterStates);
+      }
+
+      createdEventIds = [sourceEvent.id];
+
+      const logRecord = logRepo.insert({
         decisionId: envelope.decisionId,
         worldRunId: envelope.worldRunId,
         userId,
         worldId,
         sourceType: envelope.sourceType,
-        sourceEventId: null,
+        sourceEventId: sourceEvent.id,
         sourceTaskId: null,
         modelProvider: "openai",
         modelName: "world-director",
@@ -394,9 +417,10 @@ async function commitFailedPath(input: FailedPathInput): Promise<WorldMindResult
           validationStatus === "model_failed"
             ? error?.message ?? "model generation failed"
             : validationErrors?.join("; ") ?? "validation failed",
-        createdEventIdsJson: [],
+        createdEventIdsJson: createdEventIds,
         createdCommandIdsJson: [],
       });
+      decisionLogId = logRecord.id;
 
       if (validationStatus === "rejected") {
         runRepo.markRejected({ worldRunId: envelope.worldRunId });
@@ -435,8 +459,38 @@ async function commitFailedPath(input: FailedPathInput): Promise<WorldMindResult
 
   return {
     validationStatus,
-    decisionLogId: "",
-    createdEventIds: [],
+    decisionLogId,
+    createdEventIds,
     createdCommandIds: [],
   };
+}
+
+function normalizeVisibility(
+  visibility: { mode: VisibilityScope["mode"]; visibleToActorIds: string[] },
+  visibleToUser?: boolean,
+): VisibilityScope {
+  return {
+    mode: visibility.mode,
+    visibleToActorIds: visibility.visibleToActorIds,
+    visibleToUser: visibility.mode === "public" ? true : visibleToUser ?? false,
+  };
+}
+
+function loadActiveCharacterStates(input: { db: AppDatabase; userId: string; worldId: string }): CharacterStateRecord[] {
+  const agents = new AgentRepository(input.db).listActive(input.worldId);
+  const existingStates = new CharacterStateRepository(input.db).listForWorld({
+    userId: input.userId,
+    worldId: input.worldId,
+  });
+  const byAgentId = new Map(existingStates.map((state) => [state.agentId, state]));
+
+  return agents.map(
+    (agent) =>
+      byAgentId.get(agent.id) ??
+      createDefaultCharacterState({
+        userId: input.userId,
+        worldId: input.worldId,
+        agentId: agent.id,
+      }),
+  );
 }

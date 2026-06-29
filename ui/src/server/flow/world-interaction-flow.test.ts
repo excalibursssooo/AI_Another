@@ -5,6 +5,7 @@ import { createChatFlow } from "./chat-flow";
 import { createWorldMindFlow } from "./world-mind-flow";
 import { createWorldInteractionFlow } from "./world-interaction-flow";
 import { createTestDatabase } from "@/server/db/client";
+import { AgentRepository } from "@/server/domain/chat/repositories";
 import type { ActorCommandRecord } from "@/server/domain/world/types";
 import type { WorldMindResult } from "./world-mind-flow";
 
@@ -169,6 +170,62 @@ describe("WorldInteractionFlow", () => {
 
     const worldRuns = db.sqlite.prepare("SELECT * FROM world_runs").all();
     expect(worldRuns).toHaveLength(0);
+  });
+
+  it("requires an existing world before creating an envelope or running WorldMind", async () => {
+    const db = createTestDatabase();
+    const fakeWorldMind = vi.fn<FakeWorldMindFn>().mockResolvedValue(makeFakeWorldMindResult());
+    const fakeChat = vi.fn<FakeChatFn>().mockResolvedValue(makeFakeChatResult());
+
+    await expect(
+      createWorldInteractionFlow(
+        {
+          userId: "u001",
+          worldId: "missing-world",
+          message: "hello",
+          targetAgentId: "agent-default",
+          clientActionId: "client-1",
+        },
+        { db, createWorldMind: fakeWorldMind, createChat: fakeChat },
+      ),
+    ).rejects.toThrow("world not found: missing-world");
+
+    expect(fakeWorldMind).not.toHaveBeenCalled();
+    expect(fakeChat).not.toHaveBeenCalled();
+    expect(db.sqlite.prepare("SELECT * FROM world_runs").all()).toHaveLength(0);
+    expect(db.sqlite.prepare("SELECT * FROM world_events").all()).toHaveLength(0);
+    expect(db.sqlite.prepare("SELECT * FROM actor_commands").all()).toHaveLength(0);
+  });
+
+  it("requires an active target agent in the requested world before creating an envelope", async () => {
+    const db = createTestDatabase();
+    const otherAgent = new AgentRepository(db).create({
+      name: "Other",
+      persona: "Other persona",
+      background: "Other background",
+      speakingStyle: "Brief",
+      hobbies: [],
+      worldId: "other-world",
+    });
+    const fakeWorldMind = vi.fn<FakeWorldMindFn>().mockResolvedValue(makeFakeWorldMindResult());
+    const fakeChat = vi.fn<FakeChatFn>().mockResolvedValue(makeFakeChatResult());
+
+    await expect(
+      createWorldInteractionFlow(
+        {
+          userId: "u001",
+          worldId: "default",
+          message: "hello",
+          targetAgentId: otherAgent.id,
+          clientActionId: "client-1",
+        },
+        { db, createWorldMind: fakeWorldMind, createChat: fakeChat },
+      ),
+    ).rejects.toThrow(`active agent not found in world: ${otherAgent.id}`);
+
+    expect(fakeWorldMind).not.toHaveBeenCalled();
+    expect(fakeChat).not.toHaveBeenCalled();
+    expect(db.sqlite.prepare("SELECT * FROM world_runs").all()).toHaveLength(0);
   });
 
   // -------------------------------------------------------------------------

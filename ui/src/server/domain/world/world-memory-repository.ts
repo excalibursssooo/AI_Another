@@ -69,9 +69,16 @@ export class WorldMemoryRepository {
   constructor(private readonly db: AppDatabase) {}
 
   create(input: CreateWorldMemoryInput): WorldMemoryRecord {
-    // Non-lore memories require a sourceEventId
-    if (input.memoryType !== "lore" && input.sourceEventId == null) {
-      throw new Error("sourceEventId is required for non-lore memory");
+    if (input.memoryType === "event") {
+      throw new Error("event is not a world memory type");
+    }
+    if (!["lore", "rule", "relationship", "secret", "unresolved_thread"].includes(input.memoryType)) {
+      throw new Error(`unknown world memory type: ${input.memoryType}`);
+    }
+
+    const derivedFromWorldActivity = input.memoryType !== "lore" || input.sourceDecisionId != null || input.validFromTick > 0;
+    if (derivedFromWorldActivity && input.sourceEventId == null) {
+      throw new Error("sourceEventId is required for memories derived from world activity");
     }
 
     const id = `wmem-${randomUUID()}`;
@@ -152,8 +159,7 @@ export class WorldMemoryRepository {
       WHERE user_id = ? AND world_id = ? AND subject_type = ? AND superseded_by IS NULL
         AND (
           visibility = 'public'
-          OR visibility = 'private'
-          OR (? IN (SELECT value FROM json_each(visible_to_actor_ids_json)))
+          OR (visibility = 'private' AND ? IN (SELECT value FROM json_each(visible_to_actor_ids_json)))
         )`;
     const params: (string | number)[] = [input.userId, input.worldId, input.subjectType, input.agentId];
 

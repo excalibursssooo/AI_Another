@@ -28,28 +28,50 @@ export async function POST(req: Request): Promise<Response> {
     if (!body.client_action_id) {
       return Response.json({ error: "missing client_action_id" }, { status: 400 });
     }
-    const db = getDatabase();
-    const result = await createWorldInteractionFlow(
-      {
-        userId,
-        worldId,
-        message,
-        targetAgentId: agentId,
-        clientActionId: body.client_action_id,
-      },
-      { db },
-    );
+    const clientActionId = body.client_action_id;
 
     const stream = new ReadableStream({
-      start(controller) {
+      async start(controller) {
         const encoder = new TextEncoder();
-        if (result.reply) {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "delta", content: result.reply })}\n\n`));
+        const emit = (event: unknown) => {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+        };
+
+        try {
+          const db = getDatabase();
+          const result = await createWorldInteractionFlow(
+            {
+              userId,
+              worldId,
+              message,
+              targetAgentId: agentId,
+              clientActionId,
+            },
+            { db },
+          );
+
+          if (result.reply) {
+            emit({ type: "delta", content: result.reply });
+          }
+          if (result.doneEvent) {
+            emit(result.doneEvent);
+          }
+        } catch (error) {
+          emit({
+            type: "done",
+            agent_id: agentId,
+            agent_name: agentId,
+            emotion_label: "neutral",
+            mood_intensity: 0.2,
+            heartbeat_bpm: 72,
+            risk_level: "low",
+            recalled_memories: [],
+            persisted_memory_count: 0,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        } finally {
+          controller.close();
         }
-        if (result.doneEvent) {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(result.doneEvent)}\n\n`));
-        }
-        controller.close();
       },
     });
 

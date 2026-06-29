@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { validateWorldMindDecision } from "./world-decision-validator";
-import type { WorldMindDecision } from "./world-decision";
+import { WorldMindDecisionSchema, type WorldMindDecision } from "./world-decision";
 
 function makeDecision(overrides: Partial<WorldMindDecision>): WorldMindDecision {
   return {
@@ -14,6 +14,19 @@ function makeDecision(overrides: Partial<WorldMindDecision>): WorldMindDecision 
 }
 
 describe("validateWorldMindDecision", () => {
+  it("allows nextTick to be null in the structured decision schema", () => {
+    const parsed = WorldMindDecisionSchema.parse({
+      observations: ["The scene is quiet."],
+      proposedEvents: [],
+      proposedCommands: [],
+      memoryCandidates: [],
+      nextTick: null,
+    });
+
+    expect(parsed.observations).toEqual(["The scene is quiet."]);
+    expect(parsed.nextTick).toBeNull();
+  });
+
   it("accepts a valid decision with one proposed event and one command referencing it", () => {
     const decision = makeDecision({
       proposedEvents: [
@@ -86,6 +99,33 @@ describe("validateWorldMindDecision", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.errors.some((e) => e.includes("evt-1"))).toBe(true);
+    }
+  });
+
+  it("rejects unknown event types", () => {
+    const decision = makeDecision({
+      proposedEvents: [
+        {
+          clientEventId: "evt-1",
+          type: "state_patch",
+          actorIds: ["agent-a"],
+          payload: {},
+          visibility: { mode: "public", visibleToActorIds: [] },
+          summary: "Illegal patch",
+        },
+      ],
+      proposedCommands: [],
+    });
+
+    const result = validateWorldMindDecision({
+      decision,
+      activeAgentIds: ["agent-a"],
+      hiddenFactSummaries: [],
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((e) => e.includes("state_patch"))).toBe(true);
     }
   });
 
@@ -190,7 +230,7 @@ describe("validateWorldMindDecision", () => {
     }
   });
 
-  it("allows private actorInstruction to contain hidden fact summary", () => {
+  it("rejects private actorInstruction containing hidden fact summary", () => {
     const decision = makeDecision({
       proposedCommands: [
         {
@@ -214,6 +254,9 @@ describe("validateWorldMindDecision", () => {
       hiddenFactSummaries: ["top-secret-keyword"],
     });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.some((e) => e.includes("top-secret-keyword"))).toBe(true);
+    }
   });
 });

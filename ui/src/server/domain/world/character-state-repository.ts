@@ -52,20 +52,7 @@ export class CharacterStateRepository {
       return existing;
     }
 
-    const now = Date.now();
-    const defaultState: CharacterStateRecord = {
-      userId: input.userId,
-      worldId: input.worldId,
-      agentId: input.agentId,
-      locationKey: "default",
-      currentGoal: "保持当前互动并等待世界指令",
-      emotionalState: { label: "neutral", intensity: 0.35 },
-      relationshipToUser: { affinity: 0, trust: 0, tension: 0 },
-      knowledgeKeys: [],
-      activeCommandId: null,
-      lastActedAt: null,
-      updatedAt: now,
-    };
+    const defaultState = createDefaultCharacterState(input);
 
     this.db.sqlite
       .prepare(
@@ -142,4 +129,21 @@ export class CharacterStateRepository {
       .get(input.userId, input.worldId, input.agentId) as CharacterStateRow | undefined;
     return row ? mapCharacterState(row) : null;
   }
+}
+
+export function createDefaultCharacterState(input: { userId: string; worldId: string; agentId: string; now?: number }): CharacterStateRecord {
+  const now = input.now ?? Date.now();
+  return {
+    userId: input.userId,
+    worldId: input.worldId,
+    agentId: input.agentId,
+    locationKey: "default",
+    currentGoal: "保持当前互动并等待世界指令",
+    emotionalState: { label: "neutral", intensity: 0.35 },
+    relationshipToUser: { affinity: 0, trust: 0, tension: 0 },
+    knowledgeKeys: [],
+    activeCommandId: null,
+    lastActedAt: null,
+    updatedAt: now,
+  };
 }

@@ -61,21 +61,16 @@ export const WorldMemoryCandidateSchema = z.object({
 export type WorldMemoryCandidate = z.infer<typeof WorldMemoryCandidateSchema>;
 
 export const WorldMindDecisionSchema = z.object({
-  observations: z
-    .array(
-      z.object({
-        id: z.string(),
-        summary: z.string(),
-      }),
-    )
-    .max(6),
+  observations: z.array(z.string()).max(6),
   proposedEvents: z.array(ProposedWorldEventSchema).max(3),
   proposedCommands: z.array(ProposedActorCommandSchema).max(5),
   memoryCandidates: z.array(WorldMemoryCandidateSchema).max(8),
-  nextTick: z.object({
-    delayMs: z.number().min(30_000).max(86_400_000),
-    reason: z.string(),
-  }),
+  nextTick: z
+    .object({
+      delayMs: z.number().min(30_000).max(86_400_000),
+      reason: z.string(),
+    })
+    .nullable(),
 });
 
 export type WorldMindDecision = z.infer<typeof WorldMindDecisionSchema>;
