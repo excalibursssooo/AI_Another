@@ -1,7 +1,32 @@
 import { describe, expect, it } from "vitest";
 
 import { createTestDatabase } from "@/server/db/client";
+import type { CreateWorldMemoryInput } from "./types";
 import { WorldMemoryRepository } from "./world-memory-repository";
+
+function makeWorldMemory(overrides: Partial<CreateWorldMemoryInput> = {}): CreateWorldMemoryInput {
+  return {
+    userId: "u001",
+    worldId: "default",
+    subjectType: "world",
+    subjectKey: "default",
+    memoryType: "rule",
+    canonicalKey: "rule:test",
+    content: "A world rule.",
+    visibility: "public",
+    visibleToActorIds: [],
+    visibleToUser: true,
+    importance: 0.7,
+    confidence: 0.8,
+    validFromTick: 1,
+    sourceEventId: "wevt-source",
+    sourceDecisionId: "wdec-source",
+    supersededBy: null,
+    embeddingJson: null,
+    embeddingQuality: null,
+    ...overrides,
+  };
+}
 
 describe("WorldMemoryRepository", () => {
   describe("create", () => {
@@ -139,6 +164,33 @@ describe("WorldMemoryRepository", () => {
       expect(memory.sourceEventId).toBe("evt-001");
       expect(memory.memoryType).toBe("unresolved_thread");
     });
+  });
+
+  it("finds active memory by canonical key and supersedes it", () => {
+    const db = createTestDatabase();
+    const repo = new WorldMemoryRepository(db);
+    const original = repo.create(makeWorldMemory({ memoryType: "rule", canonicalKey: "rule:weather" }));
+
+    expect(
+      repo.findActiveByCanonicalKey({
+        userId: "u001",
+        worldId: "default",
+        memoryType: "rule",
+        canonicalKey: "rule:weather",
+      })?.id,
+    ).toBe(original.id);
+
+    const updated = repo.supersede({ memoryId: original.id, supersededBy: "wmem-next" });
+
+    expect(updated?.supersededBy).toBe("wmem-next");
+    expect(
+      repo.findActiveByCanonicalKey({
+        userId: "u001",
+        worldId: "default",
+        memoryType: "rule",
+        canonicalKey: "rule:weather",
+      }),
+    ).toBeNull();
   });
 
   describe("recallForDirector", () => {

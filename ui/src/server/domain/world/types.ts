@@ -244,6 +244,15 @@ export interface WorldMemoryRecord {
 
 export type CreateWorldMemoryInput = Omit<WorldMemoryRecord, "id" | "createdAt" | "updatedAt">;
 
+export type WorldMemoryConsolidationAction = "created" | "superseded" | "appended" | "skipped";
+
+export interface WorldMemoryConsolidationResult {
+  action: WorldMemoryConsolidationAction;
+  memoryId?: string;
+  supersededMemoryId?: string;
+  reason: string;
+}
+
 export interface VisibleActorDirective {
   commandId: string;
   actorInstruction: string;

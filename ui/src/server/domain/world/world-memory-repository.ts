@@ -176,7 +176,41 @@ export class WorldMemoryRepository {
     return rows.map(mapWorldMemory);
   }
 
-  private getById(id: string): WorldMemoryRecord | null {
+  findActiveByCanonicalKey(input: {
+    userId: string;
+    worldId: string;
+    memoryType: string;
+    canonicalKey: string;
+  }): WorldMemoryRecord | null {
+    const row = this.db.sqlite
+      .prepare(
+        `SELECT *
+         FROM world_memories
+         WHERE user_id = ?
+           AND world_id = ?
+           AND memory_type = ?
+           AND canonical_key = ?
+           AND superseded_by IS NULL
+         ORDER BY valid_from_tick DESC, created_at DESC
+         LIMIT 1`,
+      )
+      .get(input.userId, input.worldId, input.memoryType, input.canonicalKey) as WorldMemoryRow | undefined;
+    return row ? mapWorldMemory(row) : null;
+  }
+
+  supersede(input: { memoryId: string; supersededBy: string }): WorldMemoryRecord | null {
+    const now = Date.now();
+    const result = this.db.sqlite
+      .prepare(
+        `UPDATE world_memories
+         SET superseded_by = ?, updated_at = ?
+         WHERE id = ? AND superseded_by IS NULL`,
+      )
+      .run(input.supersededBy, now, input.memoryId);
+    return result.changes === 0 ? null : this.getById(input.memoryId);
+  }
+
+  getById(id: string): WorldMemoryRecord | null {
     const row = this.db.sqlite.prepare("SELECT * FROM world_memories WHERE id = ?").get(id) as WorldMemoryRow | undefined;
     return row ? mapWorldMemory(row) : null;
   }
