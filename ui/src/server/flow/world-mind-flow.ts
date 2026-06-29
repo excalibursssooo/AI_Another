@@ -197,7 +197,7 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
     // ── Insert derived events ──────────────────────────────────────────────
     const createdEventIds: string[] = [userActionEvent.id];
 
-    for (const proposed of decision.proposedEvents) {
+    for (const proposed of decision.events) {
       const eventSequence = eventRepo.allocateNextSequence({ userId, worldId });
       const eventIdempotencyKey = `${envelope.worldRunId}:${proposed.clientEventId}`;
       const ev = eventRepo.createCommitted({
@@ -246,7 +246,7 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
     const now = Date.now();
     const createdCommandIds: string[] = [];
 
-    const commandInputs: CreateActorCommandInput[] = decision.proposedCommands.map((cmd) => {
+    const commandInputs: CreateActorCommandInput[] = decision.commands.map((cmd) => {
       // Derive a stable idempotency key from the command's identity fields.
       // If two proposed commands have the same targetAgentId + commandType +
       // clientEventId (for proposed_event cause), they will collide — this is
@@ -262,7 +262,7 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
         targetAgentId: cmd.targetAgentId,
         commandType: cmd.commandType as CreateActorCommandInput["commandType"],
         priority: cmd.priority as CreateActorCommandInput["priority"],
-        visibility: normalizeVisibility(cmd.visibility, cmd.visibleToUser),
+        visibility: normalizeVisibility(cmd.visibility),
         actorInstruction: cmd.actorInstruction,
         privateReason: cmd.privateReason,
         cause: cmd.cause,
@@ -466,13 +466,12 @@ async function commitFailedPath(input: FailedPathInput): Promise<WorldMindResult
 }
 
 function normalizeVisibility(
-  visibility: { mode: VisibilityScope["mode"]; visibleToActorIds: string[] },
-  visibleToUser?: boolean,
+  visibility: { mode: VisibilityScope["mode"]; visibleToActorIds: string[]; visibleToUser?: boolean },
 ): VisibilityScope {
   return {
     mode: visibility.mode,
     visibleToActorIds: visibility.visibleToActorIds,
-    visibleToUser: visibility.mode === "public" ? true : visibleToUser ?? false,
+    visibleToUser: visibility.mode === "public" ? true : visibility.visibleToUser ?? false,
   };
 }
 

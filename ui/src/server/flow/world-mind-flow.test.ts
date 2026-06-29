@@ -38,7 +38,8 @@ vi.mock("@/server/domain/world/actor-command-repository", async () => {
 function makeValidWorldMindDecision(overrides: Partial<WorldMindDecision> = {}): WorldMindDecision {
   return {
     observations: [],
-    proposedEvents: [
+    intent: "dispatch_commands",
+    events: [
       {
         clientEventId: "evt-derived-1",
         type: "world_incident",
@@ -54,13 +55,12 @@ function makeValidWorldMindDecision(overrides: Partial<WorldMindDecision> = {}):
         summary: "an incident",
       },
     ],
-    proposedCommands: [
+    commands: [
       {
         commandType: "speak_to_user",
         targetAgentId: "agent-default",
         priority: "normal",
         visibility: { mode: "public", visibleToActorIds: [] },
-        visibleToUser: false,
         actorInstruction: "say hello",
         privateReason: null,
         cause: { type: "proposed_event", clientEventId: "evt-derived-1" },
@@ -68,7 +68,7 @@ function makeValidWorldMindDecision(overrides: Partial<WorldMindDecision> = {}):
         relatedEventSummary: null,
       },
     ],
-    memoryCandidates: [],
+    memories: [],
     nextTick: { delayMs: 60_000, reason: "test" },
     ...overrides,
   };
@@ -254,13 +254,12 @@ describe("WorldMindFlow", () => {
     });
 
     const decision = makeValidWorldMindDecision({
-      proposedCommands: [
+      commands: [
         {
           commandType: "speak_to_user",
           targetAgentId: "agent-default",
           priority: "normal",
           visibility: { mode: "public", visibleToActorIds: [] },
-          visibleToUser: false,
           actorInstruction: "should not appear",
           privateReason: null,
           cause: { type: "proposed_event", clientEventId: "evt-nonexistent" },
@@ -394,7 +393,7 @@ describe("WorldMindFlow", () => {
     });
 
     const decision = makeValidWorldMindDecision({
-      proposedEvents: [
+      events: [
         {
           clientEventId: "evt-derived-1",
           type: "world_incident",
@@ -404,13 +403,12 @@ describe("WorldMindFlow", () => {
           summary: "an incident",
         },
       ],
-      proposedCommands: [
+      commands: [
         {
           commandType: "speak_to_user",
           targetAgentId: "agent-default",
           priority: "normal",
           visibility: { mode: "public", visibleToActorIds: [] },
-          visibleToUser: false,
           actorInstruction: "say hello",
           privateReason: null,
           cause: { type: "proposed_event", clientEventId: "evt-derived-1" },
@@ -419,7 +417,7 @@ describe("WorldMindFlow", () => {
         },
       ],
       observations: [],
-      memoryCandidates: [],
+      memories: [],
       nextTick: { delayMs: 60_000, reason: "test" },
     });
 

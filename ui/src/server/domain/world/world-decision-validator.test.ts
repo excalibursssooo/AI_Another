@@ -2,24 +2,66 @@ import { describe, expect, it } from "vitest";
 import { validateWorldMindDecision } from "./world-decision-validator";
 import { WorldMindDecisionSchema, type WorldMindDecision } from "./world-decision";
 
-function makeDecision(overrides: Partial<WorldMindDecision>): WorldMindDecision {
+function makeDecision(overrides: Partial<WorldMindDecision> = {}): WorldMindDecision {
   return {
     observations: [],
-    proposedEvents: [],
-    proposedCommands: [],
-    memoryCandidates: [],
-    nextTick: { delayMs: 60_000, reason: "tick" },
+    intent: "dispatch_commands",
+    events: [],
+    commands: [],
+    memories: [],
+    nextTick: null,
     ...overrides,
   };
 }
 
 describe("validateWorldMindDecision", () => {
+  it("parses the spec-aligned decision field names", () => {
+    const parsed = WorldMindDecisionSchema.parse({
+      observations: ["The user greeted the guard."],
+      intent: "dispatch_commands",
+      events: [
+        {
+          clientEventId: "evt-1",
+          type: "world_incident",
+          actorIds: ["agent-default"],
+          payload: {
+            title: "A guard notices the user",
+            description: "The guard pauses and studies the user.",
+            tensionDelta: 0.05,
+          },
+          visibility: { mode: "public", visibleToActorIds: [], visibleToUser: true },
+          summary: "The guard notices the user.",
+        },
+      ],
+      commands: [
+        {
+          commandType: "speak_to_user",
+          targetAgentId: "agent-default",
+          priority: "normal",
+          visibility: { mode: "public", visibleToActorIds: [], visibleToUser: true },
+          actorInstruction: "Ask the user what business brings them here.",
+          privateReason: null,
+          cause: { type: "proposed_event", clientEventId: "evt-1" },
+          payload: {},
+          relatedEventSummary: "The guard notices the user.",
+        },
+      ],
+      memories: [],
+      nextTick: null,
+    });
+
+    expect(parsed.events).toHaveLength(1);
+    expect(parsed.commands).toHaveLength(1);
+    expect(parsed.memories).toEqual([]);
+  });
+
   it("allows nextTick to be null in the structured decision schema", () => {
     const parsed = WorldMindDecisionSchema.parse({
       observations: ["The scene is quiet."],
-      proposedEvents: [],
-      proposedCommands: [],
-      memoryCandidates: [],
+      intent: "dispatch_commands",
+      events: [],
+      commands: [],
+      memories: [],
       nextTick: null,
     });
 
@@ -29,23 +71,22 @@ describe("validateWorldMindDecision", () => {
 
   it("accepts a valid decision with one proposed event and one command referencing it", () => {
     const decision = makeDecision({
-      proposedEvents: [
+      events: [
         {
           clientEventId: "evt-1",
-          type: "user_action",
+          type: "world_incident",
           actorIds: ["agent-a"],
           payload: {},
           visibility: { mode: "public", visibleToActorIds: [] },
           summary: "User said hello",
         },
       ],
-      proposedCommands: [
+      commands: [
         {
           commandType: "speak_to_user",
           targetAgentId: "agent-a",
           priority: "normal",
           visibility: { mode: "public", visibleToActorIds: [] },
-          visibleToUser: true,
           actorInstruction: "Greet the user back",
           privateReason: null,
           cause: { type: "proposed_event", clientEventId: "evt-1" },
@@ -67,12 +108,12 @@ describe("validateWorldMindDecision", () => {
     }
   });
 
-  it("rejects duplicate clientEventId in proposedEvents", () => {
+  it("rejects duplicate clientEventId in events", () => {
     const decision = makeDecision({
-      proposedEvents: [
+      events: [
         {
           clientEventId: "evt-1",
-          type: "user_action",
+          type: "world_incident",
           actorIds: ["agent-a"],
           payload: {},
           visibility: { mode: "public", visibleToActorIds: [] },
@@ -87,7 +128,7 @@ describe("validateWorldMindDecision", () => {
           summary: "Duplicate event",
         },
       ],
-      proposedCommands: [],
+      commands: [],
     });
 
     const result = validateWorldMindDecision({
@@ -104,7 +145,7 @@ describe("validateWorldMindDecision", () => {
 
   it("rejects unknown event types", () => {
     const decision = makeDecision({
-      proposedEvents: [
+      events: [
         {
           clientEventId: "evt-1",
           type: "state_patch",
@@ -114,7 +155,7 @@ describe("validateWorldMindDecision", () => {
           summary: "Illegal patch",
         },
       ],
-      proposedCommands: [],
+      commands: [],
     });
 
     const result = validateWorldMindDecision({
@@ -131,23 +172,22 @@ describe("validateWorldMindDecision", () => {
 
   it("rejects command cause referencing a missing proposed event", () => {
     const decision = makeDecision({
-      proposedEvents: [
+      events: [
         {
           clientEventId: "evt-1",
-          type: "user_action",
+          type: "world_incident",
           actorIds: ["agent-a"],
           payload: {},
           visibility: { mode: "public", visibleToActorIds: [] },
           summary: "Only event",
         },
       ],
-      proposedCommands: [
+      commands: [
         {
           commandType: "speak_to_user",
           targetAgentId: "agent-a",
           priority: "normal",
           visibility: { mode: "public", visibleToActorIds: [] },
-          visibleToUser: true,
           actorInstruction: "Respond",
           privateReason: null,
           cause: { type: "proposed_event", clientEventId: "evt-missing" },
@@ -171,14 +211,13 @@ describe("validateWorldMindDecision", () => {
 
   it("rejects command with unknown targetAgentId", () => {
     const decision = makeDecision({
-      proposedEvents: [],
-      proposedCommands: [
+      events: [],
+      commands: [
         {
           commandType: "speak_to_user",
           targetAgentId: "ghost",
           priority: "normal",
           visibility: { mode: "public", visibleToActorIds: [] },
-          visibleToUser: true,
           actorInstruction: "Say hello",
           privateReason: null,
           cause: { type: "director_no_event", reasonCode: "no-action" },
@@ -202,13 +241,12 @@ describe("validateWorldMindDecision", () => {
 
   it("rejects public actorInstruction containing hidden fact summary", () => {
     const decision = makeDecision({
-      proposedCommands: [
+      commands: [
         {
           commandType: "speak_to_user",
           targetAgentId: "agent-a",
           priority: "normal",
           visibility: { mode: "public", visibleToActorIds: [] },
-          visibleToUser: true,
           actorInstruction: "Remember that the secret is top-secret-keyword",
           privateReason: null,
           cause: { type: "director_no_event", reasonCode: "reminder" },
@@ -232,13 +270,12 @@ describe("validateWorldMindDecision", () => {
 
   it("rejects private actorInstruction containing hidden fact summary", () => {
     const decision = makeDecision({
-      proposedCommands: [
+      commands: [
         {
           commandType: "speak_to_user",
           targetAgentId: "agent-a",
           priority: "normal",
           visibility: { mode: "private", visibleToActorIds: [] },
-          visibleToUser: true,
           actorInstruction: "Remember that the secret is top-secret-keyword",
           privateReason: null,
           cause: { type: "director_no_event", reasonCode: "reminder" },

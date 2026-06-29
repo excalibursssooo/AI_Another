@@ -28,9 +28,9 @@ export function validateWorldMindDecision(input: {
   const errors: string[] = [];
   const { decision, activeAgentIds, hiddenFactSummaries } = input;
 
-  // 1. Check duplicate clientEventId and known event types in proposedEvents.
+  // 1. Check duplicate clientEventId and known event types in events.
   const eventIds = new Set<string>();
-  for (const ev of decision.proposedEvents) {
+  for (const ev of decision.events) {
     if (eventIds.has(ev.clientEventId)) {
       errors.push(`Duplicate clientEventId: ${ev.clientEventId}`);
     }
@@ -41,7 +41,7 @@ export function validateWorldMindDecision(input: {
   }
 
   // 2. Check each command's type and cause references.
-  for (const cmd of decision.proposedCommands) {
+  for (const cmd of decision.commands) {
     if (!ACTOR_COMMAND_TYPES.has(cmd.commandType)) {
       errors.push(`Unknown actor command type: ${cmd.commandType}`);
     }
@@ -52,14 +52,14 @@ export function validateWorldMindDecision(input: {
 
   // 3. Check each command's targetAgentId is in activeAgentIds.
   const agentSet = new Set(activeAgentIds);
-  for (const cmd of decision.proposedCommands) {
+  for (const cmd of decision.commands) {
     if (!agentSet.has(cmd.targetAgentId)) {
       errors.push(`Command references unknown agent: ${cmd.targetAgentId}`);
     }
   }
 
   // 4. Check actorInstruction does not contain hidden fact summaries.
-  for (const cmd of decision.proposedCommands) {
+  for (const cmd of decision.commands) {
     for (const summary of hiddenFactSummaries) {
       if (summary && cmd.actorInstruction.includes(summary)) {
         errors.push(`Actor instruction leaks hidden fact: ${summary}`);

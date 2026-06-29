@@ -1,58 +1,65 @@
 import { z } from "zod";
-import type { ActorCommandType, ActorCommandPriority } from "./types";
 
-// Note: VisibilityScopeSchema uses `mode` field to match the brief's discriminated-union
-// pattern, deviating from the existing `VisibilityScope.level` interface in types.ts.
 export const VisibilityScopeSchema = z.object({
   mode: z.enum(["public", "private", "hidden"]),
   visibleToActorIds: z.array(z.string()).default([]),
+  visibleToUser: z.boolean().default(false),
 });
 
-export type VisibilityScope = z.infer<typeof VisibilityScopeSchema>;
+export type VisibilityScopeDecision = z.infer<typeof VisibilityScopeSchema>;
 
 export const CommandCauseSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("proposed_event"), clientEventId: z.string() }),
-  z.object({ type: z.literal("committed_event"), eventId: z.string() }),
-  z.object({ type: z.literal("source_action"), sourceActionId: z.string() }),
-  z.object({ type: z.literal("director_no_event"), reasonCode: z.string() }),
+  z.object({ type: z.literal("proposed_event"), clientEventId: z.string().min(1) }),
+  z.object({ type: z.literal("committed_event"), eventId: z.string().min(1) }),
+  z.object({ type: z.literal("source_action"), sourceActionId: z.string().min(1) }),
+  z.object({ type: z.literal("director_no_event"), reasonCode: z.string().min(1) }),
 ]);
 
-export type CommandCause = z.infer<typeof CommandCauseSchema>;
+export type CommandCauseDecision = z.infer<typeof CommandCauseSchema>;
+
+export const WorldMindIntentSchema = z.enum(["no_op", "advance_scene", "trigger_event", "dispatch_commands"]);
 
 export const ProposedWorldEventSchema = z.object({
-  clientEventId: z.string(),
-  type: z.string(),
-  actorIds: z.array(z.string()),
+  clientEventId: z.string().min(1),
+  type: z.enum([
+    "world_incident",
+    "character_action",
+    "relationship_shift",
+    "knowledge_reveal",
+    "fact_correction",
+    "arc_progress",
+    "system_note",
+  ]),
   payload: z.unknown(),
   visibility: VisibilityScopeSchema,
-  summary: z.string(),
+  actorIds: z.array(z.string()).default([]),
+  locationKey: z.string().nullable().optional(),
+  summary: z.string().min(1),
 });
 
 export type ProposedWorldEvent = z.infer<typeof ProposedWorldEventSchema>;
 
 export const ProposedActorCommandSchema = z.object({
-  commandType: z.string() as z.ZodType<ActorCommandType>,
-  targetAgentId: z.string(),
-  priority: z.string() as z.ZodType<ActorCommandPriority>,
+  commandType: z.enum(["speak_to_user", "move_location", "investigate", "remember", "publish_post", "initiate_event"]),
+  targetAgentId: z.string().min(1),
+  priority: z.enum(["low", "normal", "high"]),
   visibility: VisibilityScopeSchema,
-  visibleToUser: z.boolean(),
-  actorInstruction: z.string(),
+  actorInstruction: z.string().min(1),
   privateReason: z.string().nullable(),
   cause: CommandCauseSchema,
-  payload: z.unknown(),
-  relatedEventSummary: z.string().nullable(),
+  payload: z.unknown().default({}),
+  relatedEventSummary: z.string().nullable().optional(),
 });
 
 export type ProposedActorCommand = z.infer<typeof ProposedActorCommandSchema>;
 
 export const WorldMemoryCandidateSchema = z.object({
-  subjectType: z.string(),
-  subjectKey: z.string(),
-  memoryType: z.string(),
+  subjectType: z.enum(["world", "arc", "faction", "location", "character", "user"]),
+  subjectKey: z.string().min(1),
+  memoryType: z.enum(["lore", "rule", "relationship", "secret", "unresolved_thread"]),
   canonicalKey: z.string().nullable(),
-  content: z.string(),
+  content: z.string().min(1),
   visibility: VisibilityScopeSchema,
-  visibleToUser: z.boolean(),
   importance: z.number().min(0).max(1),
   confidence: z.number().min(0).max(1),
   sourceEventId: z.string().nullable(),
@@ -61,14 +68,15 @@ export const WorldMemoryCandidateSchema = z.object({
 export type WorldMemoryCandidate = z.infer<typeof WorldMemoryCandidateSchema>;
 
 export const WorldMindDecisionSchema = z.object({
-  observations: z.array(z.string()).max(6),
-  proposedEvents: z.array(ProposedWorldEventSchema).max(3),
-  proposedCommands: z.array(ProposedActorCommandSchema).max(5),
-  memoryCandidates: z.array(WorldMemoryCandidateSchema).max(8),
+  observations: z.array(z.string().min(1)).max(6),
+  intent: WorldMindIntentSchema,
+  events: z.array(ProposedWorldEventSchema).max(3),
+  commands: z.array(ProposedActorCommandSchema).max(5),
+  memories: z.array(WorldMemoryCandidateSchema).max(8),
   nextTick: z
     .object({
       delayMs: z.number().min(30_000).max(86_400_000),
-      reason: z.string(),
+      reason: z.string().min(1),
     })
     .nullable(),
 });
