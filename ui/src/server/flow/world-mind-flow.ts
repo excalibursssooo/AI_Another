@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 
 import type { AppDatabase } from "@/server/db/client";
+import { TaskRepository } from "@/server/domain/chat/task-repository";
+import type { EmbedText } from "@/server/domain/chat/memory-consolidator";
 import type { WorldRunEnvelope } from "@/server/domain/world/types";
 import type { WorldMindDecision } from "@/server/domain/world/world-decision";
 import { ActorCommandRepository } from "@/server/domain/world/actor-command-repository";
@@ -13,6 +15,7 @@ import { validateWorldMindDecision } from "@/server/domain/world/world-decision-
 import { WorldEventRepository } from "@/server/domain/world/world-event-repository";
 import { WorldRunRepository } from "@/server/domain/world/world-run-repository";
 import { WorldStateRepository, createInitialWorldSnapshot } from "@/server/domain/world/world-state-repository";
+import { WorldMemoryConsolidator } from "@/server/domain/world/world-memory-consolidator";
 import { reduceWorldEvents } from "@/server/domain/world/world-reducer";
 import type { CharacterStateRecord, VisibilityScope, WorldEventRecord } from "@/server/domain/world/types";
 import type { GenerateWorldDecision } from "@/server/ai/world-director";
@@ -29,6 +32,9 @@ export interface WorldMindContext {
   generateDecision?: GenerateWorldDecision;
   /** Pre-supplied decision — skips generation if provided. */
   decision?: WorldMindDecision;
+  embedText?: EmbedText;
+  sourceTaskId?: string | null;
+  disableSecondaryEffects?: boolean;
 }
 
 export interface WorldMindResult {
@@ -36,6 +42,7 @@ export interface WorldMindResult {
   decisionLogId: string;
   createdEventIds: string[];
   createdCommandIds: string[];
+  proposedEventIdToCommittedEventId?: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +144,16 @@ export async function createWorldMindFlow(
 
   // ── 8. CommitWorldRunTransaction (accepted path) ─────────────────────────
   try {
-    return await commitAcceptedPath({ db, envelope, decision, dirContext, ctx, characterStates, modelProvider, modelName, rawDecisionJson });
+    const result = await commitAcceptedPath({ db, envelope, decision, dirContext, ctx, characterStates, modelProvider, modelName, rawDecisionJson });
+    await runWorldMindSecondaryEffects({
+      db,
+      envelope,
+      decision,
+      result,
+      embedText: ctx.embedText,
+      disabled: ctx.disableSecondaryEffects === true,
+    }).catch(() => undefined);
+    return result;
   } catch (err) {
     // Transaction failed — route to the transaction_failed path
     return commitFailedPath({
@@ -336,6 +352,7 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
       logId: logRecord.id,
       createdEventIds,
       createdCommandIds,
+      proposedEventIdToCommittedEventId: Object.fromEntries(proposedEventIdToCommittedEventId.entries()),
     };
   })();
 
@@ -344,7 +361,69 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
     decisionLogId: result.logId,
     createdEventIds: result.createdEventIds,
     createdCommandIds: result.createdCommandIds,
+    proposedEventIdToCommittedEventId: result.proposedEventIdToCommittedEventId,
   };
+}
+
+async function runWorldMindSecondaryEffects(input: {
+  db: AppDatabase;
+  envelope: WorldRunEnvelope;
+  decision: WorldMindDecision;
+  result: WorldMindResult;
+  embedText?: EmbedText;
+  disabled: boolean;
+}): Promise<void> {
+  if (input.disabled || input.result.validationStatus !== "accepted") {
+    return;
+  }
+
+  const latestSnapshot = new WorldStateRepository(input.db).getLatest({
+    userId: input.envelope.userId,
+    worldId: input.envelope.worldId,
+  });
+  const currentTick = latestSnapshot?.tick ?? 0;
+  const eventMap = input.result.proposedEventIdToCommittedEventId ?? {};
+  const candidates = input.decision.memories.map((candidate) => ({
+    ...candidate,
+    sourceEventId:
+      candidate.sourceEventId?.startsWith("CLIENT_EVENT:")
+        ? eventMap[candidate.sourceEventId.slice("CLIENT_EVENT:".length)] ?? null
+        : candidate.sourceEventId,
+  }));
+
+  if (candidates.length > 0) {
+    await new WorldMemoryConsolidator({ db: input.db, embedText: input.embedText }).consolidate({
+      userId: input.envelope.userId,
+      worldId: input.envelope.worldId,
+      sourceDecisionId: input.envelope.decisionId,
+      currentTick,
+      candidates,
+    });
+  }
+
+  const hasCommittedEvent = input.result.createdEventIds.length > 0;
+  const hasUnresolvedThread = (latestSnapshot?.state.unresolvedEventIds.length ?? 0) > 0;
+  if (!hasCommittedEvent && !hasUnresolvedThread && !input.decision.nextTick) {
+    return;
+  }
+  if (!input.decision.nextTick && !hasUnresolvedThread) {
+    return;
+  }
+
+  const delayMs = input.decision.nextTick?.delayMs ?? 10 * 60_000;
+  const reason = input.decision.nextTick?.reason ?? "unresolved world thread";
+  const scheduledTick = Date.now() + delayMs;
+  new TaskRepository(input.db).enqueue({
+    kind: "world_tick",
+    payload: {
+      userId: input.envelope.userId,
+      worldId: input.envelope.worldId,
+      reason,
+      scheduledTick,
+    },
+    runAfter: scheduledTick,
+    idempotencyKey: `world_tick:${input.envelope.userId}:${input.envelope.worldId}:${input.envelope.worldRunId}:${reason}`,
+  });
 }
 
 // ---------------------------------------------------------------------------
