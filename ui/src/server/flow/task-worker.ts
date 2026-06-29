@@ -20,7 +20,11 @@ export async function drainChatTasks(options: {
   let failed = 0;
 
   for (let index = 0; index < limit; index += 1) {
-    const task = tasks.claimNext({ kinds: ["memory_extract"] });
+    const task = tasks.claimNext({
+      kinds: ["memory_extract"],
+      workerId: "chat-task-worker",
+      leaseMs: 60_000,
+    });
     if (!task) {
       break;
     }

@@ -34,16 +34,17 @@ describe("TaskRepository", () => {
     expect(tasks.claimNext()).toBeNull();
   });
 
-  it("markFailed increments attempts and sets last_error", () => {
+  it("markFailed increments attempts, records last_error, and schedules a retry", () => {
     const db = createTestDatabase();
     const tasks = new TaskRepository(db);
     const enqueued = tasks.enqueue({ kind: "memory_extract", payload: { foo: 1 } });
     const errorMessage = "boom: something exploded";
     const failed = tasks.markFailed(enqueued.id, errorMessage);
     expect(failed).not.toBeNull();
-    expect(failed?.status).toBe("failed");
+    expect(failed?.status).toBe("pending");
     expect(failed?.attempts).toBe(1);
     expect(failed?.lastError).toContain("boom");
+    expect(failed?.nextAttemptAt).toBeGreaterThan(Date.now());
 
     const reread = tasks.get(enqueued.id);
     expect(reread?.attempts).toBe(1);
