@@ -20,6 +20,9 @@ export interface BuildDirectorContextInput {
 export function buildWorldDirectorContext(input: BuildDirectorContextInput): DirectorContext {
   const { userId, worldId, sourceInput, targetAgentId, db } = input;
 
+  // Honor both top-level targetAgentId and sourceInput.targetAgentId for ACL filtering
+  const effectiveTargetAgentId = targetAgentId ?? sourceInput?.targetAgentId;
+
   // Strict world loading — never fallback to "default"
   const worldRepo = new WorldRepository(db);
   const world = worldRepo.get(worldId);
@@ -38,15 +41,15 @@ export function buildWorldDirectorContext(input: BuildDirectorContextInput): Dir
   const eventRepo = new WorldEventRepository(db);
   const allRecentWorldEvents = eventRepo.listRecentForWorld({ userId, worldId, limit: 24 });
 
-  // When targetAgentId is set, filter world events to only what the actor can see
+  // When effectiveTargetAgentId is set, filter world events to only what the actor can see
   // hiddenFactSummaries still gets ALL hidden events (unfiltered) for the validator
-  const visibleWorldEvents = targetAgentId
-    ? allRecentWorldEvents.filter((event) => isVisibleToActor(event, targetAgentId))
+  const visibleWorldEvents = effectiveTargetAgentId
+    ? allRecentWorldEvents.filter((event) => isVisibleToActor(event, effectiveTargetAgentId))
     : allRecentWorldEvents;
 
-  // Load actor-specific events when targetAgentId is set
-  const recentActorEvents = targetAgentId
-    ? eventRepo.listRecentForActor({ userId, worldId, agentId: targetAgentId, limit: 8 })
+  // Load actor-specific events when effectiveTargetAgentId is set
+  const recentActorEvents = effectiveTargetAgentId
+    ? eventRepo.listRecentForActor({ userId, worldId, agentId: effectiveTargetAgentId, limit: 8 })
     : [];
 
   // Load world memory
@@ -64,15 +67,15 @@ export function buildWorldDirectorContext(input: BuildDirectorContextInput): Dir
 
   // Determine which memories to include in prompt
   // Hidden memories are always excluded from the actor-facing prompt.
-  // When targetAgentId is set we use recallForActor (already excludes hidden).
+  // When effectiveTargetAgentId is set we use recallForActor (already excludes hidden).
   // When not set we must filter them out ourselves.
   let promptMemories = directorMemories;
-  if (targetAgentId !== undefined) {
+  if (effectiveTargetAgentId !== undefined) {
     // Use actor-filtered memories for the prompt; still collect hidden via director recall above
     const actorMemories = memoryRepo.recallForActor({
       userId,
       worldId,
-      agentId: targetAgentId,
+      agentId: effectiveTargetAgentId,
       subjectType: "world",
     });
     promptMemories = actorMemories;
