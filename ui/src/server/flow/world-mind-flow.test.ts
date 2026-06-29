@@ -1,9 +1,8 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, afterEach } from "vitest";
 
 import { createTestDatabase } from "@/server/db/client";
 import { WorldRepository } from "@/server/domain/chat/repositories";
 import type { WorldMindDecision } from "@/server/domain/world/world-decision";
-import { ActorCommandRepository } from "@/server/domain/world/actor-command-repository";
 import { CharacterStateRepository } from "@/server/domain/world/character-state-repository";
 import { WorldDecisionLogRepository } from "@/server/domain/world/world-decision-log-repository";
 import { WorldEventRepository } from "@/server/domain/world/world-event-repository";
@@ -104,7 +103,7 @@ describe("WorldMindFlow", () => {
 
     const decision = makeValidWorldMindDecision();
 
-    const result = await createWorldMindFlow({
+    await createWorldMindFlow({
       db,
       envelope,
       sourceInput: { message: "user said hi", targetAgentId: "agent-default" },
@@ -138,7 +137,6 @@ describe("WorldMindFlow", () => {
     expect(snapshot?.appliedEventSequence).toBe(2);
     expect(snapshot?.state.publicFacts.map((fact) => fact.factKey)).toContain("incident-fact");
 
-    const cmdRepo = new ActorCommandRepository(db);
     const commands = db.sqlite
       .prepare("SELECT * FROM actor_commands WHERE world_run_id = ? AND status = 'pending'")
       .all(envelope.worldRunId) as Array<Record<string, unknown>>;
@@ -321,7 +319,6 @@ describe("WorldMindFlow", () => {
     expect(snapshot?.appliedEventSequence).toBe(1);
     expect(snapshot?.appliedEventIds).toEqual([evt.id]);
 
-    const cmdRepo = new ActorCommandRepository(db);
     const commands = db.sqlite
       .prepare("SELECT * FROM actor_commands WHERE world_run_id = ?")
       .all(envelope.worldRunId) as Array<Record<string, unknown>>;

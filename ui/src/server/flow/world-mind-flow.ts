@@ -89,7 +89,6 @@ export async function createWorldMindFlow(
   let rawDecisionJson: string | null = null;
   let modelProvider = "mock";
   let modelName = "mock";
-  let validationStatus: WorldMindResult["validationStatus"] = "accepted";
 
   if (ctx.decision) {
     decision = ctx.decision;
@@ -127,7 +126,6 @@ export async function createWorldMindFlow(
   });
 
   if (!validation.ok) {
-    validationStatus = "rejected";
     return commitFailedPath({
       db,
       envelope,

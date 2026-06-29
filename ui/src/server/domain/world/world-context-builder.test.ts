@@ -13,7 +13,6 @@ import { PUBLIC_VISIBILITY } from "./types";
 describe("buildWorldDirectorContext", () => {
   it("throws when world id does not exist (no fallback to default)", () => {
     const db = createTestDatabase();
-    const worldRepo = new WorldRepository(db);
 
     // Ensure default world does NOT exist in this fresh db (or explicitly delete it)
     db.sqlite.exec("DELETE FROM worlds WHERE id = 'default'");
@@ -46,7 +45,7 @@ describe("buildWorldDirectorContext", () => {
 
     // Save a snapshot with character state
     const snapshot = createInitialWorldSnapshot({ userId: "u001", worldId: "myworld", now: 1000 });
-    const saved = snapshots.saveLatest({
+    snapshots.saveLatest({
       ...snapshot,
       tick: 5,
       appliedEventSequence: 3,

@@ -6,6 +6,7 @@ import { createWorldMindFlow } from "./world-mind-flow";
 import { createWorldInteractionFlow } from "./world-interaction-flow";
 import { createTestDatabase } from "@/server/db/client";
 import { AgentRepository } from "@/server/domain/chat/repositories";
+import type { ActorCommandRepository } from "@/server/domain/world/actor-command-repository";
 import type { ActorCommandRecord } from "@/server/domain/world/types";
 import type { WorldMindResult } from "./world-mind-flow";
 
@@ -82,6 +83,16 @@ function makeFakeActorCommand(overrides: Partial<ActorCommandRecord> = {}): Acto
 
 type FakeChatFn = (input: ChatContext) => Promise<ChatContext>;
 type FakeWorldMindFn = typeof createWorldMindFlow;
+type FakeActorCommandRepo = Pick<ActorCommandRepository, "claimVisibleSpeakCommand" | "markDone" | "releaseClaim">;
+
+function makeFakeActorCommandRepo(overrides: Partial<FakeActorCommandRepo> = {}): ActorCommandRepository {
+  return {
+    claimVisibleSpeakCommand: vi.fn().mockReturnValue(null),
+    markDone: vi.fn(),
+    releaseClaim: vi.fn(),
+    ...overrides,
+  } as unknown as ActorCommandRepository;
+}
 
 describe("WorldInteractionFlow", () => {
   // -------------------------------------------------------------------------
@@ -255,11 +266,11 @@ describe("WorldInteractionFlow", () => {
         db,
         createWorldMind: fakeWorldMind,
         createChat: fakeChat,
-        actorCommandRepo: {
+        actorCommandRepo: makeFakeActorCommandRepo({
           claimVisibleSpeakCommand: claimMock,
           markDone: markDoneMock,
           releaseClaim: releaseClaimMock,
-        } as any,
+        }),
       },
     );
 
@@ -300,11 +311,11 @@ describe("WorldInteractionFlow", () => {
         db,
         createWorldMind: secondWorldMind,
         createChat: secondFakeChat,
-        actorCommandRepo: {
+        actorCommandRepo: makeFakeActorCommandRepo({
           claimVisibleSpeakCommand: vi.fn().mockReturnValue(null), // no more commands
           markDone: vi.fn(),
           releaseClaim: vi.fn(),
-        } as any,
+        }),
       },
     );
 
@@ -331,11 +342,11 @@ describe("WorldInteractionFlow", () => {
         db,
         createWorldMind: fakeWorldMind,
         createChat: fakeChat,
-        actorCommandRepo: {
+        actorCommandRepo: makeFakeActorCommandRepo({
           claimVisibleSpeakCommand: vi.fn().mockReturnValue(null),
           markDone: vi.fn(),
           releaseClaim: vi.fn(),
-        } as any,
+        }),
       },
     );
 
@@ -361,11 +372,11 @@ describe("WorldInteractionFlow", () => {
         db,
         createWorldMind: fakeWorldMind,
         createChat: fakeChat,
-        actorCommandRepo: {
+        actorCommandRepo: makeFakeActorCommandRepo({
           claimVisibleSpeakCommand: vi.fn().mockReturnValue(null), // no visible command
           markDone: vi.fn(),
           releaseClaim: vi.fn(),
-        } as any,
+        }),
       },
     );
 
@@ -399,11 +410,11 @@ describe("WorldInteractionFlow", () => {
           db,
           createWorldMind: fakeWorldMind,
           createChat: fakeChat,
-          actorCommandRepo: {
+          actorCommandRepo: makeFakeActorCommandRepo({
             claimVisibleSpeakCommand: vi.fn().mockReturnValue({ ...fakeActorCommand, status: "claimed" as const }),
             markDone: markDoneMock,
             releaseClaim: releaseClaimMock,
-          } as any,
+          }),
         },
       ),
     ).rejects.toThrow("chat model failed");

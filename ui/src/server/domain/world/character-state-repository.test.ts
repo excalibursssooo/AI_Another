@@ -46,7 +46,7 @@ describe("CharacterStateRepository", () => {
 
     it("returns existing record unchanged if found", () => {
       const repo = new CharacterStateRepository(createTestDatabase());
-      const first = repo.getOrCreateDefault({
+      repo.getOrCreateDefault({
         userId: "u001",
         worldId: "default",
         agentId: "agent-default",

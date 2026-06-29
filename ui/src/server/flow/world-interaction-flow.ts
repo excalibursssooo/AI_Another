@@ -1,5 +1,4 @@
 import type { AppDatabase } from "@/server/db/client";
-import type { VisibleActorDirective } from "@/server/domain/world/types";
 import type { WorldRunEnvelope } from "@/server/domain/world/types";
 import { ActorCommandRepository } from "@/server/domain/world/actor-command-repository";
 import { WorldRunRepository } from "@/server/domain/world/world-run-repository";

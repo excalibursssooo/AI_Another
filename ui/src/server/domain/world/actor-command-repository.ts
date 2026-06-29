@@ -6,7 +6,6 @@ import type {
   ActorCommandType,
   ActorCommandPriority,
   ActorCommandStatus,
-  CommandCause,
   VisibilityScope,
 } from "./types";
 
