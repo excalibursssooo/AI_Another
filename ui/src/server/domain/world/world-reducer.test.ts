@@ -253,6 +253,48 @@ describe("reduceWorldEvents", () => {
       expect(result.characterStates![0].lastActedAt).toBeLessThanOrEqual(after);
     });
 
+    it("moves a character from a command result character_action event", () => {
+      const previousSnapshot = createInitialWorldSnapshot({ userId: "u001", worldId: "default" });
+      const result = reduceWorldEvents({
+        previousSnapshot,
+        reducerVersion: 1,
+        previousCharacterStates: [makeCharacterState({ agentId: "agent-default", locationKey: "start" })],
+        events: [
+          event({
+            id: "wevt-move",
+            sequence: 1,
+            type: "character_action",
+            actorIds: ["agent-default"],
+            payload: { action: "move_location", locationKey: "harbor", summary: "Move to the harbor." },
+            summary: "Move to the harbor.",
+          }),
+        ],
+      });
+
+      expect(result.characterStates?.[0].locationKey).toBe("harbor");
+    });
+
+    it("adds knowledge keys from a command result knowledge_reveal event", () => {
+      const previousSnapshot = createInitialWorldSnapshot({ userId: "u001", worldId: "default" });
+      const result = reduceWorldEvents({
+        previousSnapshot,
+        reducerVersion: 1,
+        previousCharacterStates: [makeCharacterState({ agentId: "agent-default", locationKey: "start" })],
+        events: [
+          event({
+            id: "wevt-remember",
+            sequence: 1,
+            type: "knowledge_reveal",
+            actorIds: ["agent-default"],
+            payload: { factKey: "secret:harbor-password", summary: "The harbor password clue is a silver bell." },
+            summary: "The harbor password clue is a silver bell.",
+          }),
+        ],
+      });
+
+      expect(result.characterStates?.[0].knowledgeKeys).toContain("secret:harbor-password");
+    });
+
     it("user_action observed_only advances appliedEventIds and sequence without mutating character state", () => {
       const previousSnapshot = createInitialWorldSnapshot({ userId: "u001", worldId: "default", now: 1000 });
       const charState = makeCharacterState({ agentId: "agent-c", locationKey: "tavern", knowledgeKeys: ["fact-x"] });
