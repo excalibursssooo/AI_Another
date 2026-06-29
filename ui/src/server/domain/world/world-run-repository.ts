@@ -122,7 +122,7 @@ export class WorldRunRepository {
     return row ? mapWorldRun(row) : null;
   }
 
-  private getByIdempotencyKey(idempotencyKey: string): WorldRunEnvelope | null {
+  getByIdempotencyKey(idempotencyKey: string): WorldRunEnvelope | null {
     const row = this.db.sqlite
       .prepare("SELECT * FROM world_runs WHERE idempotency_key = ?")
       .get(idempotencyKey) as WorldRunRow | undefined;
