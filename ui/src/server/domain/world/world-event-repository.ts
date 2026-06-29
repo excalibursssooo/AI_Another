@@ -164,6 +164,7 @@ export class WorldEventRepository {
          WHERE user_id = ?
            AND world_id = ?
            AND status = 'committed'
+           AND visibility != 'hidden'
            AND EXISTS (SELECT 1 FROM json_each(actor_ids_json) WHERE value = ?)
          ORDER BY sequence DESC
          LIMIT ?`,

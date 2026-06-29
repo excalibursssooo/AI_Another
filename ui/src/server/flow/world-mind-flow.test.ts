@@ -38,7 +38,8 @@ vi.mock("@/server/domain/world/actor-command-repository", async () => {
 function makeValidWorldMindDecision(overrides: Partial<WorldMindDecision> = {}): WorldMindDecision {
   return {
     observations: [],
-    proposedEvents: [
+    intent: "dispatch_commands",
+    events: [
       {
         clientEventId: "evt-derived-1",
         type: "world_incident",
@@ -54,13 +55,12 @@ function makeValidWorldMindDecision(overrides: Partial<WorldMindDecision> = {}):
         summary: "an incident",
       },
     ],
-    proposedCommands: [
+    commands: [
       {
         commandType: "speak_to_user",
         targetAgentId: "agent-default",
         priority: "normal",
         visibility: { mode: "public", visibleToActorIds: [] },
-        visibleToUser: false,
         actorInstruction: "say hello",
         privateReason: null,
         cause: { type: "proposed_event", clientEventId: "evt-derived-1" },
@@ -68,7 +68,7 @@ function makeValidWorldMindDecision(overrides: Partial<WorldMindDecision> = {}):
         relatedEventSummary: null,
       },
     ],
-    memoryCandidates: [],
+    memories: [],
     nextTick: { delayMs: 60_000, reason: "test" },
     ...overrides,
   };
@@ -108,7 +108,12 @@ describe("WorldMindFlow", () => {
       db,
       envelope,
       sourceInput: { message: "user said hi", targetAgentId: "agent-default" },
-      generateDecision: async () => decision,
+      generateDecision: async () => ({
+        decision,
+        rawDecisionJson: JSON.stringify(decision),
+        modelProvider: "test",
+        modelName: "test-director",
+      }),
     });
 
     const eventRepo = new WorldEventRepository(db);
@@ -147,6 +152,11 @@ describe("WorldMindFlow", () => {
     expect(logs[0].validationStatus).toBe("accepted");
     expect(logs[0].createdEventIdsJson).toContain(userAction.id);
     expect(logs[0].createdCommandIdsJson).toHaveLength(1);
+    expect(logs[0].rawDecisionJson).toContain('"intent"');
+    expect(logs[0].validatedDecisionJson).toContain('"events"');
+    expect(logs[0].promptContextHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(logs[0].modelProvider).toBe("test");
+    expect(logs[0].modelName).toBe("test-director");
 
     const run = runRepo.getById(envelope.worldRunId);
     expect(run?.status).toBe("committed");
@@ -182,13 +192,23 @@ describe("WorldMindFlow", () => {
       db,
       envelope: firstEnvelope,
       sourceInput: { message: "first", targetAgentId: "agent-default" },
-      generateDecision: async () => makeValidWorldMindDecision(),
+      generateDecision: async () => ({
+        decision: makeValidWorldMindDecision(),
+        rawDecisionJson: JSON.stringify(makeValidWorldMindDecision()),
+        modelProvider: "test",
+        modelName: "test-director",
+      }),
     });
     await createWorldMindFlow({
       db,
       envelope: secondEnvelope,
       sourceInput: { message: "second", targetAgentId: "agent-default" },
-      generateDecision: async () => makeValidWorldMindDecision(),
+      generateDecision: async () => ({
+        decision: makeValidWorldMindDecision(),
+        rawDecisionJson: JSON.stringify(makeValidWorldMindDecision()),
+        modelProvider: "test",
+        modelName: "test-director",
+      }),
     });
 
     const eventRepo = new WorldEventRepository(db);
@@ -223,7 +243,12 @@ describe("WorldMindFlow", () => {
       db,
       envelope,
       sourceInput: { message: "hello", targetAgentId: "agent-default" },
-      generateDecision: async () => makeValidWorldMindDecision(),
+      generateDecision: async () => ({
+        decision: makeValidWorldMindDecision(),
+        rawDecisionJson: JSON.stringify(makeValidWorldMindDecision()),
+        modelProvider: "test",
+        modelName: "test-director",
+      }),
     });
 
     expect(result.validationStatus).toBe("accepted");
@@ -254,13 +279,12 @@ describe("WorldMindFlow", () => {
     });
 
     const decision = makeValidWorldMindDecision({
-      proposedCommands: [
+      commands: [
         {
           commandType: "speak_to_user",
           targetAgentId: "agent-default",
           priority: "normal",
           visibility: { mode: "public", visibleToActorIds: [] },
-          visibleToUser: false,
           actorInstruction: "should not appear",
           privateReason: null,
           cause: { type: "proposed_event", clientEventId: "evt-nonexistent" },
@@ -274,7 +298,12 @@ describe("WorldMindFlow", () => {
       db,
       envelope,
       sourceInput: { message: "hello", targetAgentId: "agent-default" },
-      generateDecision: async () => decision,
+      generateDecision: async () => ({
+        decision,
+        rawDecisionJson: JSON.stringify(decision),
+        modelProvider: "test",
+        modelName: "test-director",
+      }),
     });
 
     const eventRepo = new WorldEventRepository(db);
@@ -304,6 +333,11 @@ describe("WorldMindFlow", () => {
     expect(logs[0].createdEventIdsJson).toEqual([evt.id]);
     expect(result.decisionLogId).toBe(logs[0].id);
     expect(result.createdEventIds).toEqual([evt.id]);
+    expect(logs[0].rawDecisionJson).toContain('"commands"');
+    expect(logs[0].validatedDecisionJson).toBeNull();
+    expect(logs[0].validationErrorsJson.length).toBeGreaterThan(0);
+    expect(logs[0].modelProvider).toBe("test");
+    expect(logs[0].modelName).toBe("test-director");
 
     const run = runRepo.getById(envelope.worldRunId);
     expect(run?.status).toBe("rejected");
@@ -366,6 +400,10 @@ describe("WorldMindFlow", () => {
     expect(logs[0].createdEventIdsJson).toEqual([evt.id]);
     expect(result.decisionLogId).toBe(logs[0].id);
     expect(result.createdEventIds).toEqual([evt.id]);
+    expect(logs[0].modelProvider).toBe("mock");
+    expect(logs[0].modelName).toBe("mock");
+    expect(logs[0].rawDecisionJson).toBeNull();
+    expect(logs[0].errorCode).toBe("MODEL_ERROR");
 
     const run = runRepo.getById(envelope.worldRunId);
     expect(run?.status).toBe("failed");
@@ -394,7 +432,7 @@ describe("WorldMindFlow", () => {
     });
 
     const decision = makeValidWorldMindDecision({
-      proposedEvents: [
+      events: [
         {
           clientEventId: "evt-derived-1",
           type: "world_incident",
@@ -404,13 +442,12 @@ describe("WorldMindFlow", () => {
           summary: "an incident",
         },
       ],
-      proposedCommands: [
+      commands: [
         {
           commandType: "speak_to_user",
           targetAgentId: "agent-default",
           priority: "normal",
           visibility: { mode: "public", visibleToActorIds: [] },
-          visibleToUser: false,
           actorInstruction: "say hello",
           privateReason: null,
           cause: { type: "proposed_event", clientEventId: "evt-derived-1" },
@@ -419,7 +456,7 @@ describe("WorldMindFlow", () => {
         },
       ],
       observations: [],
-      memoryCandidates: [],
+      memories: [],
       nextTick: { delayMs: 60_000, reason: "test" },
     });
 
@@ -431,7 +468,12 @@ describe("WorldMindFlow", () => {
         db,
         envelope,
         sourceInput: { message: "hello", targetAgentId: "agent-default" },
-        generateDecision: async () => decision,
+        generateDecision: async () => ({
+          decision,
+          rawDecisionJson: JSON.stringify(decision),
+          modelProvider: "test",
+          modelName: "test-director",
+        }),
       }),
     ).rejects.toThrow("UNIQUE constraint failed");
 
@@ -448,6 +490,10 @@ describe("WorldMindFlow", () => {
     const logs = logRepo.listForRun(envelope.worldRunId);
     expect(logs).toHaveLength(1);
     expect(logs[0].validationStatus).toBe("transaction_failed");
+    expect(logs[0].modelProvider).toBe("test");
+    expect(logs[0].modelName).toBe("test-director");
+    expect(logs[0].rawDecisionJson).toContain('"intent"');
+    expect(logs[0].errorCode).toBe("TRANSACTION_FAILED");
 
     const run = runRepo.getById(envelope.worldRunId);
     expect(run?.status).toBe("failed");

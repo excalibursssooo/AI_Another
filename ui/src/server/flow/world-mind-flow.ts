@@ -79,19 +79,23 @@ export async function createWorldMindFlow(
 
   // ── 6. GenerateDirectorDecision ─────────────────────────────────────────
   let decision: WorldMindDecision;
+  let rawDecisionJson: string | null = null;
+  let modelProvider = "mock";
+  let modelName = "mock";
   let validationStatus: WorldMindResult["validationStatus"] = "accepted";
 
   if (ctx.decision) {
     decision = ctx.decision;
+    rawDecisionJson = JSON.stringify(ctx.decision);
   } else {
     try {
       const generator = ctx.generateDecision ?? generateWorldDecision;
-      decision = await generator({
-        system: dirContext.system,
-        prompt: dirContext.prompt,
-      });
+      const generated = await generator({ system: dirContext.system, prompt: dirContext.prompt });
+      decision = generated.decision;
+      rawDecisionJson = generated.rawDecisionJson;
+      modelProvider = generated.modelProvider;
+      modelName = generated.modelName;
     } catch (err) {
-      validationStatus = "model_failed";
       return commitFailedPath({
         db,
         envelope,
@@ -99,6 +103,9 @@ export async function createWorldMindFlow(
         dirContext,
         ctx,
         characterStates,
+        modelProvider,
+        modelName,
+        rawDecisionJson: null,
         error: err instanceof Error ? err : new Error(String(err)),
       });
     }
@@ -109,6 +116,7 @@ export async function createWorldMindFlow(
     decision,
     activeAgentIds,
     hiddenFactSummaries: dirContext.hiddenFactSummaries,
+    sourceType: envelope.sourceType,
   });
 
   if (!validation.ok) {
@@ -121,12 +129,15 @@ export async function createWorldMindFlow(
       ctx,
       characterStates,
       validationErrors: validation.errors,
+      rawDecisionJson: rawDecisionJson ?? null,
+      modelProvider,
+      modelName,
     });
   }
 
   // ── 8. CommitWorldRunTransaction (accepted path) ─────────────────────────
   try {
-    return await commitAcceptedPath({ db, envelope, decision, dirContext, ctx, characterStates });
+    return await commitAcceptedPath({ db, envelope, decision, dirContext, ctx, characterStates, modelProvider, modelName, rawDecisionJson });
   } catch (err) {
     // Transaction failed — route to the transaction_failed path
     return commitFailedPath({
@@ -137,6 +148,9 @@ export async function createWorldMindFlow(
       ctx,
       characterStates,
       error: err instanceof Error ? err : new Error(String(err)),
+      rawDecisionJson: rawDecisionJson ?? null,
+      modelProvider,
+      modelName,
     });
   }
 }
@@ -152,10 +166,13 @@ interface AcceptedPathInput {
   dirContext: ReturnType<typeof buildWorldDirectorContext>;
   ctx: WorldMindContext;
   characterStates: CharacterStateRecord[];
+  modelProvider: string;
+  modelName: string;
+  rawDecisionJson: string | null;
 }
 
 async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindResult> {
-  const { db, envelope, decision, dirContext, ctx, characterStates } = input;
+  const { db, envelope, decision, dirContext, ctx, characterStates, modelProvider, modelName, rawDecisionJson } = input;
   const userId = envelope.userId;
   const worldId = envelope.worldId;
 
@@ -197,7 +214,7 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
     // ── Insert derived events ──────────────────────────────────────────────
     const createdEventIds: string[] = [userActionEvent.id];
 
-    for (const proposed of decision.proposedEvents) {
+    for (const proposed of decision.events) {
       const eventSequence = eventRepo.allocateNextSequence({ userId, worldId });
       const eventIdempotencyKey = `${envelope.worldRunId}:${proposed.clientEventId}`;
       const ev = eventRepo.createCommitted({
@@ -246,7 +263,7 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
     const now = Date.now();
     const createdCommandIds: string[] = [];
 
-    const commandInputs: CreateActorCommandInput[] = decision.proposedCommands.map((cmd) => {
+    const commandInputs: CreateActorCommandInput[] = decision.commands.map((cmd) => {
       // Derive a stable idempotency key from the command's identity fields.
       // If two proposed commands have the same targetAgentId + commandType +
       // clientEventId (for proposed_event cause), they will collide — this is
@@ -262,7 +279,7 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
         targetAgentId: cmd.targetAgentId,
         commandType: cmd.commandType as CreateActorCommandInput["commandType"],
         priority: cmd.priority as CreateActorCommandInput["priority"],
-        visibility: normalizeVisibility(cmd.visibility, cmd.visibleToUser),
+        visibility: normalizeVisibility(cmd.visibility),
         actorInstruction: cmd.actorInstruction,
         privateReason: cmd.privateReason,
         cause: cmd.cause,
@@ -279,6 +296,9 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
       createdCommandIds.push(c.id);
     }
 
+    // Phase 3 only logs director memory candidates. Consolidation and persistence
+    // are Phase 4 work and must not affect the core transaction.
+
     // ── Insert decision log (accepted) ─────────────────────────────────────
     const logRecord = logRepo.insert({
       decisionId: envelope.decisionId,
@@ -288,10 +308,10 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
       sourceType: envelope.sourceType,
       sourceEventId: null,
       sourceTaskId: null,
-      modelProvider: "openai",
-      modelName: "world-director",
+      modelProvider,
+      modelName,
       promptContextHash: dirContext.promptContextHash,
-      rawDecisionJson: JSON.stringify(decision),
+      rawDecisionJson,
       validatedDecisionJson: JSON.stringify(decision),
       validationStatus: "accepted",
       validationErrorsJson: [],
@@ -332,10 +352,13 @@ interface FailedPathInput {
   characterStates: CharacterStateRecord[];
   validationErrors?: string[];
   error?: Error | null;
+  modelProvider?: string;
+  modelName?: string;
+  rawDecisionJson?: string | null;
 }
 
 async function commitFailedPath(input: FailedPathInput): Promise<WorldMindResult> {
-  const { db, envelope, validationStatus, dirContext, ctx, characterStates, validationErrors, error } = input;
+  const { db, envelope, validationStatus, dirContext, ctx, characterStates, validationErrors, error, modelProvider = "mock", modelName = "mock", rawDecisionJson } = input;
   const userId = envelope.userId;
   const worldId = envelope.worldId;
 
@@ -405,10 +428,10 @@ async function commitFailedPath(input: FailedPathInput): Promise<WorldMindResult
         sourceType: envelope.sourceType,
         sourceEventId: sourceEvent.id,
         sourceTaskId: null,
-        modelProvider: "openai",
-        modelName: "world-director",
+        modelProvider,
+        modelName,
         promptContextHash: dirContext.promptContextHash,
-        rawDecisionJson: null,
+        rawDecisionJson: rawDecisionJson ?? null,
         validatedDecisionJson: null,
         validationStatus,
         validationErrorsJson: validationErrors ?? [],
@@ -439,10 +462,10 @@ async function commitFailedPath(input: FailedPathInput): Promise<WorldMindResult
       sourceType: envelope.sourceType,
       sourceEventId: null,
       sourceTaskId: null,
-      modelProvider: "openai",
-      modelName: "world-director",
+      modelProvider,
+      modelName,
       promptContextHash: dirContext.promptContextHash,
-      rawDecisionJson: null,
+      rawDecisionJson: rawDecisionJson ?? null,
       validatedDecisionJson: null,
       validationStatus: "transaction_failed",
       validationErrorsJson: [error?.message ?? "transaction failed"],
@@ -466,13 +489,12 @@ async function commitFailedPath(input: FailedPathInput): Promise<WorldMindResult
 }
 
 function normalizeVisibility(
-  visibility: { mode: VisibilityScope["mode"]; visibleToActorIds: string[] },
-  visibleToUser?: boolean,
+  visibility: { mode: VisibilityScope["mode"]; visibleToActorIds: string[]; visibleToUser?: boolean },
 ): VisibilityScope {
   return {
     mode: visibility.mode,
     visibleToActorIds: visibility.visibleToActorIds,
-    visibleToUser: visibility.mode === "public" ? true : visibleToUser ?? false,
+    visibleToUser: visibility.mode === "public" ? true : visibility.visibleToUser ?? false,
   };
 }
 
