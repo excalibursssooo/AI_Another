@@ -13,14 +13,16 @@ export interface BuildDirectorContextInput {
   userId: string;
   worldId: string;
   sourceInput?: { message: string; targetAgentId: string };
-  targetAgentId?: string; // for actor-facing ACL filtering
+  targetAgentId?: string;
+  audience?: "director" | "actor";
   db: AppDatabase;
 }
 
 export function buildWorldDirectorContext(input: BuildDirectorContextInput): DirectorContext {
   const { userId, worldId, sourceInput, targetAgentId, db } = input;
+  const audience = input.audience ?? "director";
 
-  // Honor both top-level targetAgentId and sourceInput.targetAgentId for ACL filtering
+  // Honor both top-level targetAgentId and sourceInput.targetAgentId for actor slices.
   const effectiveTargetAgentId = targetAgentId ?? sourceInput?.targetAgentId;
 
   // Strict world loading — never fallback to "default"
@@ -41,16 +43,16 @@ export function buildWorldDirectorContext(input: BuildDirectorContextInput): Dir
   const eventRepo = new WorldEventRepository(db);
   const allRecentWorldEvents = eventRepo.listRecentForWorld({ userId, worldId, limit: 24 });
 
-  // When effectiveTargetAgentId is set, filter world events to only what the actor can see
-  // hiddenFactSummaries still gets ALL hidden events (unfiltered) for the validator
-  const visibleWorldEvents = effectiveTargetAgentId
+  const promptWorldEvents = audience === "actor" && effectiveTargetAgentId
     ? allRecentWorldEvents.filter((event) => isVisibleToActor(event, effectiveTargetAgentId))
     : allRecentWorldEvents;
 
-  // Load actor-specific events when effectiveTargetAgentId is set
-  const recentActorEvents = effectiveTargetAgentId
+  const allRecentActorEvents = effectiveTargetAgentId
     ? eventRepo.listRecentForActor({ userId, worldId, agentId: effectiveTargetAgentId, limit: 8 })
     : [];
+  const recentActorEvents = audience === "actor" && effectiveTargetAgentId
+    ? allRecentActorEvents.filter((event) => isVisibleToActor(event, effectiveTargetAgentId))
+    : allRecentActorEvents;
 
   // Load world memory
   const memoryRepo = new WorldMemoryRepository(db);
@@ -65,24 +67,15 @@ export function buildWorldDirectorContext(input: BuildDirectorContextInput): Dir
     ...allRecentWorldEvents.filter((event) => event.visibility.mode === "hidden").map((event) => event.summary),
   ];
 
-  // Determine which memories to include in prompt
-  // Hidden memories are always excluded from the actor-facing prompt.
-  // When effectiveTargetAgentId is set we use recallForActor (already excludes hidden).
-  // When not set we must filter them out ourselves.
-  let promptMemories = directorMemories;
-  if (effectiveTargetAgentId !== undefined) {
-    // Use actor-filtered memories for the prompt; still collect hidden via director recall above
-    const actorMemories = memoryRepo.recallForActor({
-      userId,
-      worldId,
-      agentId: effectiveTargetAgentId,
-      subjectType: "world",
-    });
-    promptMemories = actorMemories;
-  } else {
-    // Filter out hidden memories when no actor is specified
-    promptMemories = directorMemories.filter((m) => m.visibility !== "hidden");
-  }
+  const promptMemories =
+    audience === "actor" && effectiveTargetAgentId
+      ? memoryRepo.recallForActor({
+          userId,
+          worldId,
+          agentId: effectiveTargetAgentId,
+          subjectType: "world",
+        })
+      : directorMemories;
 
   // Load character states
   const charRepo = new CharacterStateRepository(db);
@@ -92,7 +85,8 @@ export function buildWorldDirectorContext(input: BuildDirectorContextInput): Dir
   const prompt = buildPrompt({
     world,
     snapshot,
-    recentEvents: visibleWorldEvents,
+    audience,
+    recentEvents: promptWorldEvents,
     recentActorEvents,
     promptMemories,
     characterStates,
@@ -161,6 +155,7 @@ function buildSystemPrompt(world: WorldRecord): string {
 interface BuildPromptOptions {
   world: WorldRecord;
   snapshot: ReturnType<WorldStateRepository["getLatest"]>;
+  audience: "director" | "actor";
   recentEvents: ReturnType<WorldEventRepository["listRecentForWorld"]>;
   recentActorEvents: ReturnType<WorldEventRepository["listRecentForActor"]>;
   promptMemories: ReturnType<WorldMemoryRepository["recallForDirector"]>;
@@ -169,7 +164,7 @@ interface BuildPromptOptions {
 }
 
 function buildPrompt(opts: BuildPromptOptions): string {
-  const { world, snapshot, recentEvents, recentActorEvents, promptMemories, characterStates, sourceInput } = opts;
+  const { world, snapshot, audience, recentEvents, recentActorEvents, promptMemories, characterStates, sourceInput } = opts;
 
   const sections: string[] = [];
 
@@ -182,7 +177,7 @@ function buildPrompt(opts: BuildPromptOptions): string {
 
   // 2. Runtime Snapshot
   if (snapshot) {
-    const { clock, stability, tension, publicFacts } = snapshot.state;
+    const { clock, stability, tension, publicFacts, hiddenFacts } = snapshot.state;
     sections.push(`## Runtime Snapshot`);
     sections.push(``);
     sections.push(`**时间**: 第 ${clock.day} 天 - ${clock.phase}`);
@@ -192,6 +187,13 @@ function buildPrompt(opts: BuildPromptOptions): string {
       sections.push(``);
       sections.push(`**已知事实**:`);
       for (const fact of publicFacts) {
+        sections.push(`- ${fact.summary}`);
+      }
+    }
+    if (audience === "director" && hiddenFacts.length > 0) {
+      sections.push(``);
+      sections.push(`**导演隐藏事实**:`);
+      for (const fact of hiddenFacts) {
         sections.push(`- ${fact.summary}`);
       }
     }

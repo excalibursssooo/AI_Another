@@ -417,4 +417,62 @@ describe("validateWorldMindDecision", () => {
 
     expect(result.ok).toBe(false);
   });
+
+  it("rejects speak_to_user commands that are hidden", () => {
+    const decision = makeDecision({
+      commands: [
+        {
+          commandType: "speak_to_user",
+          targetAgentId: "agent-a",
+          priority: "normal",
+          visibility: { mode: "hidden", visibleToActorIds: [], visibleToUser: false },
+          actorInstruction: "Respond to the user.",
+          privateReason: null,
+          cause: { type: "director_no_event", reasonCode: "reply" },
+          payload: {},
+          relatedEventSummary: null,
+        },
+      ],
+    });
+
+    const result = validateWorldMindDecision({
+      decision,
+      activeAgentIds: ["agent-a"],
+      hiddenFactSummaries: [],
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors).toContain("speak_to_user command for agent-a must be actor-visible");
+    }
+  });
+
+  it("rejects private speak_to_user commands that are not visible to the target actor", () => {
+    const decision = makeDecision({
+      commands: [
+        {
+          commandType: "speak_to_user",
+          targetAgentId: "agent-a",
+          priority: "normal",
+          visibility: { mode: "private", visibleToActorIds: ["agent-b"], visibleToUser: false },
+          actorInstruction: "Respond to the user.",
+          privateReason: null,
+          cause: { type: "director_no_event", reasonCode: "reply" },
+          payload: {},
+          relatedEventSummary: null,
+        },
+      ],
+    });
+
+    const result = validateWorldMindDecision({
+      decision,
+      activeAgentIds: ["agent-a", "agent-b"],
+      hiddenFactSummaries: [],
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors).toContain("speak_to_user command for agent-a must be actor-visible");
+    }
+  });
 });

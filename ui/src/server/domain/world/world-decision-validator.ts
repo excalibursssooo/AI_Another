@@ -86,6 +86,9 @@ export function validateWorldMindDecision(input: {
     if (command.cause.type === "proposed_event" && !eventIds.has(command.cause.clientEventId)) {
       errors.push(`Command references unknown proposed event: ${command.cause.clientEventId}`);
     }
+    if (command.commandType === "speak_to_user" && !isActorVisibleCommand(command)) {
+      errors.push(`speak_to_user command for ${command.targetAgentId} must be actor-visible`);
+    }
     rejectHiddenLeakage({
       text: command.actorInstruction,
       visibilityMode: command.visibility.mode,
@@ -109,6 +112,16 @@ export function validateWorldMindDecision(input: {
   }
 
   return errors.length === 0 ? { ok: true, decision: input.decision } : { ok: false, errors };
+}
+
+function isActorVisibleCommand(command: WorldMindDecision["commands"][number]): boolean {
+  if (command.visibility.mode === "public") {
+    return true;
+  }
+  if (command.visibility.mode === "private") {
+    return command.visibility.visibleToActorIds.includes(command.targetAgentId);
+  }
+  return false;
 }
 
 function validateEventPayload(event: ProposedWorldEvent, errors: string[]): void {

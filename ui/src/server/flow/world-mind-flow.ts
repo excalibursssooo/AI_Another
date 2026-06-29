@@ -213,6 +213,7 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
 
     // ── Insert derived events ──────────────────────────────────────────────
     const createdEventIds: string[] = [userActionEvent.id];
+    const proposedEventIdToCommittedEventId = new Map<string, string>();
 
     for (const proposed of decision.events) {
       const eventSequence = eventRepo.allocateNextSequence({ userId, worldId });
@@ -232,6 +233,7 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
         idempotencyKey: eventIdempotencyKey,
         causedByUserActionId: userActionEvent.id,
       });
+      proposedEventIdToCommittedEventId.set(proposed.clientEventId, ev.id);
       createdEventIds.push(ev.id);
     }
 
@@ -271,6 +273,12 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
       const causeKey =
         cmd.cause.type === "proposed_event" ? cmd.cause.clientEventId : cmd.cause.type;
       const idempotencyKey = `${envelope.worldRunId}:cmd:${cmd.targetAgentId}:${cmd.commandType}:${causeKey}`;
+      const relatedEventId =
+        cmd.cause.type === "proposed_event"
+          ? proposedEventIdToCommittedEventId.get(cmd.cause.clientEventId) ?? null
+          : cmd.cause.type === "committed_event"
+            ? cmd.cause.eventId
+            : null;
       return {
         decisionId: envelope.decisionId,
         worldRunId: envelope.worldRunId,
@@ -284,7 +292,7 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
         privateReason: cmd.privateReason,
         cause: cmd.cause,
         payload: cmd.payload ?? {},
-        relatedEventId: null,
+        relatedEventId,
         runAfter: now,
         expiresAt: null,
         idempotencyKey,
@@ -306,7 +314,7 @@ async function commitAcceptedPath(input: AcceptedPathInput): Promise<WorldMindRe
       userId,
       worldId,
       sourceType: envelope.sourceType,
-      sourceEventId: null,
+      sourceEventId: userActionEvent.id,
       sourceTaskId: null,
       modelProvider,
       modelName,

@@ -224,6 +224,7 @@ describe("buildWorldDirectorContext", () => {
       userId: "u001",
       worldId: "aclworld",
       targetAgentId: "bob",
+      audience: "actor",
       db,
     });
 
@@ -240,6 +241,7 @@ describe("buildWorldDirectorContext", () => {
       userId: "u001",
       worldId: "aclworld",
       targetAgentId: "alice",
+      audience: "actor",
       db,
     });
 
@@ -409,10 +411,76 @@ describe("buildWorldDirectorContext", () => {
     // Public content appears in prompt
     expect(context.prompt).toContain("public world memory");
 
-    // Hidden content does NOT appear in actor-facing prompt
-    expect(context.prompt).not.toContain("hidden director memory");
+    // Default director context includes hidden director facts. Actor prompt
+    // filtering is a separate audience mode.
+    expect(context.prompt).toContain("hidden director memory");
+    expect(context.prompt).toContain("A secret event unfolded.");
 
     // But hidden content IS in hiddenFactSummaries for validator
     expect(context.hiddenFactSummaries).toContain("hidden director memory");
+  });
+
+  it("actor audience filters hidden director context even when a target actor is selected", () => {
+    const db = createTestDatabase();
+    const worldRepo = new WorldRepository(db);
+    const events = new WorldEventRepository(db);
+    const memories = new WorldMemoryRepository(db);
+
+    worldRepo.upsert({
+      id: "actorfilterworld",
+      name: "Actor Filter World",
+      lore: "",
+      tone: "",
+      constraints: [],
+      seedMemories: [],
+    });
+
+    memories.create({
+      userId: "u001",
+      worldId: "actorfilterworld",
+      subjectType: "world",
+      subjectKey: "hidden_mem",
+      memoryType: "lore",
+      content: "director-only hidden memory",
+      visibility: "hidden",
+      visibleToActorIds: ["alice"],
+      visibleToUser: false,
+      importance: 0.8,
+      confidence: 1.0,
+      validFromTick: 0,
+      sourceEventId: null,
+      sourceDecisionId: null,
+      supersededBy: null,
+      embeddingJson: null,
+      embeddingQuality: null,
+    });
+
+    events.createCommitted({
+      decisionId: "d-hidden",
+      worldRunId: "r-hidden",
+      userId: "u001",
+      worldId: "actorfilterworld",
+      tick: 1,
+      sequence: 1,
+      type: "world_incident",
+      payload: {},
+      summary: "director-only hidden event",
+      visibility: { mode: "hidden", visibleToActorIds: ["alice"], visibleToUser: false },
+      actorIds: ["alice"],
+      idempotencyKey: "actor-filter-hidden-event",
+    });
+
+    const context = buildWorldDirectorContext({
+      userId: "u001",
+      worldId: "actorfilterworld",
+      targetAgentId: "alice",
+      audience: "actor",
+      db,
+    });
+
+    expect(context.prompt).not.toContain("director-only hidden memory");
+    expect(context.prompt).not.toContain("director-only hidden event");
+    expect(context.hiddenFactSummaries).toContain("director-only hidden memory");
+    expect(context.hiddenFactSummaries).toContain("director-only hidden event");
   });
 });

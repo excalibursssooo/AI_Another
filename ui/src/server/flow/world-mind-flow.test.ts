@@ -150,6 +150,7 @@ describe("WorldMindFlow", () => {
     const logs = logRepo.listForRun(envelope.worldRunId);
     expect(logs).toHaveLength(1);
     expect(logs[0].validationStatus).toBe("accepted");
+    expect(logs[0].sourceEventId).toBe(userAction.id);
     expect(logs[0].createdEventIdsJson).toContain(userAction.id);
     expect(logs[0].createdCommandIdsJson).toHaveLength(1);
     expect(logs[0].rawDecisionJson).toContain('"intent"');
@@ -157,6 +158,7 @@ describe("WorldMindFlow", () => {
     expect(logs[0].promptContextHash).toMatch(/^[a-f0-9]{64}$/);
     expect(logs[0].modelProvider).toBe("test");
     expect(logs[0].modelName).toBe("test-director");
+    expect(commands[0].related_event_id).toBe(derivedEvent.id);
 
     const run = runRepo.getById(envelope.worldRunId);
     expect(run?.status).toBe("committed");
