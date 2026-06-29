@@ -157,12 +157,25 @@ function initializeDatabase(db: AppDatabase): void {
       attempts INTEGER NOT NULL DEFAULT 0,
       last_error TEXT,
       run_after INTEGER NOT NULL DEFAULT 0,
+      idempotency_key TEXT,
+      locked_by TEXT,
+      locked_at INTEGER,
+      lock_expires_at INTEGER,
+      max_attempts INTEGER NOT NULL DEFAULT 3,
+      next_attempt_at INTEGER,
+      completed_at INTEGER,
+      failed_permanently_at INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
 
     CREATE INDEX IF NOT EXISTS tasks_status_kind_run_after_idx
       ON tasks (status, kind, run_after);
+    CREATE UNIQUE INDEX IF NOT EXISTS tasks_idempotency_uidx
+      ON tasks(idempotency_key)
+      WHERE idempotency_key IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS tasks_claim_idx
+      ON tasks(status, kind, next_attempt_at, run_after, lock_expires_at);
 
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
       content,
@@ -397,9 +410,29 @@ function initializeDatabase(db: AppDatabase): void {
     );
     CREATE INDEX IF NOT EXISTS world_memories_recall_idx
       ON world_memories(user_id, world_id, subject_type, subject_key, memory_type, superseded_by);
+
+    CREATE TABLE IF NOT EXISTS world_summaries (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      world_id TEXT NOT NULL,
+      summary_scope TEXT NOT NULL CHECK (summary_scope IN ('director', 'actor', 'user')),
+      subject_type TEXT NOT NULL,
+      subject_key TEXT NOT NULL,
+      content TEXT NOT NULL,
+      visibility TEXT NOT NULL CHECK (visibility IN ('public', 'private', 'hidden')),
+      visible_to_actor_ids_json TEXT NOT NULL DEFAULT '[]',
+      visible_to_user INTEGER NOT NULL DEFAULT 0,
+      source_event_sequence_from INTEGER NOT NULL,
+      source_event_sequence_to INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS world_summaries_scope_idx
+      ON world_summaries(user_id, world_id, summary_scope, subject_type, subject_key, source_event_sequence_to DESC);
   `);
   migrateMemoryEmbeddingColumns(db);
   migrateAgentLiveStatesScope(db);
+  migrateTaskLeaseColumns(db);
 }
 
 function migrateMemoryEmbeddingColumns(db: AppDatabase): void {
@@ -463,6 +496,34 @@ function migrateAgentLiveStatesScope(db: AppDatabase): void {
     FROM agent_live_states_legacy;
 
     DROP TABLE agent_live_states_legacy;
+  `);
+}
+
+function migrateTaskLeaseColumns(db: AppDatabase): void {
+  const columns = db.sqlite.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
+  const names = new Set(columns.map((column) => column.name));
+  const addColumn = (name: string, definition: string) => {
+    if (!names.has(name)) {
+      db.sqlite.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${definition}`);
+      names.add(name);
+    }
+  };
+
+  addColumn("idempotency_key", "TEXT");
+  addColumn("locked_by", "TEXT");
+  addColumn("locked_at", "INTEGER");
+  addColumn("lock_expires_at", "INTEGER");
+  addColumn("max_attempts", "INTEGER NOT NULL DEFAULT 3");
+  addColumn("next_attempt_at", "INTEGER");
+  addColumn("completed_at", "INTEGER");
+  addColumn("failed_permanently_at", "INTEGER");
+
+  db.sqlite.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS tasks_idempotency_uidx
+      ON tasks(idempotency_key)
+      WHERE idempotency_key IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS tasks_claim_idx
+      ON tasks(status, kind, next_attempt_at, run_after, lock_expires_at);
   `);
 }
 

@@ -115,6 +115,14 @@ export const tasks = sqliteTable("tasks", {
   attempts: integer("attempts").notNull().default(0),
   lastError: text("last_error"),
   runAfter: integer("run_after").notNull().default(0),
+  idempotencyKey: text("idempotency_key"),
+  lockedBy: text("locked_by"),
+  lockedAt: integer("locked_at"),
+  lockExpiresAt: integer("lock_expires_at"),
+  maxAttempts: integer("max_attempts").notNull().default(3),
+  nextAttemptAt: integer("next_attempt_at"),
+  completedAt: integer("completed_at"),
+  failedPermanentlyAt: integer("failed_permanently_at"),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 });
@@ -298,6 +306,23 @@ export const worldMemories = sqliteTable("world_memories", {
   supersededBy: text("superseded_by"),
   embeddingJson: text("embedding_json"),
   embeddingQuality: text("embedding_quality"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export const worldSummaries = sqliteTable("world_summaries", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  worldId: text("world_id").notNull(),
+  summaryScope: text("summary_scope").notNull(),
+  subjectType: text("subject_type").notNull(),
+  subjectKey: text("subject_key").notNull(),
+  content: text("content").notNull(),
+  visibility: text("visibility").notNull(),
+  visibleToActorIdsJson: text("visible_to_actor_ids_json").notNull().default("[]"),
+  visibleToUser: integer("visible_to_user").notNull().default(0),
+  sourceEventSequenceFrom: integer("source_event_sequence_from").notNull(),
+  sourceEventSequenceTo: integer("source_event_sequence_to").notNull(),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 });
