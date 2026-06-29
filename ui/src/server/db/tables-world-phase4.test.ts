@@ -1,6 +1,21 @@
-import { describe, expect, it } from "vitest";
+import Database from "better-sqlite3";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 
-import { createTestDatabase } from "./client";
+import { createDatabase, createTestDatabase } from "./client";
+
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  while (tempDirs.length > 0) {
+    const dir = tempDirs.pop();
+    if (dir) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
 
 function columns(table: string): string[] {
   const db = createTestDatabase();
@@ -10,6 +25,12 @@ function columns(table: string): string[] {
 function indexes(table: string): string[] {
   const db = createTestDatabase();
   return (db.sqlite.prepare(`PRAGMA index_list(${table})`).all() as Array<{ name: string }>).map((index) => index.name);
+}
+
+function legacyDatabasePath(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), "another-world-db-"));
+  tempDirs.push(dir);
+  return path.join(dir, "legacy.sqlite");
 }
 
 describe("world phase 4 database shape", () => {
@@ -27,6 +48,37 @@ describe("world phase 4 database shape", () => {
       ]),
     );
     expect(indexes("tasks")).toEqual(expect.arrayContaining(["tasks_idempotency_uidx", "tasks_claim_idx"]));
+  });
+
+  it("migrates existing task tables before creating lease indexes", () => {
+    const filename = legacyDatabasePath();
+    const legacy = new Database(filename);
+    legacy.exec(`
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        run_after INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    legacy.close();
+
+    const db = createDatabase(filename);
+    const taskColumns = (db.sqlite.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>).map(
+      (column) => column.name,
+    );
+    const taskIndexes = (db.sqlite.prepare("PRAGMA index_list(tasks)").all() as Array<{ name: string }>).map(
+      (index) => index.name,
+    );
+
+    expect(taskColumns).toEqual(expect.arrayContaining(["idempotency_key", "next_attempt_at", "lock_expires_at"]));
+    expect(taskIndexes).toEqual(expect.arrayContaining(["tasks_idempotency_uidx", "tasks_claim_idx"]));
+    db.sqlite.close();
   });
 
   it("creates world_summaries with visibility ACL fields", () => {

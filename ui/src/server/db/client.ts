@@ -38,7 +38,7 @@ function resolveDatabasePath(databaseUrl?: string): string {
   return path.isAbsolute(filePath) ? filePath : path.join(/*turbopackIgnore: true*/ process.cwd(), filePath);
 }
 
-function createDatabase(filename: string): AppDatabase {
+export function createDatabase(filename: string): AppDatabase {
   const sqlite = new Database(filename);
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
@@ -171,11 +171,6 @@ function initializeDatabase(db: AppDatabase): void {
 
     CREATE INDEX IF NOT EXISTS tasks_status_kind_run_after_idx
       ON tasks (status, kind, run_after);
-    CREATE UNIQUE INDEX IF NOT EXISTS tasks_idempotency_uidx
-      ON tasks(idempotency_key)
-      WHERE idempotency_key IS NOT NULL;
-    CREATE INDEX IF NOT EXISTS tasks_claim_idx
-      ON tasks(status, kind, next_attempt_at, run_after, lock_expires_at);
 
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
       content,
