@@ -108,7 +108,12 @@ describe("WorldMindFlow", () => {
       db,
       envelope,
       sourceInput: { message: "user said hi", targetAgentId: "agent-default" },
-      generateDecision: async () => decision,
+      generateDecision: async () => ({
+        decision,
+        rawDecisionJson: JSON.stringify(decision),
+        modelProvider: "test",
+        modelName: "test-director",
+      }),
     });
 
     const eventRepo = new WorldEventRepository(db);
@@ -147,6 +152,11 @@ describe("WorldMindFlow", () => {
     expect(logs[0].validationStatus).toBe("accepted");
     expect(logs[0].createdEventIdsJson).toContain(userAction.id);
     expect(logs[0].createdCommandIdsJson).toHaveLength(1);
+    expect(logs[0].rawDecisionJson).toContain('"intent"');
+    expect(logs[0].validatedDecisionJson).toContain('"events"');
+    expect(logs[0].promptContextHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(logs[0].modelProvider).toBe("test");
+    expect(logs[0].modelName).toBe("test-director");
 
     const run = runRepo.getById(envelope.worldRunId);
     expect(run?.status).toBe("committed");
@@ -182,13 +192,23 @@ describe("WorldMindFlow", () => {
       db,
       envelope: firstEnvelope,
       sourceInput: { message: "first", targetAgentId: "agent-default" },
-      generateDecision: async () => makeValidWorldMindDecision(),
+      generateDecision: async () => ({
+        decision: makeValidWorldMindDecision(),
+        rawDecisionJson: JSON.stringify(makeValidWorldMindDecision()),
+        modelProvider: "test",
+        modelName: "test-director",
+      }),
     });
     await createWorldMindFlow({
       db,
       envelope: secondEnvelope,
       sourceInput: { message: "second", targetAgentId: "agent-default" },
-      generateDecision: async () => makeValidWorldMindDecision(),
+      generateDecision: async () => ({
+        decision: makeValidWorldMindDecision(),
+        rawDecisionJson: JSON.stringify(makeValidWorldMindDecision()),
+        modelProvider: "test",
+        modelName: "test-director",
+      }),
     });
 
     const eventRepo = new WorldEventRepository(db);
@@ -223,7 +243,12 @@ describe("WorldMindFlow", () => {
       db,
       envelope,
       sourceInput: { message: "hello", targetAgentId: "agent-default" },
-      generateDecision: async () => makeValidWorldMindDecision(),
+      generateDecision: async () => ({
+        decision: makeValidWorldMindDecision(),
+        rawDecisionJson: JSON.stringify(makeValidWorldMindDecision()),
+        modelProvider: "test",
+        modelName: "test-director",
+      }),
     });
 
     expect(result.validationStatus).toBe("accepted");
@@ -273,7 +298,12 @@ describe("WorldMindFlow", () => {
       db,
       envelope,
       sourceInput: { message: "hello", targetAgentId: "agent-default" },
-      generateDecision: async () => decision,
+      generateDecision: async () => ({
+        decision,
+        rawDecisionJson: JSON.stringify(decision),
+        modelProvider: "test",
+        modelName: "test-director",
+      }),
     });
 
     const eventRepo = new WorldEventRepository(db);
@@ -303,6 +333,11 @@ describe("WorldMindFlow", () => {
     expect(logs[0].createdEventIdsJson).toEqual([evt.id]);
     expect(result.decisionLogId).toBe(logs[0].id);
     expect(result.createdEventIds).toEqual([evt.id]);
+    expect(logs[0].rawDecisionJson).toContain('"commands"');
+    expect(logs[0].validatedDecisionJson).toBeNull();
+    expect(logs[0].validationErrorsJson.length).toBeGreaterThan(0);
+    expect(logs[0].modelProvider).toBe("test");
+    expect(logs[0].modelName).toBe("test-director");
 
     const run = runRepo.getById(envelope.worldRunId);
     expect(run?.status).toBe("rejected");
@@ -429,7 +464,12 @@ describe("WorldMindFlow", () => {
         db,
         envelope,
         sourceInput: { message: "hello", targetAgentId: "agent-default" },
-        generateDecision: async () => decision,
+        generateDecision: async () => ({
+          decision,
+          rawDecisionJson: JSON.stringify(decision),
+          modelProvider: "test",
+          modelName: "test-director",
+        }),
       }),
     ).rejects.toThrow("UNIQUE constraint failed");
 
