@@ -8,6 +8,10 @@ export type { WorldRecord } from "@/server/domain/world/world-repository";
 export { WorldRepository } from "@/server/domain/world/world-repository";
 export type { ConversationMessageRecord } from "@/server/domain/conversation/conversation-repository";
 export { ConversationRepository } from "@/server/domain/conversation/conversation-repository";
+export type { AgentLiveStateRecord } from "@/server/domain/live-state/agent-live-state-repository";
+export { AgentLiveStateRepository } from "@/server/domain/live-state/agent-live-state-repository";
+export type { FeedPostRecord } from "@/server/domain/feed/feed-post-repository";
+export { FeedPostRepository } from "@/server/domain/feed/feed-post-repository";
 
 export interface MemoryRecord {
   id: string;
@@ -42,31 +46,6 @@ export interface MemoryRecord {
   sourceTaskId: string | null;
 }
 
-export interface AgentLiveStateRecord {
-  agentId: string;
-  userId: string;
-  agentName: string;
-  moodLabel: string;
-  moodIntensity: number;
-  heartbeatBpm: number;
-  riskLevel: string;
-  updatedAt: number;
-}
-
-export interface FeedPostRecord {
-  id: string;
-  userId: string;
-  agentId: string;
-  agentName: string;
-  worldId: string;
-  content: string;
-  topicSeed: string;
-  postType: "status" | "reflection" | "plan";
-  status: "published" | "archived";
-  sourceTaskId: string | null;
-  createdAt: number;
-}
-
 interface MemoryRow {
   id: string;
   user_id: string;
@@ -99,20 +78,6 @@ interface MemoryRow {
   last_observed_at: number | null;
   source_message_id: string | null;
   source_task_id: string | null;
-}
-
-interface FeedPostRow {
-  id: string;
-  user_id: string;
-  agent_id: string;
-  agent_name: string;
-  world_id: string;
-  content: string;
-  topic_seed: string;
-  post_type: "status" | "reflection" | "plan";
-  status: "published" | "archived";
-  source_task_id: string | null;
-  created_at: number;
 }
 
 interface MemoryEmbeddingInput {
@@ -535,22 +500,6 @@ function mapMemory(row: MemoryRow): MemoryRecord {
   };
 }
 
-function mapFeedPost(row: FeedPostRow): FeedPostRecord {
-  return {
-    id: row.id,
-    userId: row.user_id,
-    agentId: row.agent_id,
-    agentName: row.agent_name,
-    worldId: row.world_id,
-    content: row.content,
-    topicSeed: row.topic_seed,
-    postType: row.post_type,
-    status: row.status,
-    sourceTaskId: row.source_task_id,
-    createdAt: row.created_at,
-  };
-}
-
 function scoreMemory(
   row: MemoryRow,
   query: string,
@@ -597,155 +546,4 @@ function countOccurrences(content: string, term: string): number {
     index = content.indexOf(term, index + term.length);
   }
   return count;
-}
-
-export class AgentLiveStateRepository {
-  constructor(private readonly db: AppDatabase) {}
-
-  upsert(input: AgentLiveStateRecord): void {
-    this.db.sqlite
-      .prepare(
-        `INSERT INTO agent_live_states
-         (agent_id, user_id, agent_name, mood_label, mood_intensity, heartbeat_bpm, risk_level, updated_at)
-         VALUES
-          (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(user_id, agent_id) DO UPDATE SET
-           agent_name = excluded.agent_name,
-           mood_label = excluded.mood_label,
-           mood_intensity = excluded.mood_intensity,
-           heartbeat_bpm = excluded.heartbeat_bpm,
-           risk_level = excluded.risk_level,
-           updated_at = excluded.updated_at`,
-      )
-      .run(
-        input.agentId,
-        input.userId,
-        input.agentName,
-        input.moodLabel,
-        input.moodIntensity,
-        input.heartbeatBpm,
-        input.riskLevel,
-        input.updatedAt,
-      );
-  }
-
-  get(userId: string, agentId: string, fallbackName: string): AgentLiveStateRecord {
-    const row = this.db.sqlite
-      .prepare("SELECT * FROM agent_live_states WHERE user_id = ? AND agent_id = ?")
-      .get(userId, agentId) as
-      | {
-          agent_id: string;
-          user_id: string;
-          agent_name: string;
-          mood_label: string;
-          mood_intensity: number;
-          heartbeat_bpm: number;
-          risk_level: string;
-          updated_at: number;
-        }
-      | undefined;
-    if (row) {
-      return {
-        agentId: row.agent_id,
-        userId: row.user_id,
-        agentName: row.agent_name,
-        moodLabel: row.mood_label,
-        moodIntensity: row.mood_intensity,
-        heartbeatBpm: row.heartbeat_bpm,
-        riskLevel: row.risk_level,
-        updatedAt: row.updated_at,
-      };
-    }
-    return {
-      agentId,
-      userId,
-      agentName: fallbackName,
-      moodLabel: "calm",
-      moodIntensity: 0.35,
-      heartbeatBpm: 72,
-      riskLevel: "low",
-      updatedAt: Date.now(),
-    };
-  }
-}
-
-export class FeedPostRepository {
-  constructor(private readonly db: AppDatabase) {}
-
-  create(input: {
-    userId: string;
-    agentId: string;
-    agentName: string;
-    worldId: string;
-    content: string;
-    topicSeed: string;
-    postType: FeedPostRecord["postType"];
-    status: FeedPostRecord["status"];
-    sourceTaskId: string | null;
-  }): FeedPostRecord {
-    const id = `post-${randomUUID()}`;
-    const now = Date.now();
-    this.db.sqlite
-      .prepare(
-        `INSERT INTO feed_posts
-          (id, user_id, agent_id, agent_name, world_id, content, topic_seed, post_type, status, source_task_id, created_at)
-         VALUES
-          (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        id,
-        input.userId,
-        input.agentId,
-        input.agentName,
-        input.worldId,
-        input.content,
-        input.topicSeed,
-        input.postType,
-        input.status,
-        input.sourceTaskId,
-        now,
-      );
-    return this.get(id) as FeedPostRecord;
-  }
-
-  get(postId: string): FeedPostRecord | null {
-    const row = this.db.sqlite.prepare("SELECT * FROM feed_posts WHERE id = ?").get(postId) as FeedPostRow | undefined;
-    return row ? mapFeedPost(row) : null;
-  }
-
-  list(input: {
-    userId: string;
-    worldId?: string;
-    limit: number;
-    offset: number;
-    includeArchived: boolean;
-  }): { items: FeedPostRecord[]; total: number } {
-    const worldId = input.worldId?.trim() || null;
-    const status = input.includeArchived ? null : "published";
-    const count = this.db.sqlite
-      .prepare(
-        `SELECT COUNT(*) AS count
-         FROM feed_posts
-         WHERE user_id = ?
-           AND (? IS NULL OR world_id = ?)
-           AND (? IS NULL OR status = ?)`,
-      )
-      .get(input.userId, worldId, worldId, status, status) as { count: number };
-    const rows = this.db.sqlite
-      .prepare(
-        `SELECT *
-         FROM feed_posts
-         WHERE user_id = ?
-           AND (? IS NULL OR world_id = ?)
-           AND (? IS NULL OR status = ?)
-         ORDER BY created_at DESC
-         LIMIT ?
-         OFFSET ?`,
-      )
-      .all(input.userId, worldId, worldId, status, status, input.limit, input.offset) as FeedPostRow[];
-    return {
-      items: rows.map(mapFeedPost),
-      total: count.count,
-    };
-  }
 }

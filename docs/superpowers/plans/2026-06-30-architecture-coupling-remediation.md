@@ -558,6 +558,81 @@ git add ui/src/server/domain/conversation/conversation-repository.ts ui/src/serv
 git commit -m "refactor: split conversation repository"
 ```
 
+## Segment 8: Live State and Feed Repository Physical Split
+
+**Files:**
+- Modify: `ui/src/server/domain/repository-boundaries.test.ts`
+- Modify: `ui/src/server/domain/live-state/agent-live-state-repository.ts`
+- Modify: `ui/src/server/domain/feed/feed-post-repository.ts`
+- Modify: `ui/src/server/domain/chat/repositories.ts`
+
+- [x] **Step 1: Investigate dependencies**
+
+`AgentLiveStateRepository` and `FeedPostRepository` were independent of memory consolidation and only depended on:
+
+```text
+AppDatabase
+randomUUID for feed posts
+local row mappers
+```
+
+- [x] **Step 2: Tighten boundary test**
+
+Updated `repository-boundaries.test.ts` so live-state and feed modules may no longer import from `server/domain/chat/repositories`.
+
+Observed RED:
+
+```text
+server/domain/feed/feed-post-repository.ts
+server/domain/live-state/agent-live-state-repository.ts
+```
+
+- [x] **Step 3: Move implementations**
+
+Moved these into domain-specific modules:
+
+```text
+AgentLiveStateRecord
+AgentLiveStateRepository
+FeedPostRecord
+FeedPostRepository
+FeedPostRow
+mapFeedPost
+```
+
+`server/domain/chat/repositories.ts` now re-exports live-state and feed for compatibility, but no longer owns their implementation.
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/server/domain/repository-boundaries.test.ts src/server/domain/chat/repositories.test.ts src/server/flow/feed-flow.test.ts src/server/flow/chat-flow.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted tests: 4 files, 34 tests passed
+eslint: passed
+Vitest: 50 files, 347 tests passed
+Next build: passed
+repositories.ts: 549 lines
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/server/domain/live-state/agent-live-state-repository.ts ui/src/server/domain/feed/feed-post-repository.ts ui/src/server/domain/chat/repositories.ts ui/src/server/domain/repository-boundaries.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: split live state and feed repositories"
+```
+
 ## Verification Gates
 
 After every segment:
