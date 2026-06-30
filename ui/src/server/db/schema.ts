@@ -128,7 +128,6 @@ export const tasks = sqliteTable("tasks", {
 });
 
 export const memoriesFts = sqliteTable("memories_fts", {
-  rowid: integer("rowid").notNull(),
   content: text("content").notNull(),
 });
 

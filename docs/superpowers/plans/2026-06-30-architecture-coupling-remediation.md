@@ -869,6 +869,75 @@ git add ui/src/server/ai/structured-output.ts ui/src/server/ai/structured-output
 git commit -m "chore: log structured ai fallback reasons"
 ```
 
+## Segment 12: Database Schema Drift Guard
+
+**Files:**
+- Add: `ui/src/server/db/schema-drift.test.ts`
+- Modify: `ui/src/server/db/schema.ts`
+
+- [x] **Step 1: Investigate schema double truth**
+
+The database layer still has two sources of structure:
+
+```text
+ui/src/server/db/schema.ts: Drizzle table/column declarations for typed ORM access
+ui/src/server/db/client.ts: handwritten CREATE TABLE, indexes, virtual tables, and ALTER TABLE migrations
+```
+
+This segment does not replace the migration system. It adds a guard that fails when `schema.ts` declares a table or column that `initializeDatabase` does not actually create.
+
+- [x] **Step 2: Write failing test**
+
+Added `schema-drift.test.ts`:
+
+```text
+reflect every Drizzle table name with getTableName
+reflect every Drizzle column name with getTableColumns
+initialize an in-memory SQLite database
+assert every schema table and column exists after initialization
+```
+
+Observed RED:
+
+```text
+memories_fts.rowid exists after initializeDatabase:
+expected [ 'content' ] to include 'rowid'
+```
+
+- [x] **Step 3: Fix current drift**
+
+`memories_fts` is created as an FTS5 virtual table with visible `content` only. SQLite still allows rowid-based joins and trigger writes, but `rowid` is not a declared visible table column. Removed `rowid` from the Drizzle schema declaration so `schema.ts` matches the initialized database shape.
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/server/db/schema-drift.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted drift guard: 1 file, 1 test passed
+eslint: passed
+Vitest: 52 files, 350 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/server/db/schema-drift.test.ts ui/src/server/db/schema.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "test: guard database schema drift"
+```
+
 ## Verification Gates
 
 After every segment:
