@@ -65,11 +65,12 @@ describe("withStructuredOutput", () => {
         prompt: "hello",
         system: "you are a bot",
       }),
-    ).rejects.toMatchObject({ name: "StructuredOutputError" });
+    ).rejects.toMatchObject({ name: "StructuredOutputError", reason: "missing_output" });
   });
 
   it("wraps AI SDK structured output failures as StructuredOutputError", async () => {
-    vi.mocked(generateText).mockRejectedValue(new Error("No object generated"));
+    const cause = new Error("No object generated");
+    vi.mocked(generateText).mockRejectedValue(cause);
 
     await expect(
       withStructuredOutput({
@@ -79,6 +80,14 @@ describe("withStructuredOutput", () => {
         system: "you are a bot",
       }),
     ).rejects.toBeInstanceOf(StructuredOutputError);
+    await expect(
+      withStructuredOutput({
+        schema: ChatReplySchema,
+        purpose: "chat",
+        prompt: "hello",
+        system: "you are a bot",
+      }),
+    ).rejects.toMatchObject({ reason: "generate_text_failed", cause });
   });
 
   it("abort propagation: passes the abortSignal to generateText", async () => {

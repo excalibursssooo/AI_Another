@@ -789,6 +789,86 @@ git add ui/src/app/api/chat/route.ts ui/src/app/api/chat/route.test.ts ui/src/ap
 git commit -m "refactor: drain chat tasks explicitly"
 ```
 
+## Segment 11: Structured AI Failure Observability
+
+**Files:**
+- Modify: `ui/src/server/ai/structured-output.ts`
+- Modify: `ui/src/server/ai/structured-output.test.ts`
+- Modify: `ui/src/server/ai/chat.ts`
+- Modify: `ui/src/server/ai/chat.test.ts`
+
+- [x] **Step 1: Investigate error swallowing**
+
+`StructuredOutputError` only carried `schemaName`. It lost:
+
+```text
+model unavailable vs generateText failure vs missing output
+original generateText error cause
+```
+
+The draft/memory/feed generators also caught errors and returned fallback/null without any structured warning.
+
+- [x] **Step 2: Write failing tests**
+
+Added expectations that:
+
+```text
+StructuredOutputError.reason is "missing_output" for undefined output
+StructuredOutputError.reason is "generate_text_failed" for AI SDK failures
+StructuredOutputError.cause preserves the original generateText error
+generateAgentDraft logs a structured fallback warning before returning null
+```
+
+Observed RED:
+
+```text
+StructuredOutputError missing reason/cause
+console.warn was not called for generateAgentDraft fallback
+```
+
+- [x] **Step 3: Implement structured failure details**
+
+Changes:
+
+```text
+StructuredOutputError.reason:
+  model_unavailable | generate_text_failed | missing_output
+StructuredOutputError.cause preserves caught generateText error
+logAiGenerationFallback emits [ai-generation] JSON warnings
+chat fallback logs fallback_reply
+agent/world/memory/feed null fallbacks log fallback_null
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/server/ai/structured-output.test.ts src/server/ai/chat.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted tests: 2 files, 47 tests passed
+eslint: passed
+Vitest: 51 files, 349 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/server/ai/structured-output.ts ui/src/server/ai/structured-output.test.ts ui/src/server/ai/chat.ts ui/src/server/ai/chat.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "chore: log structured ai fallback reasons"
+```
+
 ## Verification Gates
 
 After every segment:

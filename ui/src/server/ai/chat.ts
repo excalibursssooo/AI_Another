@@ -89,6 +89,7 @@ export async function generateChatReply(input: ChatGenerationInput): Promise<Cha
     });
   } catch (error) {
     if (error instanceof StructuredOutputError) {
+      logAiGenerationFallback("chat", "fallback_reply", error);
       return fallbackReply();
     }
     throw error;
@@ -128,7 +129,8 @@ export async function generateAgentDraft(input: AgentDraftGenerationInput): Prom
       system: AGENT_SYSTEM_PROMPT,
       temperature: 0.8,
     });
-  } catch {
+  } catch (error) {
+    logAiGenerationFallback("agentCreator", "fallback_null", error);
     return null;
   }
 }
@@ -162,7 +164,8 @@ export async function generateWorldDraft(input: WorldDraftGenerationInput): Prom
       system: WORLD_SYSTEM_PROMPT,
       temperature: 0.8,
     });
-  } catch {
+  } catch (error) {
+    logAiGenerationFallback("worldCreator", "fallback_null", error);
     return null;
   }
 }
@@ -205,7 +208,8 @@ export async function generateMemoryExtraction(input: MemoryExtractionGeneration
         .join("\n"),
       temperature: 0.2,
     });
-  } catch {
+  } catch (error) {
+    logAiGenerationFallback("memory", "fallback_null", error);
     return null;
   }
 }
@@ -247,7 +251,8 @@ export async function generateFeedPostDraft(input: FeedPostDraftGenerationInput)
         .join("\n"),
       temperature: 0.8,
     });
-  } catch {
+  } catch (error) {
+    logAiGenerationFallback("feed", "fallback_null", error);
     return null;
   }
 }
@@ -257,6 +262,21 @@ function fallbackReply(): ChatReply {
     reply: "当前模型暂时不可用，但我已经收到你的消息了。",
     mood: { label: "neutral", intensity: 0.25, heartbeatBpm: 72 },
   };
+}
+
+function logAiGenerationFallback(
+  purpose: "chat" | "memory" | "agentCreator" | "worldCreator" | "feed",
+  outcome: "fallback_reply" | "fallback_null",
+  error: unknown,
+): void {
+  const detail = {
+    purpose,
+    outcome,
+    errorName: error instanceof Error ? error.name : typeof error,
+    reason: error instanceof StructuredOutputError ? error.reason : "unexpected_error",
+    schemaName: error instanceof StructuredOutputError ? error.schemaName : undefined,
+  };
+  console.warn("[ai-generation]", JSON.stringify(detail));
 }
 
 export interface StreamChatReplyResult {

@@ -29,7 +29,11 @@ vi.mock("./structured-output", () => ({
   withStructuredOutput: vi.fn(),
   StructuredOutputError: class StructuredOutputError extends Error {
     name = "StructuredOutputError";
-    constructor(public readonly schemaName: string) {
+    constructor(
+      public readonly schemaName: string,
+      public readonly reason = "missing_output",
+      public override readonly cause?: unknown,
+    ) {
       super(`Structured output generation failed for schema: ${schemaName}`);
     }
   },
@@ -445,9 +449,21 @@ describe("generateAgentDraft", () => {
       MINIMAX_API_KEY: "sk-test",
       MINIMAX_BASE_URL: "https://api.minimaxi.com/v1",
     });
-    wso.mockRejectedValue(new SOE("invalid output") as never);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    wso.mockRejectedValue(new SOE("AgentDraft", "missing_output") as never);
     const result = await generateAgentDraft({ prompt: "x" });
     expect(result).toBeNull();
+    expect(warnSpy).toHaveBeenCalledWith(
+      "[ai-generation]",
+      JSON.stringify({
+        purpose: "agentCreator",
+        outcome: "fallback_null",
+        errorName: "StructuredOutputError",
+        reason: "missing_output",
+        schemaName: "AgentDraft",
+      }),
+    );
+    warnSpy.mockRestore();
   });
 
   it("returns null when withStructuredOutput throws any other error", async () => {
