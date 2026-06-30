@@ -9,24 +9,16 @@ import { MemoryRepository } from "@/server/domain/memory/memory-repository";
 import type { MemoryRecord } from "@/server/domain/memory/memory-repository";
 import { AgentLiveStateRepository } from "@/server/domain/live-state/agent-live-state-repository";
 import { TaskRepository } from "@/server/domain/chat/task-repository";
+import { finalizeChatContext } from "@/server/domain/chat/chat-finalizer";
+import type { ChatDoneEventPayload } from "@/server/domain/chat/chat-finalizer";
+import { buildChatSystemPrompt, buildChatUserPrompt } from "@/server/domain/chat/chat-prompt-builder";
+import { assessChatRisk, HIGH_RISK_MOOD, HIGH_RISK_REPLY } from "@/server/domain/chat/chat-safety";
 import { GenerateChatReply, generateChatReply as defaultGenerateChatReply } from "@/server/ai/chat";
 import { createChatToolSet } from "@/server/tools/registry";
 
 import { Flow } from "./runner";
 import { FlowNode } from "./types";
 import type { VisibleActorDirective } from "@/server/domain/world/types";
-
-export interface ChatDoneEventPayload {
-  type: "done";
-  agent_id: string;
-  agent_name: string;
-  emotion_label: string;
-  mood_intensity: number;
-  heartbeat_bpm: number;
-  risk_level: string;
-  recalled_memories: Array<{ memory_type: string; content: string }>;
-  persisted_memory_count: number;
-}
 
 export interface ChatContext {
   userId: string;
@@ -83,15 +75,14 @@ export function createChatFlow(options: { db: AppDatabase; generateChatReply?: G
     {
       name: "SafetyCheck",
       run: async (ctx) => {
-        const risk = assessRisk(ctx.input);
+        const risk = assessChatRisk(ctx.input);
         if (risk === "high") {
-          const reply = "我在这里。你现在的安全最重要，请先远离危险物品，并尽快联系身边可信任的人或当地紧急服务。";
-          return finalize({
+          return finalizeChatContext({
             ...ctx,
             blocked: true,
             riskLevel: "high",
-            reply,
-            mood: { label: "high_risk", intensity: 1, heartbeatBpm: 108 },
+            reply: HIGH_RISK_REPLY,
+            mood: HIGH_RISK_MOOD,
             recalledMemories: [],
             persistedMemoryCount: 0,
           });
@@ -143,8 +134,8 @@ export function createChatFlow(options: { db: AppDatabase; generateChatReply?: G
         }
         return {
           ...ctx,
-          systemPrompt: buildSystemPrompt(ctx),
-          userPrompt: buildUserPrompt(ctx),
+          systemPrompt: buildChatSystemPrompt(ctx),
+          userPrompt: buildChatUserPrompt(ctx),
         };
       },
     },
@@ -244,73 +235,10 @@ export function createChatFlow(options: { db: AppDatabase; generateChatReply?: G
             ],
           },
         });
-        return finalize({ ...ctx, persistedMemoryCount: 0 });
+        return finalizeChatContext({ ...ctx, persistedMemoryCount: 0 });
       },
     },
   ];
 
   return new Flow(nodes);
-}
-
-function finalize(ctx: ChatContext): ChatContext {
-  const agentName = ctx.agent?.displayName || ctx.agent?.name || ctx.agentId;
-  return {
-    ...ctx,
-    doneEvent: {
-      type: "done",
-      agent_id: ctx.agentId,
-      agent_name: agentName,
-      emotion_label: ctx.mood?.label ?? "neutral",
-      mood_intensity: ctx.mood?.intensity ?? 0.35,
-      heartbeat_bpm: ctx.mood?.heartbeatBpm ?? 72,
-      risk_level: ctx.riskLevel ?? "low",
-      recalled_memories: (ctx.recalledMemories ?? []).map((item) => ({
-        memory_type: item.memoryType,
-        content: item.content,
-      })),
-      persisted_memory_count: ctx.persistedMemoryCount ?? 0,
-    },
-  };
-}
-
-function assessRisk(input: string): "low" | "medium" | "high" {
-  const normalized = input.toLowerCase();
-  if (/(自杀|轻生|结束生命|kill myself|suicide)/i.test(normalized)) {
-    return "high";
-  }
-  if (/(崩溃|绝望|伤害自己|self harm)/i.test(normalized)) {
-    return "medium";
-  }
-  return "low";
-}
-
-function buildSystemPrompt(ctx: ChatContext): string {
-  const agent = ctx.agent;
-  const world = ctx.world;
-  return [
-    `你正在扮演 ${agent?.displayName ?? agent?.name ?? "AI 角色"}。`,
-    agent?.persona ? `角色性格: ${agent.persona}` : "",
-    agent?.background ? `角色背景: ${agent.background}` : "",
-    agent?.speakingStyle ? `说话风格: ${agent.speakingStyle}` : "",
-    world?.lore ? `世界观: ${world.lore}` : "",
-    "请用自然、简洁、符合角色的中文回复。",
-    ctx.worldDirective?.actorInstruction ? `当前世界指令: ${ctx.worldDirective.actorInstruction}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-function buildUserPrompt(ctx: ChatContext): string {
-  const history = (ctx.recentMessages ?? [])
-    .map((item) => `${item.role === "user" ? "用户" : ctx.agent?.displayName ?? "角色"}: ${item.content}`)
-    .join("\n");
-  const memory = (ctx.recalledMemories ?? [])
-    .map((item) => `- ${item.memoryType}: ${item.content}`)
-    .join("\n");
-
-  return [
-    history ? `最近对话:\n${history}` : "最近对话: 无",
-    memory ? `可用记忆:\n${memory}` : "可用记忆: 无",
-    `用户当前输入: ${ctx.input}`,
-  ].join("\n\n");
 }

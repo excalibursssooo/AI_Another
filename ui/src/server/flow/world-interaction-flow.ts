@@ -8,6 +8,7 @@ import type { ChatContext } from "./chat-flow";
 import { createChatFlow } from "./chat-flow";
 import { AgentRepository } from "@/server/domain/agent/agent-repository";
 import { WorldRepository } from "@/server/domain/world/world-repository";
+import { assessChatRisk, HIGH_RISK_MOOD, HIGH_RISK_REPLY } from "@/server/domain/chat/chat-safety";
 
 // ---------------------------------------------------------------------------
 // Input & Deps
@@ -38,21 +39,6 @@ export interface WorldInteractionResult extends ChatContext {
 }
 
 // ---------------------------------------------------------------------------
-// High-risk assessment — mirrors ChatFlow SafetyCheck
-// ---------------------------------------------------------------------------
-
-function assessRisk(input: string): "low" | "medium" | "high" {
-  const normalized = input.toLowerCase();
-  if (/(自杀|轻生|结束生命|kill myself|suicide)/i.test(normalized)) {
-    return "high";
-  }
-  if (/(崩溃|绝望|伤害自己|self harm)/i.test(normalized)) {
-    return "medium";
-  }
-  return "low";
-}
-
-// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -70,10 +56,9 @@ export async function createWorldInteractionFlow(
   const targetAgentId = input.targetAgentId || "agent-default";
 
   // ── 2. PreSafetyCheck ─────────────────────────────────────────────────────
-  const risk = assessRisk(message);
+  const risk = assessChatRisk(message);
   if (risk === "high") {
     // Mirror ChatFlow's blocked response — skip all WorldMind work
-    const reply = "我在这里。你现在的安全最重要，请先远离危险物品，并尽快联系身边可信任的人或当地紧急服务。";
     return {
       userId: input.userId,
       agentId: targetAgentId,
@@ -81,8 +66,8 @@ export async function createWorldInteractionFlow(
       input: message,
       blocked: true,
       riskLevel: "high",
-      reply,
-      mood: { label: "high_risk", intensity: 1, heartbeatBpm: 108 },
+      reply: HIGH_RISK_REPLY,
+      mood: HIGH_RISK_MOOD,
       recalledMemories: [],
       persistedMemoryCount: 0,
       doneEvent: {

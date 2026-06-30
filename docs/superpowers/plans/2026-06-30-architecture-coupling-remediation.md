@@ -330,6 +330,86 @@ git add ui/src docs/superpowers/plans/2026-06-30-architecture-coupling-remediati
 git commit -m "refactor: route repository imports through domain modules"
 ```
 
+## Segment 5: ChatFlow Helper Extraction
+
+**Files:**
+- Create: `ui/src/server/domain/chat/chat-safety.ts`
+- Create: `ui/src/server/domain/chat/chat-safety.test.ts`
+- Create: `ui/src/server/domain/chat/chat-prompt-builder.ts`
+- Create: `ui/src/server/domain/chat/chat-prompt-builder.test.ts`
+- Create: `ui/src/server/domain/chat/chat-finalizer.ts`
+- Create: `ui/src/server/domain/chat/chat-finalizer.test.ts`
+- Modify: `ui/src/server/flow/chat-flow.ts`
+- Modify: `ui/src/server/flow/world-interaction-flow.ts`
+
+- [x] **Step 1: Investigate helper coupling**
+
+`chat-flow.ts` contained private helpers for risk assessment, prompt construction, and done-event DTO construction. `world-interaction-flow.ts` duplicated the same high-risk classifier. Extraction target:
+
+```text
+domain/chat/chat-safety.ts
+domain/chat/chat-prompt-builder.ts
+domain/chat/chat-finalizer.ts
+```
+
+- [x] **Step 2: Write failing module tests**
+
+Added tests for:
+
+```text
+assessChatRisk()
+buildChatSystemPrompt()
+buildChatUserPrompt()
+finalizeChatContext()
+```
+
+Observed RED:
+
+```text
+Cannot find module './chat-safety'
+Cannot find module './chat-prompt-builder'
+Cannot find module './chat-finalizer'
+```
+
+- [x] **Step 3: Extract helpers**
+
+Moved helper behavior into domain/chat modules and updated:
+
+```text
+chat-flow.ts uses chat-safety, chat-prompt-builder, chat-finalizer
+world-interaction-flow.ts uses chat-safety for shared high-risk handling
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/server/domain/chat/chat-safety.test.ts src/server/domain/chat/chat-prompt-builder.test.ts src/server/domain/chat/chat-finalizer.test.ts src/server/flow/chat-flow.test.ts src/server/flow/world-interaction-flow.test.ts
+npm run lint
+npm run build
+npm run test:run
+```
+
+Observed:
+
+```text
+Targeted tests: 5 files, 23 tests passed
+eslint: passed
+Next build: passed
+Vitest: 50 files, 347 tests passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/server/domain/chat ui/src/server/flow/chat-flow.ts ui/src/server/flow/world-interaction-flow.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: extract chat flow helpers"
+```
+
 ## Verification Gates
 
 After every segment:
