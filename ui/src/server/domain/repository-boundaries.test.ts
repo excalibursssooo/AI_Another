@@ -7,7 +7,6 @@ const SRC_ROOT = join(process.cwd(), "src");
 const LEGACY_REPOSITORY_IMPORT = /from\s+["'](?:@\/server\/domain\/chat\/repositories|\.\/repositories)["']/;
 const IGNORED_FILES = new Set([
   "server/domain/chat/repositories.ts",
-  "server/domain/memory/memory-repository.ts",
 ]);
 
 describe("repository import boundaries", () => {

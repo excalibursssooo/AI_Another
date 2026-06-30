@@ -633,6 +633,86 @@ git add ui/src/server/domain/live-state/agent-live-state-repository.ts ui/src/se
 git commit -m "refactor: split live state and feed repositories"
 ```
 
+## Segment 9: Memory Repository Physical Split
+
+**Files:**
+- Modify: `ui/src/server/domain/repository-boundaries.test.ts`
+- Modify: `ui/src/server/domain/memory/memory-repository.ts`
+- Modify: `ui/src/server/domain/chat/repositories.ts`
+
+- [x] **Step 1: Investigate dependencies**
+
+After earlier splits, `server/domain/chat/repositories.ts` contained only Memory implementation plus compatibility re-exports. `MemoryRepository` depended on:
+
+```text
+randomUUID
+AppDatabase
+MemoryRow
+MemoryEmbeddingInput
+CreateMemoryInput
+mapMemory
+scoreMemory / computeTextScore / countOccurrences
+```
+
+- [x] **Step 2: Tighten boundary test**
+
+Updated `repository-boundaries.test.ts` so `server/domain/memory/memory-repository.ts` may no longer import from `server/domain/chat/repositories`.
+
+Observed RED:
+
+```text
+server/domain/memory/memory-repository.ts
+```
+
+- [x] **Step 3: Move implementation**
+
+Moved these into `server/domain/memory/memory-repository.ts`:
+
+```text
+MemoryRecord
+MemoryRepository
+MemoryRow
+MemoryEmbeddingInput
+CreateMemoryInput
+mapMemory
+scoreMemory
+computeTextScore
+countOccurrences
+```
+
+`server/domain/chat/repositories.ts` is now a 12-line compatibility barrel only.
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/server/domain/repository-boundaries.test.ts src/server/domain/chat/repositories.test.ts src/server/domain/chat/memory-consolidator.test.ts src/server/flow/memory-extract-flow.test.ts src/server/flow/task-worker.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted tests: 5 files, 41 tests passed
+eslint: passed
+Vitest: 50 files, 347 tests passed
+Next build: passed
+repositories.ts: 12 lines
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/server/domain/memory/memory-repository.ts ui/src/server/domain/chat/repositories.ts ui/src/server/domain/repository-boundaries.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: split memory repository"
+```
+
 ## Verification Gates
 
 After every segment:
