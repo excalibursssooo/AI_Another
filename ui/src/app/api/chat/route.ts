@@ -1,3 +1,5 @@
+import { apiRequestErrorResponse, ApiRequestError, parseJsonBody } from "@/server/api/request";
+import { ChatRequestSchema } from "@/server/api/schemas";
 import { getDatabase } from "@/server/db/client";
 import { createChatFlow } from "@/server/flow/chat-flow";
 import { createWorldInteractionFlow } from "@/server/flow/world-interaction-flow";
@@ -6,18 +8,16 @@ import { drainChatTasks } from "@/server/flow/task-worker";
 export const runtime = "nodejs";
 
 export async function POST(req: Request): Promise<Response> {
-  const body = (await req.json()) as {
-    user_id?: string;
-    message?: string;
-    agent_id?: string;
-    domain_id?: string;
-    conversation_id?: string;
-    client_action_id?: string;
-  };
-
-  if (!body.user_id || !body.message || !body.agent_id) {
-    return Response.json({ detail: "user_id, message and agent_id are required" }, { status: 400 });
+  let body;
+  try {
+    body = await parseJsonBody(req, ChatRequestSchema);
+  } catch (error) {
+    if (error instanceof ApiRequestError) {
+      return apiRequestErrorResponse(error);
+    }
+    throw error;
   }
+
   const userId = body.user_id;
   const message = body.message;
   const agentId = body.agent_id;

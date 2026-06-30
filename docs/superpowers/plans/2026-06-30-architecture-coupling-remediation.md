@@ -191,11 +191,18 @@ git commit -m "fix: propagate memory source message ids"
 - Modify: `ui/src/app/api/chat/route.test.ts`
 - Modify: `ui/src/app/api/chat/route.ts`
 
-- [ ] **Step 1: Write failing route tests**
+- [x] **Step 1: Write failing route tests**
 
 Add tests for invalid JSON and blank required chat fields. Expected response status is `400`, and the route must not instantiate flows.
 
-- [ ] **Step 2: Implement shared parsing**
+Observed failures:
+
+```text
+invalid JSON threw SyntaxError
+blank message returned 200 instead of 400
+```
+
+- [x] **Step 2: Implement shared parsing**
 
 Create `parseJsonBody(req, schema)` using Zod `safeParse`. Add `ChatRequestSchema` with:
 
@@ -208,7 +215,7 @@ conversation_id: optional non-empty string
 client_action_id: optional non-empty string
 ```
 
-- [ ] **Step 3: Refactor /api/chat**
+- [x] **Step 3: Refactor /api/chat**
 
 Replace the direct cast in `route.ts` with:
 
@@ -218,7 +225,7 @@ const body = await parseJsonBody(req, ChatRequestSchema);
 
 Preserve current SSE error contract for flow failures.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run:
 
@@ -227,7 +234,14 @@ cd ui
 npm run test:run -- src/app/api/chat/route.test.ts
 ```
 
-- [ ] **Step 5: Commit segment**
+Observed:
+
+```text
+Test Files  1 passed (1)
+Tests  4 passed (4)
+```
+
+- [x] **Step 5: Commit segment**
 
 Run:
 

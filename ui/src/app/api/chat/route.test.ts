@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  createChatFlow: vi.fn(),
   createWorldInteractionFlow: vi.fn(),
 }));
 
@@ -13,7 +14,7 @@ vi.mock("@/server/flow/world-interaction-flow", () => ({
 }));
 
 vi.mock("@/server/flow/chat-flow", () => ({
-  createChatFlow: vi.fn(),
+  createChatFlow: mocks.createChatFlow,
 }));
 
 vi.mock("@/server/flow/task-worker", () => ({
@@ -24,6 +25,7 @@ import { POST } from "./route";
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  mocks.createChatFlow.mockReset();
   mocks.createWorldInteractionFlow.mockReset();
 });
 
@@ -34,6 +36,38 @@ function chatRequest(body: Record<string, unknown>): Request {
     headers: { "Content-Type": "application/json" },
   });
 }
+
+describe("/api/chat request validation", () => {
+  it("returns 400 for invalid JSON before creating flows", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/chat", {
+        method: "POST",
+        body: "{",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "invalid_json" });
+    expect(mocks.createChatFlow).not.toHaveBeenCalled();
+    expect(mocks.createWorldInteractionFlow).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for blank required fields before creating flows", async () => {
+    const response = await POST(
+      chatRequest({
+        user_id: "u001",
+        agent_id: "agent-default",
+        message: "   ",
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "invalid_request" });
+    expect(mocks.createChatFlow).not.toHaveBeenCalled();
+    expect(mocks.createWorldInteractionFlow).not.toHaveBeenCalled();
+  });
+});
 
 describe("/api/chat WorldMind branch", () => {
   it("returns 400 before creating a WorldMind run when client_action_id is missing", async () => {
