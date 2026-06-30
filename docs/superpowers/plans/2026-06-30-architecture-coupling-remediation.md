@@ -485,6 +485,79 @@ git add ui/src/server/domain/agent/agent-repository.ts ui/src/server/domain/worl
 git commit -m "refactor: split agent and world repositories"
 ```
 
+## Segment 7: Conversation Repository Physical Split
+
+**Files:**
+- Modify: `ui/src/server/domain/repository-boundaries.test.ts`
+- Modify: `ui/src/server/domain/conversation/conversation-repository.ts`
+- Modify: `ui/src/server/domain/chat/repositories.ts`
+
+- [x] **Step 1: Investigate dependencies**
+
+`ConversationRepository` only depended on:
+
+```text
+randomUUID
+AppDatabase
+MessageRow/mapMessage
+```
+
+It had no dependency on Memory, Feed, Agent, World, or LiveState implementations.
+
+- [x] **Step 2: Tighten boundary test**
+
+Updated `repository-boundaries.test.ts` so `server/domain/conversation/conversation-repository.ts` may no longer import from `server/domain/chat/repositories`.
+
+Observed RED:
+
+```text
+server/domain/conversation/conversation-repository.ts
+```
+
+- [x] **Step 3: Move implementation**
+
+Moved these into `server/domain/conversation/conversation-repository.ts`:
+
+```text
+ConversationMessageRecord
+ConversationRepository
+MessageRow
+mapMessage
+```
+
+`server/domain/chat/repositories.ts` now re-exports Conversation for compatibility, but no longer owns its implementation.
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/server/domain/repository-boundaries.test.ts src/server/domain/chat/repositories.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted tests: 2 files, 17 tests passed
+eslint: passed
+Vitest: 50 files, 347 tests passed
+Next build: passed
+repositories.ts: 751 lines
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/server/domain/conversation/conversation-repository.ts ui/src/server/domain/chat/repositories.ts ui/src/server/domain/repository-boundaries.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: split conversation repository"
+```
+
 ## Verification Gates
 
 After every segment:
