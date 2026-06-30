@@ -3,7 +3,6 @@ import { ChatRequestSchema } from "@/server/api/schemas";
 import { getDatabase } from "@/server/db/client";
 import { createChatFlow } from "@/server/flow/chat-flow";
 import { createWorldInteractionFlow } from "@/server/flow/world-interaction-flow";
-import { drainChatTasks } from "@/server/flow/task-worker";
 
 export const runtime = "nodejs";
 
@@ -112,7 +111,6 @@ export async function POST(req: Request): Promise<Response> {
           emit({ type: "delta", content: result.reply });
         }
         emit(result.doneEvent);
-        void drainChatTasks({ db }).catch(() => undefined);
       } catch (error) {
         emit({
           type: "done",

@@ -713,6 +713,82 @@ git add ui/src/server/domain/memory/memory-repository.ts ui/src/server/domain/ch
 git commit -m "refactor: split memory repository"
 ```
 
+## Segment 10: Decouple Chat Route From Task Draining
+
+**Files:**
+- Modify: `ui/src/app/api/chat/route.ts`
+- Modify: `ui/src/app/api/chat/route.test.ts`
+- Create: `ui/src/app/api/internal/tasks/drain/route.ts`
+- Create: `ui/src/app/api/internal/tasks/drain/route.test.ts`
+- Modify: `ui/src/server/api/schemas.ts`
+
+- [x] **Step 1: Investigate current coupling**
+
+`/api/chat` still imported `drainChatTasks()` and invoked it after emitting the chat SSE done event:
+
+```ts
+void drainChatTasks({ db }).catch(() => undefined);
+```
+
+No `/api/internal/tasks/drain` route existed. Existing worker code was already isolated in `server/flow/task-worker.ts`, so the low-risk change was to remove the route-side drain and add an explicit internal drain endpoint.
+
+- [x] **Step 2: Write failing tests**
+
+Added:
+
+```text
+/api/chat standard branch returns SSE without calling drainChatTasks
+/api/internal/tasks/drain POST calls drainChatTasks explicitly
+```
+
+Observed RED:
+
+```text
+/api/chat called drainChatTasks once
+/api/internal/tasks/drain route module did not exist
+```
+
+- [x] **Step 3: Implement explicit drain endpoint**
+
+Changes:
+
+```text
+/api/chat no longer imports or calls drainChatTasks
+/api/internal/tasks/drain accepts { limit?: number }
+DrainTasksRequestSchema validates limit as int 0..100
+internal route returns drainChatTasks() result JSON
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/app/api/chat/route.test.ts src/app/api/internal/tasks/drain/route.test.ts
+npm run lint
+npm run build
+npm run test:run
+```
+
+Observed:
+
+```text
+Targeted tests: 2 files, 6 tests passed
+eslint: passed
+Next build: passed and listed /api/internal/tasks/drain
+Vitest: 51 files, 349 tests passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/app/api/chat/route.ts ui/src/app/api/chat/route.test.ts ui/src/app/api/internal/tasks/drain/route.ts ui/src/app/api/internal/tasks/drain/route.test.ts ui/src/server/api/schemas.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: drain chat tasks explicitly"
+```
+
 ## Verification Gates
 
 After every segment:

@@ -13,3 +13,9 @@ export const ChatRequestSchema = z.object({
 });
 
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
+
+export const DrainTasksRequestSchema = z.object({
+  limit: z.number().int().min(0).max(100).optional(),
+});
+
+export type DrainTasksRequest = z.infer<typeof DrainTasksRequestSchema>;

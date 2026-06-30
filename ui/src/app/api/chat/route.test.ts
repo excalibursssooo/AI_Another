@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   createChatFlow: vi.fn(),
   createWorldInteractionFlow: vi.fn(),
+  drainChatTasks: vi.fn(),
 }));
 
 vi.mock("@/server/db/client", () => ({
@@ -18,7 +19,7 @@ vi.mock("@/server/flow/chat-flow", () => ({
 }));
 
 vi.mock("@/server/flow/task-worker", () => ({
-  drainChatTasks: vi.fn(),
+  drainChatTasks: mocks.drainChatTasks,
 }));
 
 import { POST } from "./route";
@@ -27,6 +28,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
   mocks.createChatFlow.mockReset();
   mocks.createWorldInteractionFlow.mockReset();
+  mocks.drainChatTasks.mockReset();
 });
 
 function chatRequest(body: Record<string, unknown>): Request {
@@ -104,5 +106,40 @@ describe("/api/chat WorldMind branch", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("Content-Type")).toContain("text/event-stream");
     expect(await response.text()).toContain('"error":"world not found: missing-world"');
+  });
+});
+
+describe("/api/chat standard branch", () => {
+  it("returns chat SSE without draining background tasks", async () => {
+    mocks.createChatFlow.mockReturnValue({
+      run: vi.fn().mockResolvedValue({
+        reply: "hello back",
+        doneEvent: {
+          type: "done",
+          agent_id: "agent-default",
+          agent_name: "Agent",
+          emotion_label: "calm",
+          mood_intensity: 0.3,
+          heartbeat_bpm: 72,
+          risk_level: "low",
+          recalled_memories: [],
+          persisted_memory_count: 0,
+        },
+      }),
+    });
+
+    const response = await POST(
+      chatRequest({
+        user_id: "u001",
+        agent_id: "agent-default",
+        domain_id: "default",
+        message: "hello",
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("text/event-stream");
+    expect(await response.text()).toContain('"content":"hello back"');
+    expect(mocks.drainChatTasks).not.toHaveBeenCalled();
   });
 });
