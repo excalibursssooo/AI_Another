@@ -410,6 +410,81 @@ git add ui/src/server/domain/chat ui/src/server/flow/chat-flow.ts ui/src/server/
 git commit -m "refactor: extract chat flow helpers"
 ```
 
+## Segment 6: Agent and World Repository Physical Split
+
+**Files:**
+- Modify: `ui/src/server/domain/repository-boundaries.test.ts`
+- Modify: `ui/src/server/domain/agent/agent-repository.ts`
+- Modify: `ui/src/server/domain/world/world-repository.ts`
+- Modify: `ui/src/server/domain/chat/repositories.ts`
+
+- [x] **Step 1: Investigate dependencies**
+
+`AgentRepository` and `WorldRepository` only depended on:
+
+```text
+randomUUID
+AppDatabase
+parseStringArray
+```
+
+They had no dependency on memory, conversation, feed, or live-state repositories, so they were the safest first physical split.
+
+- [x] **Step 2: Tighten boundary test**
+
+Updated `repository-boundaries.test.ts` so `server/domain/agent/agent-repository.ts` and `server/domain/world/world-repository.ts` may no longer import from `server/domain/chat/repositories`.
+
+Observed RED:
+
+```text
+server/domain/agent/agent-repository.ts
+server/domain/world/world-repository.ts
+```
+
+- [x] **Step 3: Move implementations**
+
+Moved these into domain-specific modules:
+
+```text
+AgentRecord
+AgentRepository
+WorldRecord
+WorldRepository
+```
+
+`server/domain/chat/repositories.ts` now re-exports Agent/World for compatibility, but no longer owns their implementation.
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/server/domain/repository-boundaries.test.ts src/server/domain/chat/repositories.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted tests: 2 files, 17 tests passed
+eslint: passed
+Vitest: 50 files, 347 tests passed
+Next build: passed
+repositories.ts: 851 lines
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/server/domain/agent/agent-repository.ts ui/src/server/domain/world/world-repository.ts ui/src/server/domain/chat/repositories.ts ui/src/server/domain/repository-boundaries.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: split agent and world repositories"
+```
+
 ## Verification Gates
 
 After every segment:

@@ -6,13 +6,11 @@ import { describe, expect, it } from "vitest";
 const SRC_ROOT = join(process.cwd(), "src");
 const LEGACY_REPOSITORY_IMPORT = /from\s+["'](?:@\/server\/domain\/chat\/repositories|\.\/repositories)["']/;
 const IGNORED_FILES = new Set([
-  "server/domain/agent/agent-repository.ts",
   "server/domain/chat/repositories.ts",
   "server/domain/conversation/conversation-repository.ts",
   "server/domain/feed/feed-post-repository.ts",
   "server/domain/live-state/agent-live-state-repository.ts",
   "server/domain/memory/memory-repository.ts",
-  "server/domain/world/world-repository.ts",
 ]);
 
 describe("repository import boundaries", () => {
