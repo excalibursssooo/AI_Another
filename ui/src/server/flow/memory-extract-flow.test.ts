@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createTestDatabase } from "@/server/db/client";
-import { MemoryRepository } from "@/server/domain/chat/repositories";
+import { MemoryRepository } from "@/server/domain/memory/memory-repository";
 import { createMemoryExtractFlow } from "./memory-extract-flow";
 
 describe("MemoryExtractFlow", () => {

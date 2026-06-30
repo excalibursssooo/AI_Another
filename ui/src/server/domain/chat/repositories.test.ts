@@ -1,14 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { createTestDatabase } from "@/server/db/client";
-import {
-  AgentRepository,
-  AgentLiveStateRepository,
-  ConversationRepository,
-  FeedPostRepository,
-  MemoryRepository,
-  WorldRepository,
-} from "./repositories";
+import { AgentRepository } from "@/server/domain/agent/agent-repository";
+import { WorldRepository } from "@/server/domain/world/world-repository";
+import { ConversationRepository } from "@/server/domain/conversation/conversation-repository";
+import { MemoryRepository } from "@/server/domain/memory/memory-repository";
+import { AgentLiveStateRepository } from "@/server/domain/live-state/agent-live-state-repository";
+import { FeedPostRepository } from "@/server/domain/feed/feed-post-repository";
 
 describe("chat repositories", () => {
   it("seeds defaults and persists conversation turns", () => {

@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createTestDatabase } from "@/server/db/client";
-import { ConversationRepository, FeedPostRepository } from "@/server/domain/chat/repositories";
+import { ConversationRepository } from "@/server/domain/conversation/conversation-repository";
+import { FeedPostRepository } from "@/server/domain/feed/feed-post-repository";
 import { createFeedGenerateFlow, createPostTrigger } from "./feed-flow";
 import { extractTopicWithCluster } from "./feed-flow";
 import { SHARED_AGENT_ID } from "@/server/domain/chat/feed-topic-repository";

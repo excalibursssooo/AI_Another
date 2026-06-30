@@ -1,16 +1,14 @@
 import { AppDatabase } from "@/server/db/client";
-import {
-  AgentLiveStateRecord,
-  AgentLiveStateRepository,
-  AgentRecord,
-  AgentRepository,
-  ConversationMessageRecord,
-  ConversationRepository,
-  FeedPostRecord,
-  FeedPostRepository,
-  WorldRecord,
-  WorldRepository,
-} from "@/server/domain/chat/repositories";
+import { AgentRepository } from "@/server/domain/agent/agent-repository";
+import type { AgentRecord } from "@/server/domain/agent/agent-repository";
+import { WorldRepository } from "@/server/domain/world/world-repository";
+import type { WorldRecord } from "@/server/domain/world/world-repository";
+import { ConversationRepository } from "@/server/domain/conversation/conversation-repository";
+import type { ConversationMessageRecord } from "@/server/domain/conversation/conversation-repository";
+import { AgentLiveStateRepository } from "@/server/domain/live-state/agent-live-state-repository";
+import type { AgentLiveStateRecord } from "@/server/domain/live-state/agent-live-state-repository";
+import { FeedPostRepository } from "@/server/domain/feed/feed-post-repository";
+import type { FeedPostRecord } from "@/server/domain/feed/feed-post-repository";
 import {
   GenerateFeedPostDraft,
   generateFeedPostDraft as defaultGenerateFeedPostDraft,

@@ -6,7 +6,8 @@ import {
 } from "@/server/ai/embeddings";
 import type { EmbeddingResult } from "@/server/ai/embeddings";
 import type { MemoryCandidate } from "@/server/ai/schemas";
-import { MemoryRecord, MemoryRepository } from "./repositories";
+import { MemoryRepository } from "@/server/domain/memory/memory-repository";
+import type { MemoryRecord } from "@/server/domain/memory/memory-repository";
 import { MemoryOperationLogRepository } from "./memory-operation-log-repository";
 
 export const MEMORY_MERGE_SIMILARITY = 0.86;

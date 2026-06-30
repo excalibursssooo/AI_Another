@@ -1,6 +1,6 @@
 import { toConversationTurnDto } from "@/server/api/dto";
 import { getDatabase } from "@/server/db/client";
-import { ConversationRepository } from "@/server/domain/chat/repositories";
+import { ConversationRepository } from "@/server/domain/conversation/conversation-repository";
 
 export const runtime = "nodejs";
 

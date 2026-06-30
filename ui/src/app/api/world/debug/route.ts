@@ -1,5 +1,5 @@
 import { getDatabase } from "@/server/db/client";
-import { WorldRepository } from "@/server/domain/chat/repositories";
+import { WorldRepository } from "@/server/domain/world/world-repository";
 
 export const runtime = "nodejs";
 

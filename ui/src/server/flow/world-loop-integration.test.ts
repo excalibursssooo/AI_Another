@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createTestDatabase } from "@/server/db/client";
-import { WorldRepository } from "@/server/domain/chat/repositories";
+import { WorldRepository } from "@/server/domain/world/world-repository";
 import { ActorCommandRepository } from "@/server/domain/world/actor-command-repository";
 import { WorldEventRepository } from "@/server/domain/world/world-event-repository";
 import { WorldRunRepository } from "@/server/domain/world/world-run-repository";

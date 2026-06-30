@@ -5,7 +5,7 @@ import { createChatFlow } from "./chat-flow";
 import { createWorldMindFlow } from "./world-mind-flow";
 import { createWorldInteractionFlow } from "./world-interaction-flow";
 import { createTestDatabase } from "@/server/db/client";
-import { AgentRepository } from "@/server/domain/chat/repositories";
+import { AgentRepository } from "@/server/domain/agent/agent-repository";
 import type { ActorCommandRepository } from "@/server/domain/world/actor-command-repository";
 import type { ActorCommandRecord } from "@/server/domain/world/types";
 import type { WorldMindResult } from "./world-mind-flow";

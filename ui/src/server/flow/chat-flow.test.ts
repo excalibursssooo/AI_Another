@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createTestDatabase } from "@/server/db/client";
-import { MemoryRepository } from "@/server/domain/chat/repositories";
+import { MemoryRepository } from "@/server/domain/memory/memory-repository";
 import { TaskRepository } from "@/server/domain/chat/task-repository";
 import { VisibleActorDirective } from "@/server/domain/world/types";
 import { createChatFlow } from "./chat-flow";

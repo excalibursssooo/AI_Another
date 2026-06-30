@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createTestDatabase } from "@/server/db/client";
-import { MemoryRepository } from "@/server/domain/chat/repositories";
+import { MemoryRepository } from "@/server/domain/memory/memory-repository";
 import { createLowRiskToolActions, createChatToolSet } from "./registry";
 
 describe("low-risk tool actions", () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createTestDatabase } from "@/server/db/client";
-import { MemoryRepository } from "./repositories";
+import { MemoryRepository } from "@/server/domain/memory/memory-repository";
 import { MemoryConsolidator, detectConflict } from "./memory-consolidator";
 import type { EmbeddingResult } from "@/server/ai/embeddings";
 

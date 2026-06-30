@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 
 import type { AppDatabase } from "@/server/db/client";
-import type { WorldRecord } from "@/server/domain/chat/repositories";
-import { WorldRepository } from "@/server/domain/chat/repositories";
+import type { WorldRecord } from "@/server/domain/world/world-repository";
+import { WorldRepository } from "@/server/domain/world/world-repository";
 import { CharacterStateRepository } from "./character-state-repository";
 import type { DirectorContext, WorldEventRecord } from "./types";
 import { WorldEventRepository } from "./world-event-repository";

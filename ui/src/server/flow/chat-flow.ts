@@ -1,15 +1,13 @@
 import { AppDatabase } from "@/server/db/client";
-import {
-  AgentRecord,
-  AgentLiveStateRepository,
-  AgentRepository,
-  ConversationMessageRecord,
-  ConversationRepository,
-  MemoryRecord,
-  MemoryRepository,
-  WorldRecord,
-  WorldRepository,
-} from "@/server/domain/chat/repositories";
+import { AgentRepository } from "@/server/domain/agent/agent-repository";
+import type { AgentRecord } from "@/server/domain/agent/agent-repository";
+import { WorldRepository } from "@/server/domain/world/world-repository";
+import type { WorldRecord } from "@/server/domain/world/world-repository";
+import { ConversationRepository } from "@/server/domain/conversation/conversation-repository";
+import type { ConversationMessageRecord } from "@/server/domain/conversation/conversation-repository";
+import { MemoryRepository } from "@/server/domain/memory/memory-repository";
+import type { MemoryRecord } from "@/server/domain/memory/memory-repository";
+import { AgentLiveStateRepository } from "@/server/domain/live-state/agent-live-state-repository";
 import { TaskRepository } from "@/server/domain/chat/task-repository";
 import { GenerateChatReply, generateChatReply as defaultGenerateChatReply } from "@/server/ai/chat";
 import { createChatToolSet } from "@/server/tools/registry";

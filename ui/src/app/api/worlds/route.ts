@@ -1,6 +1,6 @@
 import { toWorldDetailDto } from "@/server/api/dto";
 import { getDatabase } from "@/server/db/client";
-import { WorldRepository } from "@/server/domain/chat/repositories";
+import { WorldRepository } from "@/server/domain/world/world-repository";
 import { createWorldFlow } from "@/server/flow/world-flow";
 
 export const runtime = "nodejs";

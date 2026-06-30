@@ -1,6 +1,7 @@
 import { toAgentLiveStateDto } from "@/server/api/dto";
 import { getDatabase } from "@/server/db/client";
-import { AgentLiveStateRepository, AgentRepository } from "@/server/domain/chat/repositories";
+import { AgentRepository } from "@/server/domain/agent/agent-repository";
+import { AgentLiveStateRepository } from "@/server/domain/live-state/agent-live-state-repository";
 
 export const runtime = "nodejs";
 

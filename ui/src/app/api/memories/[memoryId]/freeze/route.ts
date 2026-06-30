@@ -1,6 +1,6 @@
 import { toMemoryResponseDto } from "@/server/api/dto";
 import { getDatabase } from "@/server/db/client";
-import { MemoryRepository } from "@/server/domain/chat/repositories";
+import { MemoryRepository } from "@/server/domain/memory/memory-repository";
 
 export const runtime = "nodejs";
 

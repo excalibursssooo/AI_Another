@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 
 import { createTestDatabase } from "@/server/db/client";
-import { WorldRepository } from "@/server/domain/chat/repositories";
+import { WorldRepository } from "@/server/domain/world/world-repository";
 import type { WorldMindDecision } from "@/server/domain/world/world-decision";
 import { CharacterStateRepository } from "@/server/domain/world/character-state-repository";
 import { WorldDecisionLogRepository } from "@/server/domain/world/world-decision-log-repository";

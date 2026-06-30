@@ -6,7 +6,8 @@ import type { WorldMindContext, WorldMindResult } from "./world-mind-flow";
 import { createWorldMindFlow } from "./world-mind-flow";
 import type { ChatContext } from "./chat-flow";
 import { createChatFlow } from "./chat-flow";
-import { AgentRepository, WorldRepository } from "@/server/domain/chat/repositories";
+import { AgentRepository } from "@/server/domain/agent/agent-repository";
+import { WorldRepository } from "@/server/domain/world/world-repository";
 
 // ---------------------------------------------------------------------------
 // Input & Deps

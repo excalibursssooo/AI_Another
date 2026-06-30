@@ -1,5 +1,6 @@
 import { AppDatabase } from "@/server/db/client";
-import { WorldRecord, WorldRepository } from "@/server/domain/chat/repositories";
+import { WorldRepository } from "@/server/domain/world/world-repository";
+import type { WorldRecord } from "@/server/domain/world/world-repository";
 import {
   generateWorldDraft as defaultGenerateWorldDraft,
   getActiveProviderInfo,

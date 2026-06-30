@@ -1,5 +1,5 @@
 import { AppDatabase } from "@/server/db/client";
-import { MemoryRepository } from "@/server/domain/chat/repositories";
+import { MemoryRepository } from "@/server/domain/memory/memory-repository";
 
 export interface ToolScope {
   db: AppDatabase;

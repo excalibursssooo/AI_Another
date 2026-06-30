@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { createTestDatabase } from "@/server/db/client";
 import { WorldEventRepository } from "./world-event-repository";
 import { WorldMemoryRepository } from "./world-memory-repository";
-import { WorldRepository } from "@/server/domain/chat/repositories";
+import { WorldRepository } from "@/server/domain/world/world-repository";
 import { CharacterStateRepository } from "./character-state-repository";
 import { createInitialWorldSnapshot, WorldStateRepository } from "./world-state-repository";
 import { buildWorldDirectorContext } from "./world-context-builder";

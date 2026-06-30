@@ -1,6 +1,6 @@
 import { toPostItemDto } from "@/server/api/dto";
 import { getDatabase } from "@/server/db/client";
-import { FeedPostRepository } from "@/server/domain/chat/repositories";
+import { FeedPostRepository } from "@/server/domain/feed/feed-post-repository";
 
 export const runtime = "nodejs";
 

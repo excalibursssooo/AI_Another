@@ -1,11 +1,9 @@
-import {
-  AgentLiveStateRecord,
-  AgentRecord,
-  ConversationMessageRecord,
-  FeedPostRecord,
-  MemoryRecord,
-  WorldRecord,
-} from "@/server/domain/chat/repositories";
+import type { AgentRecord } from "@/server/domain/agent/agent-repository";
+import type { WorldRecord } from "@/server/domain/world/world-repository";
+import type { ConversationMessageRecord } from "@/server/domain/conversation/conversation-repository";
+import type { MemoryRecord } from "@/server/domain/memory/memory-repository";
+import type { AgentLiveStateRecord } from "@/server/domain/live-state/agent-live-state-repository";
+import type { FeedPostRecord } from "@/server/domain/feed/feed-post-repository";
 
 export function toAgentResponseDto(agent: AgentRecord, world?: WorldRecord | null) {
   const world_context = world

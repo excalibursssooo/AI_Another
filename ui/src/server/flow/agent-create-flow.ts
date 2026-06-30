@@ -1,5 +1,8 @@
 import { AppDatabase } from "@/server/db/client";
-import { AgentRecord, AgentRepository, MemoryRepository, WorldRepository } from "@/server/domain/chat/repositories";
+import { AgentRepository } from "@/server/domain/agent/agent-repository";
+import type { AgentRecord } from "@/server/domain/agent/agent-repository";
+import { WorldRepository } from "@/server/domain/world/world-repository";
+import { MemoryRepository } from "@/server/domain/memory/memory-repository";
 import {
   generateAgentDraft as defaultGenerateAgentDraft,
   getActiveProviderInfo,

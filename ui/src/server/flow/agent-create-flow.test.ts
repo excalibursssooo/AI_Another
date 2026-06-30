@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createTestDatabase } from "@/server/db/client";
-import { AgentRepository, MemoryRepository } from "@/server/domain/chat/repositories";
+import { AgentRepository } from "@/server/domain/agent/agent-repository";
+import { MemoryRepository } from "@/server/domain/memory/memory-repository";
 import { GenerateAgentDraft } from "@/server/ai/chat";
 import { createAgentCreateFlow } from "./agent-create-flow";
 

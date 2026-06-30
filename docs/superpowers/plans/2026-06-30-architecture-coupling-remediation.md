@@ -250,6 +250,86 @@ git add ui/src/server/api/request.ts ui/src/server/api/schemas.ts ui/src/app/api
 git commit -m "refactor: validate chat request bodies"
 ```
 
+## Segment 4: Repository Import Boundary Migration
+
+**Files:**
+- Create: `ui/src/server/domain/repository-boundaries.test.ts`
+- Create: `ui/src/server/domain/agent/agent-repository.ts`
+- Create: `ui/src/server/domain/world/world-repository.ts`
+- Create: `ui/src/server/domain/conversation/conversation-repository.ts`
+- Create: `ui/src/server/domain/memory/memory-repository.ts`
+- Create: `ui/src/server/domain/live-state/agent-live-state-repository.ts`
+- Create: `ui/src/server/domain/feed/feed-post-repository.ts`
+- Modify: callers importing from `@/server/domain/chat/repositories`
+
+- [x] **Step 1: Investigate import surface**
+
+Observed 39 files importing from the legacy god-file path:
+
+```text
+@/server/domain/chat/repositories
+./repositories
+```
+
+Decision: make this a boundary migration first. The new domain modules re-export from the legacy file temporarily; follow-up work can physically move one repository at a time after callers no longer depend on the god-file path.
+
+- [x] **Step 2: Write failing boundary test**
+
+Added `repository-boundaries.test.ts`, which scans `ui/src` and fails if callers import from the legacy repository barrel.
+
+Observed RED:
+
+```text
+expected [39 offenders] to deeply equal []
+```
+
+- [x] **Step 3: Add domain-specific bridge modules**
+
+Created:
+
+```text
+server/domain/agent/agent-repository.ts
+server/domain/world/world-repository.ts
+server/domain/conversation/conversation-repository.ts
+server/domain/memory/memory-repository.ts
+server/domain/live-state/agent-live-state-repository.ts
+server/domain/feed/feed-post-repository.ts
+```
+
+- [x] **Step 4: Migrate caller imports**
+
+Mechanically rewrote callers to import records and repositories from their domain-specific modules. The boundary test intentionally allows only the six temporary bridge modules to depend on `server/domain/chat/repositories`.
+
+- [x] **Step 5: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/server/domain/repository-boundaries.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+repository-boundaries.test.ts: 1 passed
+eslint: passed
+Vitest: 47 files, 341 tests passed
+Next build: passed
+```
+
+- [x] **Step 6: Commit segment**
+
+Run:
+
+```bash
+git add ui/src docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: route repository imports through domain modules"
+```
+
 ## Verification Gates
 
 After every segment:

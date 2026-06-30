@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createTestDatabase } from "@/server/db/client";
 import { TaskRepository } from "@/server/domain/chat/task-repository";
-import { WorldRepository } from "@/server/domain/chat/repositories";
+import { WorldRepository } from "@/server/domain/world/world-repository";
 import { WorldRunRepository } from "@/server/domain/world/world-run-repository";
 import { drainWorldTickTasks } from "./world-tick-worker";
 

@@ -1,5 +1,6 @@
 import { getDatabase } from "@/server/db/client";
-import { AgentRepository, MemoryRepository } from "@/server/domain/chat/repositories";
+import { AgentRepository } from "@/server/domain/agent/agent-repository";
+import { MemoryRepository } from "@/server/domain/memory/memory-repository";
 
 export const runtime = "nodejs";
 
