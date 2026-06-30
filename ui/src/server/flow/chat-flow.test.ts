@@ -88,6 +88,7 @@ describe("ChatFlow", () => {
       worldId: "default",
       userMessage: "请记住我喜欢雨天散步",
       assistantMessage: "我会记住。",
+      sourceMessageId: result.recentMessages?.[0]?.id,
     });
   });
 

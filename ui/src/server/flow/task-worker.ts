@@ -52,6 +52,7 @@ function parseMemoryExtractPayload(payload: unknown): {
   worldId: string;
   userMessage: string;
   assistantMessage: string;
+  sourceMessageId?: string | null;
   agentName?: string;
   fallbackReplies?: string[];
 } {
@@ -64,11 +65,15 @@ function parseMemoryExtractPayload(payload: unknown): {
   const worldId = readRequiredString(record, "worldId");
   const userMessage = readRequiredString(record, "userMessage");
   const assistantMessage = readRequiredString(record, "assistantMessage");
+  const sourceMessageId =
+    typeof record.sourceMessageId === "string" && record.sourceMessageId.trim()
+      ? record.sourceMessageId
+      : null;
   const agentName = typeof record.agentName === "string" ? record.agentName : undefined;
   const fallbackReplies = Array.isArray(record.fallbackReplies)
     ? record.fallbackReplies.filter((x): x is string => typeof x === "string")
     : undefined;
-  return { userId, agentId, worldId, userMessage, assistantMessage, agentName, fallbackReplies };
+  return { userId, agentId, worldId, userMessage, assistantMessage, sourceMessageId, agentName, fallbackReplies };
 }
 
 function readRequiredString(record: Record<string, unknown>, key: string): string {

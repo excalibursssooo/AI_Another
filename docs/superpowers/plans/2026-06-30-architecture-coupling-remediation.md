@@ -127,15 +127,27 @@ git commit -m "fix: deduplicate fallback memory candidates"
 - Modify: `ui/src/server/flow/chat-flow.ts`
 - Modify: `ui/src/server/flow/task-worker.ts`
 
-- [ ] **Step 1: Write failing ChatFlow test**
+- [x] **Step 1: Write failing ChatFlow test**
 
 Assert that the queued `memory_extract` task payload contains the persisted user message id as `sourceMessageId`.
 
-- [ ] **Step 2: Write failing TaskWorker test**
+Observed failure:
+
+```text
+ChatFlow task payload did not include sourceMessageId.
+```
+
+- [x] **Step 2: Write failing TaskWorker test**
 
 Assert that `drainChatTasks()` propagates `sourceMessageId` from task payload into the memory extraction flow, resulting in `memories[0].sourceMessageId` being populated.
 
-- [ ] **Step 3: Implement minimal propagation**
+Observed failure:
+
+```text
+expected null to be 'msg-source-1'
+```
+
+- [x] **Step 3: Implement minimal propagation**
 
 In `PersistConversation`, capture:
 
@@ -146,7 +158,7 @@ const assistantMessage = conversations.appendMessage(...)
 
 Store `sourceMessageId` on `ChatContext`, enqueue it in the memory task payload, parse it in `task-worker.ts`, and pass it through to `createMemoryExtractFlow().run()`.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run:
 
@@ -155,7 +167,14 @@ cd ui
 npm run test:run -- src/server/flow/chat-flow.test.ts src/server/flow/task-worker.test.ts
 ```
 
-- [ ] **Step 5: Commit segment**
+Observed:
+
+```text
+Test Files  2 passed (2)
+Tests  10 passed (10)
+```
+
+- [x] **Step 5: Commit segment**
 
 Run:
 

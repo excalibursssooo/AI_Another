@@ -40,6 +40,7 @@ export interface ChatContext {
   conversationId?: string;
   recentMessages?: ConversationMessageRecord[];
   recalledMemories?: MemoryRecord[];
+  sourceMessageId?: string;
   systemPrompt?: string;
   userPrompt?: string;
   reply?: string;
@@ -184,11 +185,12 @@ export function createChatFlow(options: { db: AppDatabase; generateChatReply?: G
         const conversationId =
           ctx.conversationId ??
           conversations.ensureConversation({ userId: ctx.userId, agentId: ctx.agentId, worldId: ctx.worldId });
-        conversations.appendMessage({ conversationId, role: "user", content: ctx.input });
+        const userMessage = conversations.appendMessage({ conversationId, role: "user", content: ctx.input });
         conversations.appendMessage({ conversationId, role: "assistant", content: ctx.reply ?? "" });
         return {
           ...ctx,
           conversationId,
+          sourceMessageId: userMessage.id,
           recentMessages: conversations.recentMessages(conversationId, 8),
         };
       },
@@ -235,6 +237,7 @@ export function createChatFlow(options: { db: AppDatabase; generateChatReply?: G
             agentId: ctx.agentId,
             worldId: ctx.worldId,
             conversationId: ctx.conversationId ?? null,
+            sourceMessageId: ctx.sourceMessageId ?? null,
             userMessage: ctx.input,
             assistantMessage: ctx.reply ?? "",
             fallbackReplies: [

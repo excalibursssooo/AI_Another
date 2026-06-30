@@ -17,6 +17,7 @@ describe("drainChatTasks", () => {
         worldId: "default",
         userMessage: "请记住我喜欢雨天散步",
         assistantMessage: "我会记住。",
+        sourceMessageId: "msg-source-1",
       },
     });
 
@@ -38,14 +39,14 @@ describe("drainChatTasks", () => {
 
     expect(result).toEqual({ processed: 1, failed: 0 });
     expect(tasks.get(task.id)?.status).toBe("done");
-    expect(
-      new MemoryRepository(db).list({
+    const memories = new MemoryRepository(db).list({
         userId: "u001",
         agentId: "agent-default",
         worldId: "default",
         status: "active",
-      }),
-    ).toHaveLength(1);
+    });
+    expect(memories).toHaveLength(1);
+    expect(memories[0].sourceMessageId).toBe("msg-source-1");
   });
 
   it("drainChatTasks propagates fallbackReplies into MemoryExtractContext", async () => {
