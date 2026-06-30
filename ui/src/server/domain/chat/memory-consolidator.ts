@@ -231,6 +231,23 @@ export class MemoryConsolidator {
       return { action: "merged", memoryId: updated?.id, reason: "similar semantic memory" };
     }
 
+    const fallbackMatch = findFallbackKeyMatch(comparable, input.candidate);
+    if (fallbackMatch && embedding.quality !== "semantic") {
+      const mergedContent = mergeMemoryContent(fallbackMatch, input.candidate);
+      const mergedEmbedding = await this.embedText(mergedContent);
+      const updated = this.memories.mergeMemory({
+        memoryId: fallbackMatch.id,
+        content: mergedContent,
+        importance: Math.max(fallbackMatch.importance, input.candidate.importance),
+        confidence: Math.max(fallbackMatch.confidence, input.candidate.confidence),
+        key: input.candidate.key ?? fallbackMatch.key,
+        topic: input.candidate.topic ?? fallbackMatch.topic,
+        embedding: toEmbeddingInput(mergedContent, mergedEmbedding),
+        lastObservedAt: Date.now(),
+      });
+      return { action: "merged", memoryId: updated?.id, reason: "same canonical key fallback memory" };
+    }
+
     const created = this.memories.create({
       userId: input.userId,
       agentId: input.agentId,
@@ -278,6 +295,14 @@ function isComparable(memory: MemoryRecord, candidate: MemoryCandidate): boolean
     return false;
   }
   return true;
+}
+
+function findFallbackKeyMatch(memories: MemoryRecord[], candidate: MemoryCandidate): MemoryRecord | null {
+  const key = candidate.key?.trim();
+  if (!key) {
+    return null;
+  }
+  return memories.find((memory) => memory.key === key) ?? null;
 }
 
 function rankComparable(memories: MemoryRecord[], candidateEmbedding: EmbeddingResult): RankedMemory[] {

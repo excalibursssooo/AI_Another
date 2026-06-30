@@ -48,7 +48,7 @@ P1-2 Repository split by re-export migration
 P1-3 ChatFlow prompt/safety/finalizer extraction
 ```
 
-- [ ] **Step 3: Commit segment**
+- [x] **Step 3: Commit segment**
 
 Run:
 
@@ -65,13 +65,17 @@ Expected: commit created with documentation only.
 - Modify: `ui/src/server/domain/chat/memory-consolidator.test.ts`
 - Modify: `ui/src/server/domain/chat/memory-consolidator.ts`
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write failing test**
 
 Add a test showing that two fallback-embedding memory candidates with the same `subject`, `memoryType`, and canonical `key` merge into one active memory instead of creating duplicates.
 
-Expected first failure: repository returns two active memories, or consolidation result is `created` instead of `merged`.
+Observed failure:
 
-- [ ] **Step 2: Implement minimal fallback matching**
+```text
+expected 'created' to be 'merged'
+```
+
+- [x] **Step 2: Implement minimal fallback matching**
 
 In `MemoryConsolidator.consolidate()`:
 
@@ -88,7 +92,7 @@ else:
 
 The first implementation should avoid broad fuzzy matching. Exact key fallback is deterministic, low-risk, and uses fields that already exist.
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 Run:
 
@@ -99,7 +103,14 @@ npm run test:run -- src/server/domain/chat/memory-consolidator.test.ts
 
 Expected: memory-consolidator tests pass.
 
-- [ ] **Step 4: Commit segment**
+Observed:
+
+```text
+Test Files  1 passed (1)
+Tests  16 passed (16)
+```
+
+- [x] **Step 4: Commit segment**
 
 Run:
 

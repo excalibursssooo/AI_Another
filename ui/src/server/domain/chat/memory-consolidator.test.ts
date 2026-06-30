@@ -125,6 +125,59 @@ describe("MemoryConsolidator", () => {
     expect(memories.listActiveForScope({ userId: "u001", agentId: "agent-default", worldId: "default" })).toHaveLength(2);
   });
 
+  it("deduplicates fallback memories with the same canonical key", async () => {
+    const db = createTestDatabase();
+    const memories = new MemoryRepository(db);
+    memories.create({
+      userId: "u001",
+      agentId: "agent-default",
+      worldId: "default",
+      subject: "user",
+      memoryType: "preference",
+      key: "preference.food.coffee",
+      topic: "coffee",
+      content: "用户喜欢咖啡。",
+      importance: 0.5,
+      confidence: 0.7,
+      embedding: {
+        json: JSON.stringify([1, 0]),
+        model: "fallback-hash-v1",
+        backend: "fallback",
+        quality: "lexical",
+        dimension: 2,
+        status: "fallback",
+        textHash: "old",
+        version: 1,
+        needsRefresh: true,
+        updatedAt: 1,
+      },
+    });
+    const consolidator = new MemoryConsolidator({ db, embedText: async () => fallback([0.2, 0.8]) });
+
+    const result = await consolidator.consolidate({
+      userId: "u001",
+      agentId: "agent-default",
+      worldId: "default",
+      candidate: {
+        subject: "user",
+        type: "preference",
+        key: "preference.food.coffee",
+        topic: "coffee",
+        content: "用户喜欢手冲咖啡。",
+        importance: 0.8,
+        confidence: 0.9,
+      },
+    });
+
+    expect(result.action).toBe("merged");
+    const active = memories.listActiveForScope({ userId: "u001", agentId: "agent-default", worldId: "default" });
+    expect(active).toHaveLength(1);
+    expect(active[0].content).toContain("手冲咖啡");
+    expect(active[0].importance).toBe(0.8);
+    expect(active[0].confidence).toBe(0.9);
+    expect(active[0].embeddingStatus).toBe("fallback");
+  });
+
   it("checks conflict across topK, not only best match", async () => {
     const db = createTestDatabase();
     const memories = new MemoryRepository(db);
