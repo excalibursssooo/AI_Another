@@ -30,3 +30,14 @@ export const AgentCreateRequestSchema = z.object({
 });
 
 export type AgentCreateRequest = z.infer<typeof AgentCreateRequestSchema>;
+
+export const WorldUpsertRequestSchema = z.object({
+  id: z.string().trim().optional(),
+  name: RequiredString,
+  lore: z.string().trim().optional(),
+  tone: z.string().trim().optional(),
+  constraints: z.array(RequiredString).optional(),
+  seed_memories: z.array(RequiredString).optional(),
+});
+
+export type WorldUpsertRequest = z.infer<typeof WorldUpsertRequestSchema>;

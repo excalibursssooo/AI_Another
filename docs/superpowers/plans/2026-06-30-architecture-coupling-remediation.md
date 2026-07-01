@@ -1108,6 +1108,81 @@ git add ui/src/app/api/agents/route.ts ui/src/app/api/agents/route.test.ts ui/sr
 git commit -m "refactor: validate agent create requests"
 ```
 
+## Segment 15: Validate World Upsert Request Bodies
+
+**Files:**
+- Add: `ui/src/app/api/worlds/route.test.ts`
+- Add: `ui/src/app/api/worlds/[worldId]/route.test.ts`
+- Modify: `ui/src/app/api/worlds/route.ts`
+- Modify: `ui/src/app/api/worlds/[worldId]/route.ts`
+- Modify: `ui/src/server/api/schemas.ts`
+
+- [x] **Step 1: Investigate route parsing drift**
+
+After Segment 14, direct `request.json()` remained in 10 routes. `/api/worlds` POST and `/api/worlds/[worldId]` PUT were selected because both accept the same manual world upsert payload and both used type assertions plus handwritten `name` checks.
+
+- [x] **Step 2: Write failing tests**
+
+Added tests for both world create and world update:
+
+```text
+invalid JSON returns { error: "invalid_json" } before creating the flow
+blank name returns { error: "invalid_request" } before creating the flow
+non-array constraints / seed_memories are rejected by schema
+```
+
+Observed RED:
+
+```text
+invalid JSON threw SyntaxError
+blank name returned legacy { detail: "name is required" }
+```
+
+- [x] **Step 3: Implement schema-backed parsing**
+
+Changes:
+
+```text
+WorldUpsertRequestSchema added to server/api/schemas.ts
+/api/worlds POST now uses parseJsonBody
+/api/worlds/[worldId] PUT now uses parseJsonBody
+ApiRequestError is converted with apiRequestErrorResponse
+name is a non-empty trimmed string
+constraints and seed_memories must be string arrays when provided
+```
+
+Existing default behavior is preserved for optional `lore`, `tone`, `constraints`, and `seed_memories` in the flow input.
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/app/api/worlds/route.test.ts 'src/app/api/worlds/[worldId]/route.test.ts'
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted world route tests: 2 files, 4 tests passed
+eslint: passed
+Vitest: 56 files, 359 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/app/api/worlds/route.ts ui/src/app/api/worlds/route.test.ts ui/src/app/api/worlds/[worldId]/route.ts ui/src/app/api/worlds/[worldId]/route.test.ts ui/src/server/api/schemas.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: validate world upsert requests"
+```
+
 ## Verification Gates
 
 After every segment:

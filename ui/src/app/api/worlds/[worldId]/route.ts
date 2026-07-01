@@ -1,4 +1,6 @@
 import { toWorldDetailDto } from "@/server/api/dto";
+import { apiRequestErrorResponse, ApiRequestError, parseJsonBody } from "@/server/api/request";
+import { WorldUpsertRequestSchema } from "@/server/api/schemas";
 import { getDatabase } from "@/server/db/client";
 import { WorldRepository } from "@/server/domain/world/world-repository";
 import { createWorldFlow } from "@/server/flow/world-flow";
@@ -16,16 +18,16 @@ export async function GET(_req: Request, context: { params: Promise<{ worldId: s
 
 export async function PUT(req: Request, context: { params: Promise<{ worldId: string }> }): Promise<Response> {
   const { worldId } = await context.params;
-  const body = (await req.json()) as {
-    name?: string;
-    lore?: string;
-    tone?: string;
-    constraints?: string[];
-    seed_memories?: string[];
-  };
-  if (!body.name?.trim()) {
-    return Response.json({ detail: "name is required" }, { status: 400 });
+  let body;
+  try {
+    body = await parseJsonBody(req, WorldUpsertRequestSchema);
+  } catch (error) {
+    if (error instanceof ApiRequestError) {
+      return apiRequestErrorResponse(error);
+    }
+    throw error;
   }
+
   const result = await createWorldFlow({ db: getDatabase() }).run({
     mode: "manual",
     input: {
