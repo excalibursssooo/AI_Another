@@ -25,6 +25,7 @@ import { useCreationFlow } from "@/features/chat/hooks/useCreationFlow";
 import { useFeedPolling } from "@/features/chat/hooks/useFeedPolling";
 import { useLiveState } from "@/features/chat/hooks/useLiveState";
 import { useWorldSettings } from "@/features/chat/hooks/useWorldSettings";
+import { createOptimisticChatExchange } from "@/features/chat/utils/optimisticMessages";
 import { useChatStore } from "@/stores/useChatStore";
 import { useWorldStore } from "@/stores/useWorldStore";
 
@@ -417,29 +418,15 @@ export function ChatApp() {
 
     setIsSending(true);
 
-    const clientActionId = crypto.randomUUID();
-
-    const userMessage = {
-      id: uid("msg"),
-      clientActionId,
-      role: "user" as const,
-      content: text,
-      createdAt: nowTime(),
-    };
-
-    const assistantMessageId = uid("msg");
     const existing = useChatStore.getState().messagesByAgent[selectedAgentId] ?? [];
-    upsertMessages(selectedAgentId, [
-      ...existing,
-      userMessage,
-      {
-        id: assistantMessageId,
-        role: "assistant",
-        content: "",
-        createdAt: nowTime(),
-        isStreaming: true,
-      },
-    ]);
+    const { clientActionId, assistantMessageId, messages } = createOptimisticChatExchange({
+      text,
+      existing,
+      uid,
+      now: nowTime,
+      createClientActionId: () => crypto.randomUUID(),
+    });
+    upsertMessages(selectedAgentId, messages);
 
     setInput("");
 

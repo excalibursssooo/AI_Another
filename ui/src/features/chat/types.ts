@@ -28,6 +28,7 @@ export interface AiAgent {
 
 export interface ChatMessage {
   readonly id: string;
+  readonly clientActionId?: string;
   readonly role: ChatRole;
   readonly content: string;
   readonly createdAt: string;

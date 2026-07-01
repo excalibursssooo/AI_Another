@@ -1423,6 +1423,89 @@ git add ui/src/server/api/request.ts ui/src/server/api/request.test.ts ui/src/se
 git commit -m "refactor: validate optional json bodies"
 ```
 
+## Segment 19: Extract Optimistic Chat Message Builder
+
+**Files:**
+- Add: `ui/src/features/chat/utils/optimisticMessages.ts`
+- Add: `ui/src/features/chat/utils/optimisticMessages.test.ts`
+- Modify: `ui/src/features/chat/chat-app.tsx`
+- Modify: `ui/src/features/chat/types.ts`
+
+- [x] **Step 1: Investigate ChatApp send coupling**
+
+`ChatApp.sendMessage` still mixed several responsibilities:
+
+```text
+form submission guard
+client action id generation
+optimistic user message construction
+streaming assistant placeholder construction
+store write
+streamChat request and callbacks
+live state update
+error handling
+```
+
+This segment extracts only the pure optimistic message construction step. It does not change `streamChat`, store updates, live state updates, or error handling.
+
+- [x] **Step 2: Write failing test**
+
+Added `optimisticMessages.test.ts` covering:
+
+```text
+existing messages are preserved
+user message gets clientActionId
+assistant placeholder starts with empty content and isStreaming: true
+assistantMessageId is returned for stream callbacks
+```
+
+Observed RED:
+
+```text
+Cannot find module './optimisticMessages'
+```
+
+- [x] **Step 3: Implement helper and integrate**
+
+Changes:
+
+```text
+createOptimisticChatExchange added under chat utils
+ChatMessage now explicitly allows clientActionId
+ChatApp sendMessage delegates optimistic message construction to helper
+ChatApp still owns store write and stream callbacks
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/features/chat/utils/optimisticMessages.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted optimistic message tests: 1 file, 1 test passed
+eslint: passed
+Vitest: 61 files, 371 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/types.ts ui/src/features/chat/utils/optimisticMessages.ts ui/src/features/chat/utils/optimisticMessages.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: extract optimistic chat messages"
+```
+
 ## Verification Gates
 
 After every segment:
