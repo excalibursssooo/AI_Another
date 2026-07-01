@@ -3168,6 +3168,82 @@ git add ui/src/server/domain/chat/memory-consolidator.ts ui/src/server/domain/ch
 git commit -m "fix: deduplicate fallback memories by text"
 ```
 
+## Segment 42: Require User Scope For Memory Listing
+
+**Files:**
+- Add: `ui/src/app/api/memories/route.test.ts`
+- Modify: `ui/src/app/api/memories/route.ts`
+- Modify: `ui/src/server/api/request.ts`
+
+- [x] **Step 1: Investigate remaining API scope defaults**
+
+`Fix.md` flags route-level defaulting to `"u001"` as a user isolation risk. Most write routes now use parsed schemas, but `/api/memories` still read:
+
+```text
+user_id || "u001"
+```
+
+This meant a request missing `user_id` silently listed the demo user's memories.
+
+- [x] **Step 2: Write failing route test**
+
+Added `/api/memories` route tests asserting:
+
+```text
+missing user_id returns 400 invalid_request
+database is not opened
+valid request uses the request user_id
+```
+
+Observed RED:
+
+```text
+expected status 400
+received status 200
+```
+
+- [x] **Step 3: Add query scope validation**
+
+Changes:
+
+```text
+Added readRequiredSearchParam(url, key) to server/api/request.ts
+/api/memories GET now requires user_id and agent_id before opening the database
+/api/memories no longer defaults user_id to u001
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/app/api/memories/route.test.ts src/server/api/request.test.ts
+npm run test:run -- src/app/api/memories/route.test.ts 'src/app/api/memories/[memoryId]/memory-scope-validation.test.ts' src/app/api/optional-body-validation.test.ts src/server/api/request.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Memory route/request tests: 2 files, 4 tests passed
+API validation tests: 4 files, 11 tests passed
+eslint: passed
+Vitest: 77 files, 417 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/app/api/memories/route.test.ts ui/src/app/api/memories/route.ts ui/src/server/api/request.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: require user scope for memory list"
+```
+
 ## Verification Gates
 
 After every segment:

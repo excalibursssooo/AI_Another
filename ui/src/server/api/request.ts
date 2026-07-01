@@ -54,3 +54,11 @@ export function apiRequestErrorResponse(error: ApiRequestError): Response {
     { status: error.status },
   );
 }
+
+export function readRequiredSearchParam(url: URL, key: string): string {
+  const value = url.searchParams.get(key)?.trim();
+  if (!value) {
+    throw new ApiRequestError(400, "invalid_request", { field: key, reason: "required" });
+  }
+  return value;
+}
