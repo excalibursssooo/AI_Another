@@ -2886,6 +2886,74 @@ git add ui/src/server/ai/ai-boundaries.test.ts ui/src/server/ai/generators/agent
 git commit -m "refactor: extract agent draft ai generator"
 ```
 
+## Segment 38: Extract Memory Extraction AI Generator
+
+**Files:**
+- Add: `ui/src/server/ai/generators/memory-extraction.ts`
+- Modify: `ui/src/server/ai/ai-boundaries.test.ts`
+- Modify: `ui/src/server/ai/chat.ts`
+
+- [x] **Step 1: Identify remaining non-chat generator**
+
+`generateMemoryExtraction` belongs to memory processing and task drain flows, but `ai/chat.ts` still owned its prompt and implementation. This segment keeps the compatibility export while moving memory-specific generation out of the chat module.
+
+- [x] **Step 2: Write failing boundary test**
+
+Extended `ai-boundaries.test.ts` to assert `chat.ts` no longer owns:
+
+```text
+const MEMORY_SYSTEM_PROMPT
+async function generateMemoryExtraction
+```
+
+Observed RED:
+
+```text
+expected chat.ts not to contain const MEMORY_SYSTEM_PROMPT
+```
+
+- [x] **Step 3: Extract memory generator with compatibility re-export**
+
+Changes:
+
+```text
+Created ai/generators/memory-extraction.ts
+Moved MemoryExtractionGenerationInput, GenerateMemoryExtraction, MEMORY_SYSTEM_PROMPT, generateMemoryExtraction
+Moved memory fallback logging local to memory-extraction.ts
+ai/chat.ts re-exports generateMemoryExtraction and its types for existing callers
+Narrowed chat.ts fallback logging to chat-only outcomes
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/server/ai/ai-boundaries.test.ts src/server/ai/chat.test.ts src/server/flow/memory-extract-flow.test.ts src/server/flow/task-worker.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted AI/memory tests: 4 files, 54 tests passed
+eslint: passed
+Vitest: 76 files, 412 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/server/ai/ai-boundaries.test.ts ui/src/server/ai/generators/memory-extraction.ts ui/src/server/ai/chat.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: extract memory extraction ai generator"
+```
+
 ## Verification Gates
 
 After every segment:
