@@ -1,7 +1,6 @@
 export interface ChatRequestDto {
   readonly user_id: string;
   readonly message: string;
-  readonly conversation_id?: string;
   readonly agent_id: string;
   readonly domain_id?: string;
   readonly client_action_id?: string;

@@ -114,7 +114,6 @@ describe("sendChatMessageAction", () => {
     expect(payload).toEqual({
       user_id: "u001",
       message: "你好",
-      conversation_id: "agent-1",
       agent_id: "agent-1",
       domain_id: "world-1",
       client_action_id: "client-1",

@@ -3488,6 +3488,79 @@ git add ui/src/server/ai/generation-logging.ts ui/src/server/ai/generation-loggi
 git commit -m "refactor: centralize ai fallback logging"
 ```
 
+## Segment 46: Remove Deprecated Chat Conversation Id Request Field
+
+**Files:**
+- Modify: `ui/src/app/api/chat/route.test.ts`
+- Modify: `ui/src/features/chat/hooks/useChatSending.test.ts`
+- Modify: `ui/src/features/chat/hooks/useChatSending.ts`
+- Modify: `ui/src/lib/api/types_api.ts`
+- Modify: `ui/src/server/api/schemas.ts`
+
+- [x] **Step 1: Investigate unused chat request field**
+
+`Fix.md` noted that `/api/chat` accepted `conversation_id` but did not use it. Current investigation found a worse mismatch: `useChatSending` sent `conversation_id: selectedAgentId`, while the server ignored it and `ChatFlow` resolved the real conversation internally.
+
+- [x] **Step 2: Write failing contract tests**
+
+Changed the send-message test to assert the chat request payload no longer includes `conversation_id`.
+
+Added a route validation test asserting a legacy `conversation_id` field returns:
+
+```text
+400 invalid_request
+```
+
+Observed RED:
+
+```text
+route returned 200
+payload still contained conversation_id: "agent-1"
+```
+
+- [x] **Step 3: Remove the field from the request contract**
+
+Changes:
+
+```text
+Removed conversation_id from ChatRequestDto
+Removed conversation_id from ChatRequestSchema
+Made ChatRequestSchema strict so deprecated/unknown fields are rejected
+Removed conversation_id from useChatSending payload
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/features/chat/hooks/useChatSending.test.ts src/app/api/chat/route.test.ts
+rg -n "conversation_id" ui/src/lib ui/src/features ui/src/server/api ui/src/app/api
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Chat route/sending tests: 2 files, 9 tests passed
+Request-layer conversation_id scan: only the deprecated-field rejection test remains
+eslint: passed
+Vitest: 80 files, 427 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/app/api/chat/route.test.ts ui/src/features/chat/hooks/useChatSending.test.ts ui/src/features/chat/hooks/useChatSending.ts ui/src/lib/api/types_api.ts ui/src/server/api/schemas.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: remove chat conversation request id"
+```
+
 ## Verification Gates
 
 After every segment:

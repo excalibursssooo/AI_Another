@@ -76,7 +76,6 @@ export async function sendChatMessageAction(options: SendChatMessageActionOption
       {
         user_id: options.userId,
         message: text,
-        conversation_id: options.selectedAgentId,
         agent_id: options.selectedAgentId,
         domain_id: options.activeDomainId,
         client_action_id: clientActionId,

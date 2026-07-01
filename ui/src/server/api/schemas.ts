@@ -8,9 +8,8 @@ export const ChatRequestSchema = z.object({
   message: RequiredString,
   agent_id: RequiredString,
   domain_id: OptionalString,
-  conversation_id: OptionalString,
   client_action_id: OptionalString,
-});
+}).strict();
 
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
 

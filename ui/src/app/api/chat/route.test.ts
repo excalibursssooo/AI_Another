@@ -69,6 +69,22 @@ describe("/api/chat request validation", () => {
     expect(mocks.createChatFlow).not.toHaveBeenCalled();
     expect(mocks.createWorldInteractionFlow).not.toHaveBeenCalled();
   });
+
+  it("returns 400 for deprecated conversation_id before creating flows", async () => {
+    const response = await POST(
+      chatRequest({
+        user_id: "u001",
+        agent_id: "agent-default",
+        message: "hello",
+        conversation_id: "conv-legacy",
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "invalid_request" });
+    expect(mocks.createChatFlow).not.toHaveBeenCalled();
+    expect(mocks.createWorldInteractionFlow).not.toHaveBeenCalled();
+  });
 });
 
 describe("/api/chat WorldMind branch", () => {
