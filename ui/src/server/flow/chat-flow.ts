@@ -42,6 +42,10 @@ export interface ChatContext {
   worldDirective?: VisibleActorDirective | null;
 }
 
+function loadWorldWithFallback(worlds: WorldRepository, worldId: string): WorldRecord | null {
+  return worlds.get(worldId) ?? worlds.get("default");
+}
+
 export function createChatFlow(options: { db: AppDatabase; generateChatReply?: GenerateChatReply }): Flow<ChatContext> {
   const agents = new AgentRepository(options.db);
   const worlds = new WorldRepository(options.db);
@@ -63,9 +67,9 @@ export function createChatFlow(options: { db: AppDatabase; generateChatReply?: G
       },
     },
     {
-      name: "LoadWorld",
+      name: "LoadWorldWithFallback",
       run: async (ctx) => {
-        const world = worlds.get(ctx.worldId) ?? worlds.get("default");
+        const world = loadWorldWithFallback(worlds, ctx.worldId);
         if (!world) {
           throw new Error("world not found");
         }

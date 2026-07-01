@@ -92,6 +92,36 @@ describe("ChatFlow", () => {
     });
   });
 
+  it("names ordinary chat world fallback explicitly", async () => {
+    const db = createTestDatabase();
+    const nodeStarts: string[] = [];
+    const flow = createChatFlow({
+      db,
+      generateChatReply: async () => ({
+        reply: "使用默认世界。",
+        mood: { label: "calm", intensity: 0.3, heartbeatBpm: 72 },
+      }),
+    });
+
+    const result = await flow.run(
+      {
+        userId: "u001",
+        agentId: "agent-default",
+        worldId: "missing-world",
+        input: "你好",
+      },
+      (event) => {
+        if (event.type === "node:start") {
+          nodeStarts.push(event.node);
+        }
+      },
+    );
+
+    expect(result.world?.id).toBe("default");
+    expect(nodeStarts).toContain("LoadWorldWithFallback");
+    expect(nodeStarts).not.toContain("LoadWorld");
+  });
+
   it("does not pass tools to chat generation when ENABLE_TOOLS is false", async () => {
     vi.stubEnv("ENABLE_TOOLS", "false");
     const db = createTestDatabase();

@@ -2360,6 +2360,80 @@ git add ui/src/server/flow/chat-flow.ts ui/src/server/flow/chat-flow-boundaries.
 git commit -m "refactor: extract chat tool policy"
 ```
 
+## Segment 31: Name Chat World Fallback Explicitly
+
+**Files:**
+- Modify: `ui/src/server/flow/chat-flow.ts`
+- Modify: `ui/src/server/flow/chat-flow.test.ts`
+
+- [x] **Step 1: Investigate world fallback coupling**
+
+`Fix.md` called out that ordinary chat may allow fallback to the default world, but the behavior should be explicit rather than hidden behind a generic `LoadWorld` node.
+
+Current state before this segment:
+
+```text
+ChatFlow node name: LoadWorld
+Behavior: worlds.get(ctx.worldId) ?? worlds.get("default")
+```
+
+- [x] **Step 2: Write failing tests**
+
+Added a ChatFlow test that:
+
+```text
+runs with worldId = "missing-world"
+asserts the resulting world is default
+asserts the flow node event is LoadWorldWithFallback
+asserts generic LoadWorld is not emitted
+```
+
+Observed RED:
+
+```text
+expected [ 'LoadAgent', 'LoadWorld', ... ] to include 'LoadWorldWithFallback'
+```
+
+- [x] **Step 3: Implement explicit fallback naming**
+
+Changes:
+
+```text
+Extracted loadWorldWithFallback(worlds, worldId)
+Renamed ChatFlow node from LoadWorld to LoadWorldWithFallback
+Kept ordinary chat fallback behavior unchanged
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/server/flow/chat-flow.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted ChatFlow tests: 1 file, 9 tests passed
+eslint: passed
+Vitest: 73 files, 405 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/server/flow/chat-flow.ts ui/src/server/flow/chat-flow.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: name chat world fallback"
+```
+
 ## Verification Gates
 
 After every segment:
