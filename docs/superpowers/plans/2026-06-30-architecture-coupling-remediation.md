@@ -3244,6 +3244,95 @@ git add ui/src/app/api/memories/route.test.ts ui/src/app/api/memories/route.ts u
 git commit -m "refactor: require user scope for memory list"
 ```
 
+## Segment 43: Require User Scope For Remaining Read/Feed Routes
+
+**Files:**
+- Add: `ui/src/app/api/user-scope-validation.test.ts`
+- Modify: `ui/src/app/api/agents/[agentId]/generate-post/route.ts`
+- Modify: `ui/src/app/api/agents/[agentId]/state/live/route.ts`
+- Modify: `ui/src/app/api/conversations/route.ts`
+- Modify: `ui/src/app/api/posts/[postId]/trigger-chat/route.ts`
+- Modify: `ui/src/app/api/posts/route.ts`
+- Modify: `ui/src/server/api/schemas.ts`
+
+- [x] **Step 1: Identify remaining implicit demo user defaults**
+
+After memory listing was fixed, the remaining API defaults were:
+
+```text
+/api/conversations
+/api/posts
+/api/posts/[postId]/trigger-chat
+/api/agents/[agentId]/state/live
+/api/agents/[agentId]/generate-post
+```
+
+Each could still use `"u001"` when the request omitted `user_id`.
+
+- [x] **Step 2: Write failing scope tests**
+
+Added `user-scope-validation.test.ts` asserting each route:
+
+```text
+returns 400 invalid_request when user_id is missing
+does not open the database or invoke feed flows/triggers
+```
+
+Observed RED:
+
+```text
+conversations/posts/live-state returned 200
+post trigger returned 404 after opening the trigger path
+generate-post attempted to call createFeedGenerateFlow().run
+```
+
+- [x] **Step 3: Require explicit user scope**
+
+Changes:
+
+```text
+GET routes use readRequiredSearchParam(url, "user_id")
+conversation listing also validates agent_id through readRequiredSearchParam
+trigger-chat validates user_id before opening the database
+live-state validates user_id before opening the database
+FeedGenerateRequestSchema now requires user_id
+generate-post uses body.user_id directly instead of defaulting to u001
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/app/api/user-scope-validation.test.ts
+npm run test:run -- src/app/api/user-scope-validation.test.ts src/app/api/optional-body-validation.test.ts src/features/chat/hooks/useFeedActions.test.ts src/server/api/request.test.ts
+rg -n "user_id.*\\|\\| \"u001\"|get\\(\"user_id\"\\) \\|\\| \"u001\"|DEV_USER_ID" ui/src/app/api ui/src/server
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+User scope validation: 1 file, 5 tests passed
+Related API/feed tests: 4 files, 15 tests passed
+Default u001 route scan: no matches
+eslint: passed
+Vitest: 78 files, 422 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/app/api/user-scope-validation.test.ts ui/src/app/api/agents/[agentId]/generate-post/route.ts ui/src/app/api/agents/[agentId]/state/live/route.ts ui/src/app/api/conversations/route.ts ui/src/app/api/posts/[postId]/trigger-chat/route.ts ui/src/app/api/posts/route.ts ui/src/server/api/schemas.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: require user scope for feed routes"
+```
+
 ## Verification Gates
 
 After every segment:

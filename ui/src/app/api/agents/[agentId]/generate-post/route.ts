@@ -19,7 +19,7 @@ export async function POST(req: Request, context: { params: Promise<{ agentId: s
   }
 
   const result = await createFeedGenerateFlow({ db: getDatabase() }).run({
-    userId: body.user_id || "u001",
+    userId: body.user_id,
     agentId,
     worldId: body.domain_id || "default",
     sourceTaskId: body.source_task_id ?? null,

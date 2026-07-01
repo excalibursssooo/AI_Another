@@ -80,7 +80,7 @@ export const WorldAiCreateRequestSchema = z.object({
 export type WorldAiCreateRequest = z.infer<typeof WorldAiCreateRequestSchema>;
 
 export const FeedGenerateRequestSchema = z.object({
-  user_id: z.string().trim().optional(),
+  user_id: RequiredString,
   domain_id: z.string().trim().optional(),
   source_task_id: z.string().trim().nullable().optional(),
 });

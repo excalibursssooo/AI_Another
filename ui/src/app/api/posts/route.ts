@@ -1,3 +1,4 @@
+import { apiRequestErrorResponse, ApiRequestError, readRequiredSearchParam } from "@/server/api/request";
 import { toPostItemDto } from "@/server/api/dto";
 import { getDatabase } from "@/server/db/client";
 import { FeedPostRepository } from "@/server/domain/feed/feed-post-repository";
@@ -6,8 +7,16 @@ export const runtime = "nodejs";
 
 export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
-  const userId = url.searchParams.get("user_id") || "u001";
-  const worldId = url.searchParams.get("domain_id") || undefined;
+  let userId: string;
+  try {
+    userId = readRequiredSearchParam(url, "user_id");
+  } catch (error) {
+    if (error instanceof ApiRequestError) {
+      return apiRequestErrorResponse(error);
+    }
+    throw error;
+  }
+  const worldId = url.searchParams.get("domain_id")?.trim() || undefined;
   const limit = Number(url.searchParams.get("limit") || "20");
   const offset = Number(url.searchParams.get("offset") || "0");
   const includeArchived = url.searchParams.get("include_archived") === "true";
