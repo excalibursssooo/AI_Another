@@ -1183,6 +1183,75 @@ git add ui/src/app/api/worlds/route.ts ui/src/app/api/worlds/route.test.ts ui/sr
 git commit -m "refactor: validate world upsert requests"
 ```
 
+## Segment 16: Validate Agent Update Request Bodies
+
+**Files:**
+- Add: `ui/src/app/api/agents/[agentId]/route.test.ts`
+- Modify: `ui/src/app/api/agents/[agentId]/route.ts`
+- Modify: `ui/src/server/api/schemas.ts`
+
+- [x] **Step 1: Investigate update route behavior**
+
+`/api/agents/[agentId]` PUT still parsed JSON directly and opened the database before parsing the body. Its `status` field was only constrained by a TypeScript assertion, so invalid runtime values could proceed into the repository update path.
+
+- [x] **Step 2: Write failing tests**
+
+Added validation tests for:
+
+```text
+invalid JSON returns { error: "invalid_json" } before opening the database
+invalid status returns { error: "invalid_request" } before opening the database
+```
+
+Observed RED:
+
+```text
+invalid JSON threw SyntaxError
+invalid status reached AgentRepository.update and failed against the mocked db
+```
+
+- [x] **Step 3: Implement schema-backed parsing**
+
+Changes:
+
+```text
+AgentUpdateRequestSchema added to server/api/schemas.ts
+/api/agents/[agentId] PUT parses before getDatabase()
+status is restricted to active | inactive
+ApiRequestError is converted with apiRequestErrorResponse
+existing partial-update semantics are preserved for optional fields
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- 'src/app/api/agents/[agentId]/route.test.ts'
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted /api/agents/[agentId] tests: 1 file, 2 tests passed
+eslint: passed
+Vitest: 57 files, 361 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/app/api/agents/[agentId]/route.ts ui/src/app/api/agents/[agentId]/route.test.ts ui/src/server/api/schemas.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: validate agent update requests"
+```
+
 ## Verification Gates
 
 After every segment:

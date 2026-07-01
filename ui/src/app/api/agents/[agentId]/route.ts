@@ -1,4 +1,6 @@
 import { toAgentResponseDto } from "@/server/api/dto";
+import { apiRequestErrorResponse, ApiRequestError, parseJsonBody } from "@/server/api/request";
+import { AgentUpdateRequestSchema } from "@/server/api/schemas";
 import { getDatabase } from "@/server/db/client";
 import { AgentRepository } from "@/server/domain/agent/agent-repository";
 import { WorldRepository } from "@/server/domain/world/world-repository";
@@ -18,16 +20,17 @@ export async function GET(_req: Request, context: { params: Promise<{ agentId: s
 
 export async function PUT(req: Request, context: { params: Promise<{ agentId: string }> }): Promise<Response> {
   const { agentId } = await context.params;
+  let body;
+  try {
+    body = await parseJsonBody(req, AgentUpdateRequestSchema);
+  } catch (error) {
+    if (error instanceof ApiRequestError) {
+      return apiRequestErrorResponse(error);
+    }
+    throw error;
+  }
+
   const db = getDatabase();
-  const body = (await req.json()) as {
-    name?: string;
-    persona?: string;
-    background?: string;
-    domain_id?: string;
-    hobbies?: string[];
-    speaking_style?: string;
-    status?: "active" | "inactive";
-  };
   const updated = new AgentRepository(db).update(agentId, {
     ...(body.name ? { name: body.name, displayName: body.name } : {}),
     ...(body.persona ? { persona: body.persona } : {}),

@@ -31,6 +31,18 @@ export const AgentCreateRequestSchema = z.object({
 
 export type AgentCreateRequest = z.infer<typeof AgentCreateRequestSchema>;
 
+export const AgentUpdateRequestSchema = z.object({
+  name: z.string().trim().optional(),
+  persona: z.string().trim().optional(),
+  background: z.string().trim().optional(),
+  domain_id: z.string().trim().optional(),
+  hobbies: z.array(z.string().trim()).optional(),
+  speaking_style: z.string().trim().optional(),
+  status: z.enum(["active", "inactive"]).optional(),
+});
+
+export type AgentUpdateRequest = z.infer<typeof AgentUpdateRequestSchema>;
+
 export const WorldUpsertRequestSchema = z.object({
   id: z.string().trim().optional(),
   name: RequiredString,
