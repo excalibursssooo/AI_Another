@@ -2,17 +2,15 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { createAgent, createAgentByAi, deleteAgent } from "@/lib/api/companion";
-import { reportFrontendError } from "@/lib/api/telemetry";
+import { deleteAgent } from "@/lib/api/companion";
 import { getErrorMessage } from "@/lib/utils/error";
-import { ANIMATION_DELAYS } from "@/config/constants";
 import { ChatMessage } from "@/features/chat/types";
 import { ChatArea } from "@/features/chat/components/ChatArea";
 import { ChatSidebar } from "@/features/chat/components/ChatSidebar";
 import { CreationOverlay } from "@/features/chat/components/CreationOverlay";
 import { RightPanel } from "@/features/chat/components/RightPanel";
 import { useAgents } from "@/features/chat/hooks/useAgents";
-import { useCreationFlow } from "@/features/chat/hooks/useCreationFlow";
+import { useAgentCreation } from "@/features/chat/hooks/useAgentCreation";
 import { useChatTelemetry } from "@/features/chat/hooks/useChatTelemetry";
 import { useFeedActions } from "@/features/chat/hooks/useFeedActions";
 import { useChatSending } from "@/features/chat/hooks/useChatSending";
@@ -40,13 +38,8 @@ export function ChatApp() {
   const [draftName, setDraftName] = useState<string>("");
   const [draftPersona, setDraftPersona] = useState<string>("");
   const [draftStyle, setDraftStyle] = useState<string>("");
-  const [creatingPlaceholder, setCreatingPlaceholder] = useState<{ active: boolean; name: string }>({
-    active: false,
-    name: "角色构建中...",
-  });
   const sessionId = useMemo(() => uid("session"), []);
   useChatTelemetry({ sessionId, mode: APP_MODE, userId: USER_ID });
-  const { overlay, startFlow, setRestructuringPhase, runSeedAndInfraStages, pushLog, completeFlow, failFlow } = useCreationFlow();
 
   const notice = useChatStore((state) => state.notice);
   const setNotice = useChatStore((state) => state.setNotice);
@@ -106,6 +99,23 @@ export function ChatApp() {
     onNotice: setNotice,
   });
 
+  const { overlay, creatingPlaceholder, createAgentHandle, aiCreateAgentHandle } = useAgentCreation({
+    selectedDomainId: worldSelectedDomainId,
+    agentsCount: agents.length,
+    userId: USER_ID,
+    draftName,
+    draftPersona,
+    draftStyle,
+    mapAgentFromApi,
+    prependAgentWithGreeting,
+    setDraftName,
+    setDraftPersona,
+    setDraftStyle,
+    setShowCustomCreateForm,
+    setShowAddFriendMenu,
+    onNotice: setNotice,
+  });
+
   const { isSending, sendMessage } = useChatSending({
     input,
     selectedAgent,
@@ -139,88 +149,6 @@ export function ChatApp() {
     }
     void loadConversation(agent.id, agent.name, agent.greeting);
   }, [agents, loadConversation, selectedAgentId]);
-
-  const createAgentHandle = async () => {
-    const name = draftName.trim();
-    if (!name) {
-      return;
-    }
-
-    const flowStart = Date.now();
-    setCreatingPlaceholder({ active: true, name: `${name} (构建中)` });
-    startFlow("manual", "记忆灌注引擎启动中...");
-    pushLog("[System] Parsing manual profile payload...");
-
-    try {
-      const created = await createAgent({
-        name,
-        persona: draftPersona.trim() || "温暖、稳定、会倾听",
-        background: "由你在前端创建的 AI 联系人。",
-        domain_id: worldSelectedDomainId,
-        hobbies: ["散步", "音乐"],
-        speaking_style: draftStyle.trim() || "温柔有边界",
-      });
-      await runSeedAndInfraStages(created.id, "manual");
-      const elapsed = Date.now() - flowStart;
-      if (elapsed < ANIMATION_DELAYS.CUSTOM_CREATION_MIN_WAIT) {
-        await new Promise((resolve) => setTimeout(resolve, ANIMATION_DELAYS.CUSTOM_CREATION_MIN_WAIT - elapsed));
-      }
-      prependAgentWithGreeting(mapAgentFromApi(created, agents.length));
-      setDraftName("");
-      setDraftPersona("");
-      setDraftStyle("");
-      setShowCustomCreateForm(false);
-      setShowAddFriendMenu(false);
-      setCreatingPlaceholder({ active: false, name: "角色构建中..." });
-      await completeFlow(created.name, "神经连接稳定，角色上线。");
-      setNotice("角色创建成功");
-    } catch (error) {
-      setCreatingPlaceholder({ active: false, name: "角色构建中..." });
-      const message = getErrorMessage(error);
-      await failFlow(message);
-      void reportFrontendError({
-        message: `manual-create failed: ${message}`,
-        page: window.location.pathname,
-        source: "createAgentHandle",
-        user_id: USER_ID,
-      });
-      setNotice(`角色创建失败: ${message}`);
-    }
-  };
-
-  const aiCreateAgentHandle = async () => {
-    const flowStart = Date.now();
-    setCreatingPlaceholder({ active: true, name: "数字人格孵化中..." });
-    startFlow("ai", "数字降生引擎启动中...");
-    pushLog("[System] Retrieving shared-scope memory...");
-
-    try {
-      setRestructuringPhase("几何人格体重组中...");
-      pushLog("[Kernel] Reassembling persona lattice...");
-      const created = await createAgentByAi(undefined, worldSelectedDomainId);
-      await runSeedAndInfraStages(created.agent.id, "ai");
-      const elapsed = Date.now() - flowStart;
-      if (elapsed < ANIMATION_DELAYS.AI_CREATION_MIN_WAIT) {
-        await new Promise((resolve) => setTimeout(resolve, ANIMATION_DELAYS.AI_CREATION_MIN_WAIT - elapsed));
-      }
-      prependAgentWithGreeting(mapAgentFromApi(created.agent, agents.length));
-      setShowAddFriendMenu(false);
-      setCreatingPlaceholder({ active: false, name: "角色构建中..." });
-      await completeFlow(created.agent.name, "数字人格已定型并接入会话链路。");
-      setNotice(`AI 建角成功（${created.model}）`);
-    } catch (error) {
-      setCreatingPlaceholder({ active: false, name: "角色构建中..." });
-      const message = getErrorMessage(error);
-      await failFlow(message);
-      void reportFrontendError({
-        message: `ai-create failed: ${message}`,
-        page: window.location.pathname,
-        source: "aiCreateAgentHandle",
-        user_id: USER_ID,
-      });
-      setNotice(`AI 建角失败: ${message}`);
-    }
-  };
 
   const deleteAgentHandle = useCallback(
     async (agentId: string, agentName: string) => {

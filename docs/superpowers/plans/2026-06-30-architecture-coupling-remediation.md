@@ -2126,6 +2126,88 @@ git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/hooks/useChatSend
 git commit -m "refactor: extract chat sending hook"
 ```
 
+## Segment 28: Extract Agent Creation Hook
+
+**Files:**
+- Add: `ui/src/features/chat/hooks/useAgentCreation.ts`
+- Add: `ui/src/features/chat/hooks/useAgentCreation.test.ts`
+- Modify: `ui/src/features/chat/chat-app.tsx`
+
+- [x] **Step 1: Investigate creation flow coupling**
+
+`ChatApp` still owned the manual and AI agent creation flows:
+
+```text
+creatingPlaceholder state
+useCreationFlow overlay orchestration
+manual createAgent payload construction
+AI createAgentByAi orchestration
+memory seed / infra stages
+minimum animation waits
+agent prepend and form/menu cleanup
+frontend error telemetry
+success and failure notices
+```
+
+This was a self-contained feature workflow and made the main component responsible for API, telemetry, animation timing, and form reset details.
+
+- [x] **Step 2: Write failing tests**
+
+Added `useAgentCreation.test.ts` for exported action helpers:
+
+```text
+manual creation does nothing when draft name is blank
+manual creation sends the correct payload, waits for the minimum duration, prepends the mapped agent, and clears UI state
+AI creation failure resets placeholder, reports telemetry, and shows the expected notice
+```
+
+Observed RED:
+
+```text
+Cannot find module './useAgentCreation'
+```
+
+- [x] **Step 3: Implement hook and integrate**
+
+Changes:
+
+```text
+useAgentCreation owns creatingPlaceholder and useCreationFlow
+createManualAgentAction / createAiAgentAction isolate API and UI cleanup orchestration for tests
+ChatApp no longer imports createAgent, createAgentByAi, reportFrontendError, ANIMATION_DELAYS, or useCreationFlow
+ChatApp consumes overlay, creatingPlaceholder, createAgentHandle, and aiCreateAgentHandle from the hook
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/features/chat/hooks/useAgentCreation.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted agent creation tests: 1 file, 3 tests passed
+eslint: passed
+Vitest: 70 files, 399 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/hooks/useAgentCreation.ts ui/src/features/chat/hooks/useAgentCreation.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: extract agent creation hook"
+```
+
 ## Verification Gates
 
 After every segment:
