@@ -139,6 +139,7 @@ export interface AgentResponseDto {
 }
 
 export interface AgentCreateRequestDto {
+  readonly user_id: string;
   readonly name: string;
   readonly persona: string;
   readonly background: string;

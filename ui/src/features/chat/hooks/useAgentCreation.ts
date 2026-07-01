@@ -86,6 +86,7 @@ export async function createManualAgentAction(options: CreateManualAgentActionOp
 
   try {
     const created = await options.createAgent({
+      user_id: options.userId,
       name,
       persona: options.draftPersona.trim() || "温暖、稳定、会倾听",
       background: "由你在前端创建的 AI 联系人。",

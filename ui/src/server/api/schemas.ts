@@ -21,6 +21,7 @@ export const DrainTasksRequestSchema = z.object({
 export type DrainTasksRequest = z.infer<typeof DrainTasksRequestSchema>;
 
 export const AgentCreateRequestSchema = z.object({
+  user_id: RequiredString,
   name: RequiredString,
   persona: RequiredString,
   background: z.string().trim().optional(),

@@ -33,7 +33,7 @@ export async function POST(req: Request): Promise<Response> {
 
   const result = await createAgentCreateFlow({ db: getDatabase() }).run({
     mode: "manual",
-    userId: process.env.DEV_USER_ID || "u001",
+    userId: body.user_id,
     worldId: body.domain_id || "default",
     input: {
       name: body.name,

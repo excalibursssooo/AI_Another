@@ -120,6 +120,7 @@ describe("agent creation actions", () => {
     });
 
     expect(createAgent).toHaveBeenCalledWith({
+      user_id: "u001",
       name: "小伴",
       persona: "温暖、稳定、会倾听",
       background: "由你在前端创建的 AI 联系人。",

@@ -2434,6 +2434,85 @@ git add ui/src/server/flow/chat-flow.ts ui/src/server/flow/chat-flow.test.ts doc
 git commit -m "refactor: name chat world fallback"
 ```
 
+## Segment 32: Scope Manual Agent Creation by Request User
+
+**Files:**
+- Modify: `ui/src/app/api/agents/route.ts`
+- Modify: `ui/src/app/api/agents/route.test.ts`
+- Modify: `ui/src/server/api/schemas.ts`
+- Modify: `ui/src/lib/api/types_api.ts`
+- Modify: `ui/src/features/chat/hooks/useAgentCreation.ts`
+- Modify: `ui/src/features/chat/hooks/useAgentCreation.test.ts`
+
+- [x] **Step 1: Investigate user scope coupling**
+
+Focused audit against `Fix.md` item 8 found `/api/agents` POST still using an environment fallback:
+
+```text
+userId: process.env.DEV_USER_ID || "u001"
+```
+
+The route already used `parseJsonBody(req, AgentCreateRequestSchema)`, so the smallest boundary fix was to make manual agent creation carry an explicit `user_id` through the schema and client DTO.
+
+- [x] **Step 2: Write failing tests**
+
+Added a route test that posts `user_id: "u-custom"` and asserts `createAgentCreateFlow().run()` receives:
+
+```text
+mode: "manual"
+userId: "u-custom"
+worldId: "world-1"
+```
+
+Observed RED:
+
+```text
+expected userId "u-custom"
+received userId "u001"
+```
+
+- [x] **Step 3: Implement schema-backed user scope**
+
+Changes:
+
+```text
+AgentCreateRequestSchema now requires user_id
+AgentCreateRequestDto now includes user_id
+/api/agents POST passes body.user_id into createAgentCreateFlow
+useAgentCreation includes user_id when calling createAgent
+useAgentCreation tests assert the user_id payload contract
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/app/api/agents/route.test.ts src/features/chat/hooks/useAgentCreation.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted agent route and creation tests: 2 files, 6 tests passed
+eslint: passed
+Vitest: 73 files, 406 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/app/api/agents/route.ts ui/src/app/api/agents/route.test.ts ui/src/server/api/schemas.ts ui/src/lib/api/types_api.ts ui/src/features/chat/hooks/useAgentCreation.ts ui/src/features/chat/hooks/useAgentCreation.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: scope agent creation by request user"
+```
+
 ## Verification Gates
 
 After every segment:
