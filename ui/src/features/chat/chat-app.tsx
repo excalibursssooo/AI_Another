@@ -25,6 +25,7 @@ import { useCreationFlow } from "@/features/chat/hooks/useCreationFlow";
 import { useFeedPolling } from "@/features/chat/hooks/useFeedPolling";
 import { useLiveState } from "@/features/chat/hooks/useLiveState";
 import { useWorldSettings } from "@/features/chat/hooks/useWorldSettings";
+import { createLiveStateFromChatDone } from "@/features/chat/utils/liveState";
 import { createOptimisticChatExchange } from "@/features/chat/utils/optimisticMessages";
 import { useChatStore } from "@/stores/useChatStore";
 import { useWorldStore } from "@/stores/useWorldStore";
@@ -458,24 +459,14 @@ export function ChatApp() {
             );
 
             const previous = useChatStore.getState().liveStateByAgent[selectedAgentId];
-            const nextIndex = Math.round(Math.max(0, Math.min(1, event.mood_intensity)) * 100);
-            const previousIndex = previous?.mood_index ?? nextIndex;
-            const trend: "up" | "down" | "steady" =
-              nextIndex >= previousIndex + 6 ? "up" : nextIndex <= previousIndex - 6 ? "down" : "steady";
-
-            setLiveState(selectedAgentId, {
-              agent_id: event.agent_id,
-              agent_name: event.agent_name,
-              mood_label: event.emotion_label,
-              mood_intensity: event.mood_intensity,
-              mood_index: nextIndex,
-              heartbeat_bpm: event.heartbeat_bpm,
-              heartbeat_interval_ms: Math.floor(60_000 / Math.max(1, event.heartbeat_bpm)),
-              stress_level: Math.max(0, Math.min(1, event.mood_intensity * (event.risk_level === "low" ? 0.4 : 0.75))),
-              trend,
-              risk_level: event.risk_level,
-              updated_at: new Date().toISOString(),
-            });
+            setLiveState(
+              selectedAgentId,
+              createLiveStateFromChatDone({
+                event,
+                previous,
+                now: () => new Date().toISOString(),
+              }),
+            );
           },
         },
       );

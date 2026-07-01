@@ -1506,6 +1506,87 @@ git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/types.ts ui/src/f
 git commit -m "refactor: extract optimistic chat messages"
 ```
 
+## Segment 20: Extract Live State Derivation
+
+**Files:**
+- Add: `ui/src/features/chat/utils/liveState.ts`
+- Add: `ui/src/features/chat/utils/liveState.test.ts`
+- Modify: `ui/src/features/chat/chat-app.tsx`
+
+- [x] **Step 1: Investigate stream done coupling**
+
+`ChatApp` still derived live state inside the `streamChat.onDone` callback:
+
+```text
+mood index clamping
+trend threshold comparison
+heartbeat interval derivation
+stress level derivation
+timestamp generation
+AgentLiveStateDto construction
+```
+
+This made the callback responsible for both stream handling and domain metric calculation.
+
+- [x] **Step 2: Write failing test**
+
+Added `liveState.test.ts` covering:
+
+```text
+chat done event maps into AgentLiveStateDto
+mood_index clamps to 0..100
+trend compares against previous mood index with 6-point threshold
+heartbeat interval clamps denominator to at least 1 bpm
+stress uses lower multiplier for low risk and caps at 1
+```
+
+Observed RED:
+
+```text
+Cannot find module './liveState'
+```
+
+- [x] **Step 3: Implement helper and integrate**
+
+Changes:
+
+```text
+createLiveStateFromChatDone added under chat utils
+ChatApp.onDone now fetches previous state and delegates DTO construction
+streaming completion marker behavior remains in ChatApp
+store write and stream callbacks remain unchanged
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/features/chat/utils/liveState.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted live state tests: 1 file, 3 tests passed
+eslint: passed
+Vitest: 62 files, 374 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/utils/liveState.ts ui/src/features/chat/utils/liveState.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: extract live state derivation"
+```
+
 ## Verification Gates
 
 After every segment:
