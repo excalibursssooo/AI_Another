@@ -1,6 +1,7 @@
 import { FeedPostDraft, FeedPostDraftSchema } from "@/server/ai/schemas";
-import { StructuredOutputError, withStructuredOutput } from "@/server/ai/structured-output";
+import { withStructuredOutput } from "@/server/ai/structured-output";
 import { getLanguageModel, isMockProvider } from "@/server/ai/models";
+import { logAiGenerationFallback } from "@/server/ai/generation-logging";
 
 export interface FeedPostDraftGenerationInput {
   agentName: string;
@@ -51,22 +52,7 @@ export async function generateFeedPostDraft(input: FeedPostDraftGenerationInput)
       temperature: 0.8,
     });
   } catch (error) {
-    logAiGenerationFallback("feed", "fallback_null", error);
+    logAiGenerationFallback({ purpose: "feed", outcome: "fallback_null", error });
     return null;
   }
-}
-
-function logAiGenerationFallback(
-  purpose: "feed",
-  outcome: "fallback_null",
-  error: unknown,
-): void {
-  const detail = {
-    purpose,
-    outcome,
-    errorName: error instanceof Error ? error.name : typeof error,
-    reason: error instanceof StructuredOutputError ? error.reason : "unexpected_error",
-    schemaName: error instanceof StructuredOutputError ? error.schemaName : undefined,
-  };
-  console.warn("[ai-generation]", JSON.stringify(detail));
 }

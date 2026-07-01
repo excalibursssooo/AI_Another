@@ -1,6 +1,7 @@
 import { MemoryExtraction, MemoryExtractionSchema } from "@/server/ai/schemas";
 import { getLanguageModel, isMockProvider } from "@/server/ai/models";
-import { StructuredOutputError, withStructuredOutput } from "@/server/ai/structured-output";
+import { withStructuredOutput } from "@/server/ai/structured-output";
+import { logAiGenerationFallback } from "@/server/ai/generation-logging";
 
 export interface MemoryExtractionGenerationInput {
   userMessage: string;
@@ -51,22 +52,7 @@ export async function generateMemoryExtraction(
       temperature: 0.2,
     });
   } catch (error) {
-    logAiGenerationFallback("memory", "fallback_null", error);
+    logAiGenerationFallback({ purpose: "memory", outcome: "fallback_null", error });
     return null;
   }
-}
-
-function logAiGenerationFallback(
-  purpose: "memory",
-  outcome: "fallback_null",
-  error: unknown,
-): void {
-  const detail = {
-    purpose,
-    outcome,
-    errorName: error instanceof Error ? error.name : typeof error,
-    reason: error instanceof StructuredOutputError ? error.reason : "unexpected_error",
-    schemaName: error instanceof StructuredOutputError ? error.schemaName : undefined,
-  };
-  console.warn("[ai-generation]", JSON.stringify(detail));
 }

@@ -3405,6 +3405,89 @@ git add ui/src/config/constants.test.ts ui/src/config/constants.ts ui/src/featur
 git commit -m "refactor: centralize demo user id"
 ```
 
+## Segment 45: Centralize AI Generation Fallback Logging
+
+**Files:**
+- Add: `ui/src/server/ai/generation-logging.ts`
+- Add: `ui/src/server/ai/generation-logging.test.ts`
+- Modify: `ui/src/server/ai/ai-boundaries.test.ts`
+- Modify: `ui/src/server/ai/generators/agent-draft.ts`
+- Modify: `ui/src/server/ai/generators/chat-reply.ts`
+- Modify: `ui/src/server/ai/generators/feed-post.ts`
+- Modify: `ui/src/server/ai/generators/memory-extraction.ts`
+- Modify: `ui/src/server/ai/generators/world-draft.ts`
+
+- [x] **Step 1: Investigate duplicated AI fallback logging**
+
+After generator extraction, each focused generator still had its own local `logAiGenerationFallback` function. They emitted the same `[ai-generation]` JSON structure, but the duplicated implementation made future structured logging changes likely to drift.
+
+- [x] **Step 2: Write failing logging and boundary tests**
+
+Added `generation-logging.test.ts` asserting the shared helper emits:
+
+```text
+purpose
+outcome
+errorName
+reason
+schemaName
+```
+
+Extended `ai-boundaries.test.ts` to assert generator modules no longer define:
+
+```text
+function logAiGenerationFallback
+console.warn("[ai-generation]"
+```
+
+Observed RED:
+
+```text
+Cannot find module './generation-logging'
+agent-draft.ts still contains function logAiGenerationFallback
+```
+
+- [x] **Step 3: Extract shared logging helper**
+
+Changes:
+
+```text
+Created ai/generation-logging.ts
+Moved StructuredOutputError-aware fallback detail formatting into logAiGenerationFallback
+Replaced local logging functions in agent, chat, feed, memory, and world generators
+Preserved the existing [ai-generation] log shape
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/server/ai/generation-logging.test.ts src/server/ai/ai-boundaries.test.ts src/server/ai/chat.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted AI logging tests: 3 files, 50 tests passed
+eslint: passed
+Vitest: 80 files, 426 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/server/ai/generation-logging.ts ui/src/server/ai/generation-logging.test.ts ui/src/server/ai/ai-boundaries.test.ts ui/src/server/ai/generators/agent-draft.ts ui/src/server/ai/generators/chat-reply.ts ui/src/server/ai/generators/feed-post.ts ui/src/server/ai/generators/memory-extraction.ts ui/src/server/ai/generators/world-draft.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: centralize ai fallback logging"
+```
+
 ## Verification Gates
 
 After every segment:

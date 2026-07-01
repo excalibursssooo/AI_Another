@@ -4,6 +4,7 @@ import type { LanguageModel } from "ai";
 import { ChatReply, ChatReplySchema } from "@/server/ai/schemas";
 import { getLanguageModel, isMockProvider } from "@/server/ai/models";
 import { StructuredOutputError, withStructuredOutput } from "@/server/ai/structured-output";
+import { logAiGenerationFallback } from "@/server/ai/generation-logging";
 import type { createChatToolSet } from "@/server/tools/registry";
 
 export interface ChatGenerationInput {
@@ -39,7 +40,7 @@ export async function generateChatReply(input: ChatGenerationInput): Promise<Cha
     });
   } catch (error) {
     if (error instanceof StructuredOutputError) {
-      logAiGenerationFallback("chat", "fallback_reply", error);
+      logAiGenerationFallback({ purpose: "chat", outcome: "fallback_reply", error });
       return fallbackReply();
     }
     throw error;
@@ -51,21 +52,6 @@ function fallbackReply(): ChatReply {
     reply: "当前模型暂时不可用，但我已经收到你的消息了。",
     mood: { label: "neutral", intensity: 0.25, heartbeatBpm: 72 },
   };
-}
-
-function logAiGenerationFallback(
-  purpose: "chat",
-  outcome: "fallback_reply",
-  error: unknown,
-): void {
-  const detail = {
-    purpose,
-    outcome,
-    errorName: error instanceof Error ? error.name : typeof error,
-    reason: error instanceof StructuredOutputError ? error.reason : "unexpected_error",
-    schemaName: error instanceof StructuredOutputError ? error.schemaName : undefined,
-  };
-  console.warn("[ai-generation]", JSON.stringify(detail));
 }
 
 export interface StreamChatReplyResult {

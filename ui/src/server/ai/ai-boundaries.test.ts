@@ -56,4 +56,20 @@ describe("AI module boundaries", () => {
       expect(sourceFor(file), file).not.toContain("@/server/ai/chat");
     }
   });
+
+  it("keeps AI fallback logging centralized outside generator modules", () => {
+    const generatorFiles = [
+      "src/server/ai/generators/agent-draft.ts",
+      "src/server/ai/generators/chat-reply.ts",
+      "src/server/ai/generators/feed-post.ts",
+      "src/server/ai/generators/memory-extraction.ts",
+      "src/server/ai/generators/world-draft.ts",
+    ];
+
+    for (const file of generatorFiles) {
+      const source = sourceFor(file);
+      expect(source, file).not.toContain("function logAiGenerationFallback");
+      expect(source, file).not.toContain('console.warn("[ai-generation]"');
+    }
+  });
 });
