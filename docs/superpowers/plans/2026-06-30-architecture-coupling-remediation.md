@@ -938,6 +938,90 @@ git add ui/src/server/db/schema-drift.test.ts ui/src/server/db/schema.ts docs/su
 git commit -m "test: guard database schema drift"
 ```
 
+## Segment 13: Extract Chat Right Panel
+
+**Files:**
+- Add: `ui/src/features/chat/components/RightPanel.tsx`
+- Add: `ui/src/features/chat/components/RightPanel.test.tsx`
+- Modify: `ui/src/features/chat/chat-app.tsx`
+
+- [x] **Step 1: Investigate frontend coupling**
+
+`ChatApp` still owned several unrelated responsibilities:
+
+```text
+message sending and streaming state
+agent creation flow state
+world/domain settings
+feed loading and trigger actions
+right-side state/feed/add-friend presentation
+telemetry effects
+```
+
+Existing child components already split `ChatArea`, `ChatSidebar`, `CreationOverlay`, and `WorldManager`. The right-side panel was the clearest remaining UI block that could be extracted without changing data flow or API behavior.
+
+- [x] **Step 2: Write failing component test**
+
+Added `RightPanel.test.tsx` with `react-dom/server` rendering because the project does not currently use React Testing Library.
+
+The test covers:
+
+```text
+state tab renders selected agent mood, heartbeat, and risk fields
+feed tab renders generate button and post cards
+add-friend menu renders both creation choices without store dependencies
+```
+
+Observed RED:
+
+```text
+Cannot find module './RightPanel'
+```
+
+- [x] **Step 3: Extract controlled RightPanel component**
+
+Changes:
+
+```text
+RightPanel owns right-side state/feed/add-friend JSX
+ChatApp passes state and event callbacks as props
+RightPanel has no Zustand store dependency
+RightPanel has no API dependency
+ChatApp keeps data loading, mutation handlers, and creation flow orchestration
+```
+
+During lint verification, React's refs rule rejected passing a `RefObject` through a broad props object. The component now accepts a callback ref (`onVitalsContainerElement`) and `StatePanel` has a narrowed prop interface so the ref boundary is explicit.
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/features/chat/components/RightPanel.test.tsx
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted RightPanel tests: 1 file, 3 tests passed
+eslint: passed
+Vitest: 53 files, 353 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/components/RightPanel.tsx ui/src/features/chat/components/RightPanel.test.tsx docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: extract chat right panel"
+```
+
 ## Verification Gates
 
 After every segment:
