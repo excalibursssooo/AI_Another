@@ -2673,6 +2673,85 @@ git add ui/src/app/api/agents/[agentId]/memory-seed/debug/route.ts ui/src/app/ap
 git commit -m "refactor: require user scope for memory seed"
 ```
 
+## Segment 35: Extract Feed Post AI Generator
+
+**Files:**
+- Add: `ui/src/server/ai/ai-boundaries.test.ts`
+- Add: `ui/src/server/ai/generators/feed-post.ts`
+- Modify: `ui/src/server/ai/chat.ts`
+
+- [x] **Step 1: Investigate AI generator aggregation**
+
+`Arch.md` recommends splitting `ai/` into schemas, prompts, and generators. Current `ai/chat.ts` still aggregated:
+
+```text
+chat reply generation
+agent draft generation
+world draft generation
+memory extraction
+feed post generation
+streaming chat reply
+fallback logging helpers
+```
+
+The lowest-risk first extraction was feed post generation because it is consumed by `feed-flow.ts` through the existing `@/server/ai/chat` compatibility import.
+
+- [x] **Step 2: Write failing tests**
+
+Added `ai-boundaries.test.ts` asserting `ai/chat.ts` no longer owns:
+
+```text
+const FEED_SYSTEM_PROMPT
+async function generateFeedPostDraft
+```
+
+Observed RED:
+
+```text
+expected chat.ts not to contain const FEED_SYSTEM_PROMPT
+```
+
+- [x] **Step 3: Extract feed generator with compatibility re-export**
+
+Changes:
+
+```text
+Created ai/generators/feed-post.ts
+Moved FeedPostDraftGenerationInput, GenerateFeedPostDraft, FEED_SYSTEM_PROMPT, generateFeedPostDraft
+Moved feed fallback logging local to feed-post.ts
+ai/chat.ts re-exports generateFeedPostDraft and its types for existing callers
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/server/ai/ai-boundaries.test.ts src/server/ai/chat.test.ts src/server/flow/feed-flow.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted AI/feed tests: 3 files, 52 tests passed
+eslint: passed
+Vitest: 76 files, 409 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/server/ai/ai-boundaries.test.ts ui/src/server/ai/generators/feed-post.ts ui/src/server/ai/chat.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: extract feed post ai generator"
+```
+
 ## Verification Gates
 
 After every segment:
