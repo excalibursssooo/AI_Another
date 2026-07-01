@@ -6,12 +6,8 @@ import {
   createAgent,
   createAgentByAi,
   deleteAgent,
-  generatePost,
-  listPosts,
   streamChat,
-  triggerChatFromPost,
 } from "@/lib/api/companion";
-import { PostItemDto } from "@/lib/api/types_api";
 import { reportFrontendError } from "@/lib/api/telemetry";
 import { getErrorMessage } from "@/lib/utils/error";
 import { ANIMATION_DELAYS } from "@/config/constants";
@@ -23,7 +19,7 @@ import { RightPanel } from "@/features/chat/components/RightPanel";
 import { useAgents } from "@/features/chat/hooks/useAgents";
 import { useCreationFlow } from "@/features/chat/hooks/useCreationFlow";
 import { useChatTelemetry } from "@/features/chat/hooks/useChatTelemetry";
-import { useFeedPolling } from "@/features/chat/hooks/useFeedPolling";
+import { useFeedActions } from "@/features/chat/hooks/useFeedActions";
 import { useLiveState } from "@/features/chat/hooks/useLiveState";
 import { useWorldSettings } from "@/features/chat/hooks/useWorldSettings";
 import { mapAgentFromApi } from "@/features/chat/utils/agentMapping";
@@ -47,9 +43,6 @@ export function ChatApp() {
   const [fatalError, setFatalError] = useState<string>("");
   const [mounted, setMounted] = useState<boolean>(false);
   const [rightPanelTab, setRightPanelTab] = useState<"state" | "feed">("state");
-  const [feedPosts, setFeedPosts] = useState<PostItemDto[]>([]);
-  const [feedLoading, setFeedLoading] = useState<boolean>(false);
-  const [isGeneratingPost, setIsGeneratingPost] = useState<boolean>(false);
   const [showAddFriendMenu, setShowAddFriendMenu] = useState<boolean>(false);
   const [showCustomCreateForm, setShowCustomCreateForm] = useState<boolean>(false);
   const [draftName, setDraftName] = useState<string>("");
@@ -115,31 +108,15 @@ export function ChatApp() {
   const setLiveState = useChatStore((state) => state.setLiveState);
   const upsertMessages = useChatStore((state) => state.upsertMessages);
 
-  const loadFeedPosts = useCallback(async (signal?: AbortSignal) => {
-    if (signal?.aborted) {
-      return;
-    }
-    setFeedLoading(true);
-    try {
-      const rows = await listPosts(USER_ID, {
-        limit: 20,
-        offset: 0,
-        includeArchived: false,
-        domainId: worldSelectedDomainId,
-        signal,
-      });
-      if (signal?.aborted) {
-        return;
-      }
-      setFeedPosts([...rows.items]);
-    } finally {
-      if (!signal?.aborted) {
-        setFeedLoading(false);
-      }
-    }
-  }, [worldSelectedDomainId]);
-
-  useFeedPolling(loadFeedPosts);
+  const { feedPosts, feedLoading, isGeneratingPost, onGeneratePost, onTriggerFromPost } = useFeedActions({
+    userId: USER_ID,
+    selectedDomainId: worldSelectedDomainId,
+    activeDomainId,
+    selectedAgent,
+    setSelectedAgentId,
+    setInput,
+    onNotice: setNotice,
+  });
 
   useEffect(() => {
     setMounted(true);
@@ -322,37 +299,6 @@ export function ChatApp() {
       throw error;
     } finally {
       setIsSending(false);
-    }
-  };
-
-  const onGeneratePost = async () => {
-    if (!selectedAgent || isGeneratingPost) {
-      return;
-    }
-    setIsGeneratingPost(true);
-    try {
-      await generatePost(selectedAgent.id, { user_id: USER_ID });
-      try {
-        await loadFeedPosts(undefined);
-      } catch (error) {
-        setNotice(`动态加载失败: ${getErrorMessage(error)}`);
-      }
-      setNotice(`已生成 ${selectedAgent.name} 的新动态`);
-    } catch (error) {
-      setNotice(`动态生成失败: ${getErrorMessage(error)}`);
-    } finally {
-      setIsGeneratingPost(false);
-    }
-  };
-
-  const onTriggerFromPost = async (post: PostItemDto) => {
-    try {
-      const payload = await triggerChatFromPost(post.id, USER_ID, activeDomainId);
-      setSelectedAgentId(payload.agent_id);
-      setInput(payload.suggested_message);
-      setNotice("已注入话题，可直接发送");
-    } catch (error) {
-      setNotice(`话题注入失败: ${getErrorMessage(error)}`);
     }
   };
 

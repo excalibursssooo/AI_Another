@@ -1961,6 +1961,84 @@ git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/components/Creati
 git commit -m "refactor: move creation labels into overlay"
 ```
 
+## Segment 26: Extract Feed Actions Hook
+
+**Files:**
+- Add: `ui/src/features/chat/hooks/useFeedActions.ts`
+- Add: `ui/src/features/chat/hooks/useFeedActions.test.ts`
+- Modify: `ui/src/features/chat/chat-app.tsx`
+
+- [x] **Step 1: Investigate feed coupling**
+
+`ChatApp` still owned feed-specific state and API orchestration:
+
+```text
+feedPosts / feedLoading / isGeneratingPost state
+listPosts polling loader with paging and domain filters
+generatePost flow, including refresh and notices
+triggerChatFromPost flow, including selected agent and input updates
+```
+
+These are feed domain actions and do not need to live in the main chat component body.
+
+- [x] **Step 2: Write failing tests**
+
+Added `useFeedActions.test.ts` against exported action helpers:
+
+```text
+loads feed posts with paging and domain filters
+skips loading when signal is already aborted
+generates a post and refreshes the list
+injects a post topic into selected chat input
+```
+
+Observed RED:
+
+```text
+Cannot find module './useFeedActions'
+```
+
+- [x] **Step 3: Implement hook and integrate**
+
+Changes:
+
+```text
+useFeedActions owns feed state and feed polling
+loadFeedPostsAction / generateFeedPostAction / triggerPostChatAction isolate API orchestration for tests
+ChatApp no longer imports listPosts, generatePost, triggerChatFromPost, useFeedPolling, or PostItemDto
+ChatApp consumes feedPosts, feedLoading, isGeneratingPost, onGeneratePost, and onTriggerFromPost from the hook
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/features/chat/hooks/useFeedActions.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted feed actions tests: 1 file, 4 tests passed
+eslint: passed
+Vitest: 68 files, 393 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/hooks/useFeedActions.ts ui/src/features/chat/hooks/useFeedActions.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: extract feed actions hook"
+```
+
 ## Verification Gates
 
 After every segment:
