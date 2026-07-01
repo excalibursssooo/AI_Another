@@ -2819,6 +2819,73 @@ git add ui/src/server/ai/ai-boundaries.test.ts ui/src/server/ai/generators/world
 git commit -m "refactor: extract world draft ai generator"
 ```
 
+## Segment 37: Extract Agent Draft AI Generator
+
+**Files:**
+- Add: `ui/src/server/ai/generators/agent-draft.ts`
+- Modify: `ui/src/server/ai/ai-boundaries.test.ts`
+- Modify: `ui/src/server/ai/chat.ts`
+
+- [x] **Step 1: Identify low-risk extraction target**
+
+`generateAgentDraft` belongs to the agent creation flow, but `ai/chat.ts` still owned the prompt and generation implementation. Existing production callers import through the compatibility `@/server/ai/chat` module, so this segment moves ownership without changing caller imports.
+
+- [x] **Step 2: Write failing boundary test**
+
+Extended `ai-boundaries.test.ts` to assert `chat.ts` no longer owns:
+
+```text
+const AGENT_SYSTEM_PROMPT
+async function generateAgentDraft
+```
+
+Observed RED:
+
+```text
+expected chat.ts not to contain const AGENT_SYSTEM_PROMPT
+```
+
+- [x] **Step 3: Extract agent generator with compatibility re-export**
+
+Changes:
+
+```text
+Created ai/generators/agent-draft.ts
+Moved AgentDraftGenerationInput, GenerateAgentDraft, AGENT_SYSTEM_PROMPT, generateAgentDraft
+Moved agentCreator fallback logging local to agent-draft.ts
+ai/chat.ts re-exports generateAgentDraft and its types for existing callers
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/server/ai/ai-boundaries.test.ts src/server/ai/chat.test.ts src/server/flow/agent-create-flow.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted AI/agent tests: 3 files, 51 tests passed
+eslint: passed
+Vitest: 76 files, 411 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/server/ai/ai-boundaries.test.ts ui/src/server/ai/generators/agent-draft.ts ui/src/server/ai/chat.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: extract agent draft ai generator"
+```
+
 ## Verification Gates
 
 After every segment:
