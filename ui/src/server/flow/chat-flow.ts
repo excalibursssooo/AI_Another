@@ -14,7 +14,7 @@ import type { ChatDoneEventPayload } from "@/server/domain/chat/chat-finalizer";
 import { buildChatSystemPrompt, buildChatUserPrompt } from "@/server/domain/chat/chat-prompt-builder";
 import { assessChatRisk, HIGH_RISK_MOOD, HIGH_RISK_REPLY } from "@/server/domain/chat/chat-safety";
 import { GenerateChatReply, generateChatReply as defaultGenerateChatReply } from "@/server/ai/chat";
-import { createChatToolSet } from "@/server/tools/registry";
+import { createChatToolsForScope } from "@/server/tools/tool-policy";
 
 import { Flow } from "./runner";
 import { FlowNode } from "./types";
@@ -148,15 +148,12 @@ export function createChatFlow(options: { db: AppDatabase; generateChatReply?: G
         const generated = await generateReply({
           system: ctx.systemPrompt ?? "",
           prompt: ctx.userPrompt ?? ctx.input,
-          tools:
-            process.env.ENABLE_TOOLS === "true"
-              ? createChatToolSet({
-                  db: options.db,
-                  userId: ctx.userId,
-                  agentId: ctx.agentId,
-                  worldId: ctx.worldId,
-                })
-              : undefined,
+          tools: createChatToolsForScope({
+            db: options.db,
+            userId: ctx.userId,
+            agentId: ctx.agentId,
+            worldId: ctx.worldId,
+          }),
         });
         return {
           ...ctx,

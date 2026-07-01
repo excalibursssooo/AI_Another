@@ -2283,6 +2283,83 @@ git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/hooks/useAgentDel
 git commit -m "refactor: extract agent deletion hook"
 ```
 
+## Segment 30: Extract Chat Tool Policy
+
+**Files:**
+- Add: `ui/src/server/tools/tool-policy.ts`
+- Add: `ui/src/server/tools/tool-policy.test.ts`
+- Add: `ui/src/server/flow/chat-flow-boundaries.test.ts`
+- Modify: `ui/src/server/flow/chat-flow.ts`
+
+- [x] **Step 1: Audit remaining Flow boundary coupling**
+
+After the frontend and API/repository remediation segments, a focused audit against `Arch.md` / `Fix.md` still found one explicit Flow boundary violation:
+
+```text
+ChatFlow GenerateReply directly read process.env.ENABLE_TOOLS
+ChatFlow directly constructed createChatToolSet(...)
+```
+
+`Arch.md` says flows should not directly read `process.env`, and the recommended target structure includes a `tools/tool-policy.ts` boundary.
+
+- [x] **Step 2: Write failing tests**
+
+Added:
+
+```text
+chat-flow-boundaries.test.ts: asserts chat-flow.ts does not contain process.env
+tool-policy.test.ts: asserts ENABLE_TOOLS === "true" is the only enabled state and disabled policy returns undefined
+```
+
+Observed RED:
+
+```text
+chat-flow-boundaries.test.ts failed because chat-flow.ts contained process.env
+tool-policy.test.ts failed because ./tool-policy did not exist
+```
+
+- [x] **Step 3: Implement policy and integrate**
+
+Changes:
+
+```text
+tools/tool-policy.ts owns isChatToolsEnabled(env)
+tools/tool-policy.ts owns createChatToolsForScope(scope, env)
+ChatFlow imports createChatToolsForScope instead of createChatToolSet
+ChatFlow no longer reads process.env directly
+Existing ENABLE_TOOLS behavior remains unchanged
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/server/flow/chat-flow-boundaries.test.ts src/server/tools/tool-policy.test.ts src/server/flow/chat-flow.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted tool policy and ChatFlow tests: 3 files, 11 tests passed
+eslint: passed
+Vitest: 73 files, 404 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/server/flow/chat-flow.ts ui/src/server/flow/chat-flow-boundaries.test.ts ui/src/server/tools/tool-policy.ts ui/src/server/tools/tool-policy.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: extract chat tool policy"
+```
+
 ## Verification Gates
 
 After every segment:
