@@ -1663,6 +1663,84 @@ git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/utils/streamingMe
 git commit -m "refactor: extract streaming message updates"
 ```
 
+## Segment 22: Extract Chat Telemetry Hook
+
+**Files:**
+- Add: `ui/src/features/chat/hooks/useChatTelemetry.ts`
+- Add: `ui/src/features/chat/hooks/useChatTelemetry.test.ts`
+- Modify: `ui/src/features/chat/chat-app.tsx`
+
+- [x] **Step 1: Investigate telemetry effect coupling**
+
+`ChatApp` still owned three telemetry effects:
+
+```text
+heartbeat interval setup and cleanup
+window error / unhandledrejection listeners
+page_load_ms web vital calculation
+```
+
+These effects are infrastructure concerns and do not need to live in the main chat component body.
+
+- [x] **Step 2: Write failing tests**
+
+Added `useChatTelemetry.test.ts` for the pure payload helpers:
+
+```text
+heartbeat payload construction
+window error payload fallbacks
+unhandled rejection payloads for Error and non-Error reasons
+page load rating thresholds
+```
+
+Observed RED:
+
+```text
+Cannot find module './useChatTelemetry'
+```
+
+- [x] **Step 3: Implement hook and integrate**
+
+Changes:
+
+```text
+useChatTelemetry owns heartbeat, error listener, and page-load effects
+createHeartbeatPayload / createErrorPayload / createUnhandledRejectionPayload / createPageLoadPayload are testable helpers
+ChatApp now calls useChatTelemetry({ sessionId, mode, userId })
+ChatApp no longer imports sendHeartbeat, reportWebVital, or POLL_INTERVALS
+manual/AI creation error reporting remains in ChatApp because it is tied to those actions
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/features/chat/hooks/useChatTelemetry.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted telemetry tests: 1 file, 4 tests passed
+eslint: passed
+Vitest: 64 files, 381 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/hooks/useChatTelemetry.ts ui/src/features/chat/hooks/useChatTelemetry.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: extract chat telemetry hook"
+```
+
 ## Verification Gates
 
 After every segment:

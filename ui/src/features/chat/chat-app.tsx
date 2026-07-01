@@ -12,9 +12,9 @@ import {
   triggerChatFromPost,
 } from "@/lib/api/companion";
 import { PostItemDto } from "@/lib/api/types_api";
-import { reportFrontendError, reportWebVital, sendHeartbeat } from "@/lib/api/telemetry";
+import { reportFrontendError } from "@/lib/api/telemetry";
 import { getErrorMessage } from "@/lib/utils/error";
-import { ANIMATION_DELAYS, POLL_INTERVALS } from "@/config/constants";
+import { ANIMATION_DELAYS } from "@/config/constants";
 import { AiAgent, ChatMessage } from "@/features/chat/types";
 import { ChatArea } from "@/features/chat/components/ChatArea";
 import { ChatSidebar } from "@/features/chat/components/ChatSidebar";
@@ -22,6 +22,7 @@ import { CreationOverlay } from "@/features/chat/components/CreationOverlay";
 import { RightPanel } from "@/features/chat/components/RightPanel";
 import { useAgents } from "@/features/chat/hooks/useAgents";
 import { useCreationFlow } from "@/features/chat/hooks/useCreationFlow";
+import { useChatTelemetry } from "@/features/chat/hooks/useChatTelemetry";
 import { useFeedPolling } from "@/features/chat/hooks/useFeedPolling";
 import { useLiveState } from "@/features/chat/hooks/useLiveState";
 import { useWorldSettings } from "@/features/chat/hooks/useWorldSettings";
@@ -137,6 +138,7 @@ export function ChatApp() {
   });
   const [isSending, setIsSending] = useState<boolean>(false);
   const sessionId = useMemo(() => uid("session"), []);
+  useChatTelemetry({ sessionId, mode: APP_MODE, userId: USER_ID });
   const { overlay, startFlow, setRestructuringPhase, runSeedAndInfraStages, pushLog, completeFlow, failFlow } = useCreationFlow();
 
   const notice = useChatStore((state) => state.notice);
@@ -242,79 +244,6 @@ export function ChatApp() {
     }
     void loadConversation(agent.id, agent.name, agent.greeting);
   }, [agents, loadConversation, selectedAgentId]);
-
-  useEffect(() => {
-    const page = window.location.pathname;
-    const send = () =>
-      void sendHeartbeat({
-        session_id: sessionId,
-        page,
-        mode: APP_MODE,
-        user_id: USER_ID,
-      });
-
-    send();
-    const heartbeatTimer = setInterval(send, POLL_INTERVALS.HEARTBEAT_TELEMETRY);
-    return () => clearInterval(heartbeatTimer);
-  }, [sessionId]);
-
-  useEffect(() => {
-    const page = window.location.pathname;
-    const onError = (event: ErrorEvent) => {
-      void reportFrontendError({
-        message: event.message || "unknown window error",
-        page,
-        source: event.filename || "window.onerror",
-        stack: event.error instanceof Error ? event.error.stack : undefined,
-        user_id: USER_ID,
-      });
-    };
-
-    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
-      const reason = event.reason;
-      let message = "unhandled rejection";
-      let stack: string | undefined;
-
-      if (reason instanceof Error) {
-        message = reason.message;
-        stack = reason.stack;
-      } else if (typeof reason === "string") {
-        message = reason;
-      } else {
-        message = JSON.stringify(reason);
-      }
-
-      void reportFrontendError({
-        message,
-        page,
-        source: "unhandledrejection",
-        stack,
-        user_id: USER_ID,
-      });
-    };
-
-    window.addEventListener("error", onError);
-    window.addEventListener("unhandledrejection", onUnhandledRejection);
-
-    return () => {
-      window.removeEventListener("error", onError);
-      window.removeEventListener("unhandledrejection", onUnhandledRejection);
-    };
-  }, []);
-
-  useEffect(() => {
-    const page = window.location.pathname;
-    const navEntry = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
-    const value = navEntry ? navEntry.loadEventEnd - navEntry.startTime : performance.now();
-
-    void reportWebVital({
-      name: "page_load_ms",
-      value,
-      page,
-      metric_id: sessionId,
-      rating: value > 3_000 ? "poor" : value > 1_500 ? "needs-improvement" : "good",
-    });
-  }, [sessionId]);
 
   const createAgentHandle = async () => {
     const name = draftName.trim();
