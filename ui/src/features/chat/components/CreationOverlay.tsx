@@ -16,10 +16,22 @@ export interface CreationOverlayState {
 
 interface CreationOverlayProps {
   overlay: CreationOverlayState;
-  creationLabel: (phase: CreationPhase) => string;
 }
 
-export function CreationOverlay({ overlay, creationLabel }: CreationOverlayProps) {
+function creationLabel(phase: CreationPhase): string {
+  const map: Record<CreationPhase, string> = {
+    idle: "待机",
+    parsing: "解析阶段",
+    restructuring: "重组阶段",
+    memory: "记忆灌注",
+    diagnose: "诊断阶段",
+    complete: "定型完成",
+    error: "构建失败",
+  };
+  return map[phase];
+}
+
+export function CreationOverlay({ overlay }: CreationOverlayProps) {
   if (!overlay.active) {
     return null;
   }

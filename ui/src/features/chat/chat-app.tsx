@@ -43,21 +43,6 @@ const USER_ID = getEnvUserId();
 const APP_MODE = "live";
 const EMPTY_MESSAGES: ChatMessage[] = [];
 
-type CreationPhase = "idle" | "parsing" | "restructuring" | "memory" | "diagnose" | "complete" | "error";
-
-function creationLabel(phase: CreationPhase): string {
-  const map: Record<CreationPhase, string> = {
-    idle: "待机",
-    parsing: "解析阶段",
-    restructuring: "重组阶段",
-    memory: "记忆灌注",
-    diagnose: "诊断阶段",
-    complete: "定型完成",
-    error: "构建失败",
-  };
-  return map[phase];
-}
-
 export function ChatApp() {
   const [fatalError, setFatalError] = useState<string>("");
   const [mounted, setMounted] = useState<boolean>(false);
@@ -455,7 +440,7 @@ export function ChatApp() {
         />
       </div>
 
-      <CreationOverlay overlay={overlay} creationLabel={creationLabel} />
+      <CreationOverlay overlay={overlay} />
     </div>
   );
 }

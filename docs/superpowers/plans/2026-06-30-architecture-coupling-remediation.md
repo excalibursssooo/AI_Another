@@ -1897,6 +1897,70 @@ git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/utils/chatFormatt
 git commit -m "refactor: extract chat formatting utilities"
 ```
 
+## Segment 25: Move Creation Phase Labels Into Overlay
+
+**Files:**
+- Add: `ui/src/features/chat/components/CreationOverlay.test.tsx`
+- Modify: `ui/src/features/chat/components/CreationOverlay.tsx`
+- Modify: `ui/src/features/chat/chat-app.tsx`
+
+- [x] **Step 1: Investigate overlay label coupling**
+
+`ChatApp` still owned a static `creationLabel` map and passed it into `CreationOverlay`.
+
+This made the parent component responsible for fixed presentation copy that only the overlay renders.
+
+- [x] **Step 2: Write failing tests**
+
+Added `CreationOverlay.test.tsx` to require the overlay to render its phase label directly from `overlay.phase` and render nothing when inactive.
+
+Observed RED:
+
+```text
+TypeError: creationLabel is not a function
+```
+
+- [x] **Step 3: Implement component-owned labels**
+
+Changes:
+
+```text
+CreationOverlay now owns the CreationPhase label map
+CreationOverlay no longer accepts a creationLabel prop
+ChatApp no longer declares CreationPhase or creationLabel
+ChatApp renders <CreationOverlay overlay={overlay} />
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/features/chat/components/CreationOverlay.test.tsx
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted creation overlay tests: 1 file, 2 tests passed
+eslint: passed
+Vitest: 67 files, 389 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/components/CreationOverlay.tsx ui/src/features/chat/components/CreationOverlay.test.tsx docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: move creation labels into overlay"
+```
+
 ## Verification Gates
 
 After every segment:
