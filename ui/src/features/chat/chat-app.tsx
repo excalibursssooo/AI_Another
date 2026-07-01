@@ -2,8 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { deleteAgent } from "@/lib/api/companion";
-import { getErrorMessage } from "@/lib/utils/error";
 import { ChatMessage } from "@/features/chat/types";
 import { ChatArea } from "@/features/chat/components/ChatArea";
 import { ChatSidebar } from "@/features/chat/components/ChatSidebar";
@@ -11,6 +9,7 @@ import { CreationOverlay } from "@/features/chat/components/CreationOverlay";
 import { RightPanel } from "@/features/chat/components/RightPanel";
 import { useAgents } from "@/features/chat/hooks/useAgents";
 import { useAgentCreation } from "@/features/chat/hooks/useAgentCreation";
+import { useAgentDeletion } from "@/features/chat/hooks/useAgentDeletion";
 import { useChatTelemetry } from "@/features/chat/hooks/useChatTelemetry";
 import { useFeedActions } from "@/features/chat/hooks/useFeedActions";
 import { useChatSending } from "@/features/chat/hooks/useChatSending";
@@ -116,6 +115,11 @@ export function ChatApp() {
     onNotice: setNotice,
   });
 
+  const { deleteAgentHandle } = useAgentDeletion({
+    removeAgentState,
+    onNotice: setNotice,
+  });
+
   const { isSending, sendMessage } = useChatSending({
     input,
     selectedAgent,
@@ -149,19 +153,6 @@ export function ChatApp() {
     }
     void loadConversation(agent.id, agent.name, agent.greeting);
   }, [agents, loadConversation, selectedAgentId]);
-
-  const deleteAgentHandle = useCallback(
-    async (agentId: string, agentName: string) => {
-      try {
-        await deleteAgent(agentId);
-        removeAgentState(agentId);
-        setNotice(`已删除角色: ${agentName}`);
-      } catch (error) {
-        setNotice(`删除失败: ${getErrorMessage(error)}`);
-      }
-    },
-    [removeAgentState, setNotice],
-  );
 
   const heartbeatDuration = `${Math.max(0.45, 60 / Math.max(1, displayHeartbeatBpm))}s`;
 

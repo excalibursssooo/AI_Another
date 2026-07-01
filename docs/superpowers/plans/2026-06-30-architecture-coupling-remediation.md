@@ -2208,6 +2208,81 @@ git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/hooks/useAgentCre
 git commit -m "refactor: extract agent creation hook"
 ```
 
+## Segment 29: Extract Agent Deletion Hook
+
+**Files:**
+- Add: `ui/src/features/chat/hooks/useAgentDeletion.ts`
+- Add: `ui/src/features/chat/hooks/useAgentDeletion.test.ts`
+- Modify: `ui/src/features/chat/chat-app.tsx`
+
+- [x] **Step 1: Investigate deletion coupling**
+
+`ChatApp` still directly imported `deleteAgent` and `getErrorMessage` only for sidebar deletion:
+
+```text
+call deleteAgent(agentId)
+remove local agent state on success
+show success/failure notice
+```
+
+This was the last direct companion API call left in the main component.
+
+- [x] **Step 2: Write failing tests**
+
+Added `useAgentDeletion.test.ts` for exported `deleteAgentAction`:
+
+```text
+success deletes remotely, removes local state, and reports success
+failure reports an error and does not remove local state
+```
+
+Observed RED:
+
+```text
+Cannot find module './useAgentDeletion'
+```
+
+- [x] **Step 3: Implement hook and integrate**
+
+Changes:
+
+```text
+useAgentDeletion owns the deleteAgent API call and error formatting
+deleteAgentAction isolates the success/failure behavior for tests
+ChatApp no longer imports deleteAgent or getErrorMessage
+ChatApp passes deleteAgentHandle from the hook to ChatSidebar
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/features/chat/hooks/useAgentDeletion.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted agent deletion tests: 1 file, 2 tests passed
+eslint: passed
+Vitest: 71 files, 401 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/hooks/useAgentDeletion.ts ui/src/features/chat/hooks/useAgentDeletion.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: extract agent deletion hook"
+```
+
 ## Verification Gates
 
 After every segment:
