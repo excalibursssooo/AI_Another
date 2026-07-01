@@ -3097,6 +3097,77 @@ git add ui/src/server/ai/ai-boundaries.test.ts ui/src/server/flow/agent-create-f
 git commit -m "refactor: point flows at ai generators"
 ```
 
+## Segment 41: Deduplicate Fallback Memories Without Canonical Keys
+
+**Files:**
+- Modify: `ui/src/server/domain/chat/memory-consolidator.ts`
+- Modify: `ui/src/server/domain/chat/memory-consolidator.test.ts`
+
+- [x] **Step 1: Investigate remaining P0 memory quality risk**
+
+`Fix.md` identifies duplicate memory creation when embeddings fall back to lexical vectors as a P0 data quality issue. Current code already handled one fallback case: same canonical key merges instead of creating a duplicate. The remaining risk was candidates without a stable `canonical_key`, which is realistic for LLM extraction output.
+
+- [x] **Step 2: Write failing fallback dedupe test**
+
+Added a test with:
+
+```text
+existing fallback memory: 用户喜欢雨天散步。
+candidate fallback memory: 用户很喜欢雨天散步。
+no canonical_key on either memory
+```
+
+Observed RED:
+
+```text
+expected created to be merged
+```
+
+- [x] **Step 3: Add conservative text fallback matching**
+
+Changes:
+
+```text
+Added MEMORY_FALLBACK_TEXT_SIMILARITY threshold
+Added normalized Chinese-friendly bigram Dice similarity
+Added fallback text matching for same subject/type when embedding quality is not semantic
+Kept canonical key fallback match as the first fallback path
+Skipped text fallback merging when deterministic conflict detection finds a conflict
+Extracted fallback merge logic into mergeFallbackMemory
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/server/domain/chat/memory-consolidator.test.ts
+npm run test:run -- src/server/domain/chat/memory-consolidator.test.ts src/server/flow/memory-extract-flow.test.ts src/server/flow/task-worker.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+MemoryConsolidator: 1 file, 17 tests passed
+Targeted memory pipeline tests: 3 files, 25 tests passed
+eslint: passed
+Vitest: 76 files, 415 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/server/domain/chat/memory-consolidator.ts ui/src/server/domain/chat/memory-consolidator.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "fix: deduplicate fallback memories by text"
+```
+
 ## Verification Gates
 
 After every segment:

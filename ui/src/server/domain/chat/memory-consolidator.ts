@@ -14,6 +14,7 @@ export const MEMORY_MERGE_SIMILARITY = 0.86;
 export const MEMORY_CONFLICT_SIMILARITY = 0.72;
 export const MEMORY_MERGED_CONTENT_MAX_LENGTH = 500;
 export const MEMORY_CONFLICT_TOP_K = 10;
+export const MEMORY_FALLBACK_TEXT_SIMILARITY = 0.78;
 
 export type ConsolidationAction = "created" | "merged" | "conflicted" | "skipped";
 
@@ -234,19 +235,12 @@ export class MemoryConsolidator {
 
     const fallbackMatch = findFallbackKeyMatch(comparable, input.candidate);
     if (fallbackMatch && embedding.quality !== "semantic") {
-      const mergedContent = mergeMemoryContent(fallbackMatch, input.candidate);
-      const mergedEmbedding = await this.embedText(mergedContent);
-      const updated = this.memories.mergeMemory({
-        memoryId: fallbackMatch.id,
-        content: mergedContent,
-        importance: Math.max(fallbackMatch.importance, input.candidate.importance),
-        confidence: Math.max(fallbackMatch.confidence, input.candidate.confidence),
-        key: input.candidate.key ?? fallbackMatch.key,
-        topic: input.candidate.topic ?? fallbackMatch.topic,
-        embedding: toEmbeddingInput(mergedContent, mergedEmbedding),
-        lastObservedAt: Date.now(),
-      });
-      return { action: "merged", memoryId: updated?.id, reason: "same canonical key fallback memory" };
+      return await this.mergeFallbackMemory(fallbackMatch, input.candidate, "same canonical key fallback memory");
+    }
+
+    const fallbackTextMatch = findFallbackTextMatch(comparable, input.candidate);
+    if (fallbackTextMatch && embedding.quality !== "semantic") {
+      return await this.mergeFallbackMemory(fallbackTextMatch, input.candidate, "similar text fallback memory");
     }
 
     const created = this.memories.create({
@@ -270,6 +264,26 @@ export class MemoryConsolidator {
 
   detectConflictForTest(oldContent: string, newContent: string, memoryType: string): boolean {
     return detectConflict(oldContent, newContent, memoryType).conflict;
+  }
+
+  private async mergeFallbackMemory(
+    memory: MemoryRecord,
+    candidate: MemoryCandidate,
+    reason: string,
+  ): Promise<ConsolidationResult> {
+    const mergedContent = mergeMemoryContent(memory, candidate);
+    const mergedEmbedding = await this.embedText(mergedContent);
+    const updated = this.memories.mergeMemory({
+      memoryId: memory.id,
+      content: mergedContent,
+      importance: Math.max(memory.importance, candidate.importance),
+      confidence: Math.max(memory.confidence, candidate.confidence),
+      key: candidate.key ?? memory.key,
+      topic: candidate.topic ?? memory.topic,
+      embedding: toEmbeddingInput(mergedContent, mergedEmbedding),
+      lastObservedAt: Date.now(),
+    });
+    return { action: "merged", memoryId: updated?.id, reason };
   }
 }
 
@@ -304,6 +318,79 @@ function findFallbackKeyMatch(memories: MemoryRecord[], candidate: MemoryCandida
     return null;
   }
   return memories.find((memory) => memory.key === key) ?? null;
+}
+
+function findFallbackTextMatch(memories: MemoryRecord[], candidate: MemoryCandidate): MemoryRecord | null {
+  const candidateContent = candidate.content.trim();
+  if (candidateContent.length < 6) {
+    return null;
+  }
+  let best: { memory: MemoryRecord; score: number } | null = null;
+  for (const memory of memories) {
+    if (detectConflict(memory.content, candidateContent, candidate.type).conflict) {
+      continue;
+    }
+    const score = textSimilarity(memory.content, candidateContent);
+    if (score < MEMORY_FALLBACK_TEXT_SIMILARITY) {
+      continue;
+    }
+    if (!best || score > best.score) {
+      best = { memory, score };
+    }
+  }
+  return best?.memory ?? null;
+}
+
+function textSimilarity(left: string, right: string): number {
+  const a = normalizeTextForSimilarity(left);
+  const b = normalizeTextForSimilarity(right);
+  if (!a || !b) {
+    return 0;
+  }
+  if (a === b) {
+    return 1;
+  }
+  if (a.includes(b) || b.includes(a)) {
+    return Math.min(a.length, b.length) / Math.max(a.length, b.length);
+  }
+  return diceCoefficient(toBigrams(a), toBigrams(b));
+}
+
+function normalizeTextForSimilarity(content: string): string {
+  return content
+    .toLowerCase()
+    .replace(/[，。！？、,.!?;；:："'“”‘’`~\s]/g, "")
+    .trim();
+}
+
+function toBigrams(content: string): string[] {
+  if (content.length <= 1) {
+    return content ? [content] : [];
+  }
+  const grams: string[] = [];
+  for (let index = 0; index < content.length - 1; index += 1) {
+    grams.push(content.slice(index, index + 2));
+  }
+  return grams;
+}
+
+function diceCoefficient(left: string[], right: string[]): number {
+  if (left.length === 0 || right.length === 0) {
+    return 0;
+  }
+  const counts = new Map<string, number>();
+  for (const gram of left) {
+    counts.set(gram, (counts.get(gram) ?? 0) + 1);
+  }
+  let overlap = 0;
+  for (const gram of right) {
+    const count = counts.get(gram) ?? 0;
+    if (count > 0) {
+      overlap += 1;
+      counts.set(gram, count - 1);
+    }
+  }
+  return (2 * overlap) / (left.length + right.length);
 }
 
 function rankComparable(memories: MemoryRecord[], candidateEmbedding: EmbeddingResult): RankedMemory[] {

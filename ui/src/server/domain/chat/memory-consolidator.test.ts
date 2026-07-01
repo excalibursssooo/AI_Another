@@ -178,6 +178,55 @@ describe("MemoryConsolidator", () => {
     expect(active[0].embeddingStatus).toBe("fallback");
   });
 
+  it("deduplicates similar fallback memories when canonical key is missing", async () => {
+    const db = createTestDatabase();
+    const memories = new MemoryRepository(db);
+    memories.create({
+      userId: "u001",
+      agentId: "agent-default",
+      worldId: "default",
+      subject: "user",
+      memoryType: "preference",
+      content: "用户喜欢雨天散步。",
+      importance: 0.5,
+      confidence: 0.7,
+      embedding: {
+        json: JSON.stringify([1, 0]),
+        model: "fallback-hash-v1",
+        backend: "fallback",
+        quality: "lexical",
+        dimension: 2,
+        status: "fallback",
+        textHash: "old",
+        version: 1,
+        needsRefresh: true,
+        updatedAt: 1,
+      },
+    });
+    const consolidator = new MemoryConsolidator({ db, embedText: async () => fallback([0.4, 0.6]) });
+
+    const result = await consolidator.consolidate({
+      userId: "u001",
+      agentId: "agent-default",
+      worldId: "default",
+      candidate: {
+        subject: "user",
+        type: "preference",
+        topic: "rain",
+        content: "用户很喜欢雨天散步。",
+        importance: 0.8,
+        confidence: 0.9,
+      },
+    });
+
+    expect(result.action).toBe("merged");
+    expect(result.reason).toBe("similar text fallback memory");
+    const active = memories.listActiveForScope({ userId: "u001", agentId: "agent-default", worldId: "default" });
+    expect(active).toHaveLength(1);
+    expect(active[0].content).toContain("很喜欢雨天散步");
+    expect(active[0].topic).toBe("rain");
+  });
+
   it("checks conflict across topK, not only best match", async () => {
     const db = createTestDatabase();
     const memories = new MemoryRepository(db);
