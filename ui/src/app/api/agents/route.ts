@@ -1,4 +1,6 @@
 import { toAgentResponseDto } from "@/server/api/dto";
+import { apiRequestErrorResponse, ApiRequestError, parseJsonBody } from "@/server/api/request";
+import { AgentCreateRequestSchema } from "@/server/api/schemas";
 import { getDatabase } from "@/server/db/client";
 import { AgentRepository } from "@/server/domain/agent/agent-repository";
 import { WorldRepository } from "@/server/domain/world/world-repository";
@@ -19,17 +21,16 @@ export async function GET(req: Request): Promise<Response> {
 }
 
 export async function POST(req: Request): Promise<Response> {
-  const body = (await req.json()) as {
-    name?: string;
-    persona?: string;
-    background?: string;
-    domain_id?: string;
-    hobbies?: string[];
-    speaking_style?: string;
-  };
-  if (!body.name?.trim() || !body.persona?.trim()) {
-    return Response.json({ detail: "name and persona are required" }, { status: 400 });
+  let body;
+  try {
+    body = await parseJsonBody(req, AgentCreateRequestSchema);
+  } catch (error) {
+    if (error instanceof ApiRequestError) {
+      return apiRequestErrorResponse(error);
+    }
+    throw error;
   }
+
   const result = await createAgentCreateFlow({ db: getDatabase() }).run({
     mode: "manual",
     userId: process.env.DEV_USER_ID || "u001",

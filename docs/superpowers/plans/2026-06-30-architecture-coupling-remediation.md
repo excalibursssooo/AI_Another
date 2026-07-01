@@ -1022,6 +1022,92 @@ git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/components/RightP
 git commit -m "refactor: extract chat right panel"
 ```
 
+## Segment 14: Validate Agent Create Request Bodies
+
+**Files:**
+- Add: `ui/src/app/api/agents/route.test.ts`
+- Modify: `ui/src/app/api/agents/route.ts`
+- Modify: `ui/src/server/api/schemas.ts`
+
+- [x] **Step 1: Investigate route parsing drift**
+
+Search showed `request.json()` is still used directly in several routes:
+
+```text
+memories/[memoryId]
+memories/[memoryId]/freeze
+memories/[memoryId]/activate
+worlds
+worlds/[worldId]
+worlds/ai-create
+agents
+agents/[agentId]
+agents/[agentId]/generate-post
+agents/[agentId]/memory-seed/debug
+agents/ai-create
+```
+
+`/api/agents` POST was selected for this segment because it creates user-visible agents and still used a type assertion plus a handwritten `name/persona` check.
+
+- [x] **Step 2: Write failing tests**
+
+Added `/api/agents` route validation tests for:
+
+```text
+invalid JSON returns { error: "invalid_json" } before creating the flow
+blank required fields return { error: "invalid_request" } before creating the flow
+```
+
+Observed RED:
+
+```text
+invalid JSON threw SyntaxError
+blank fields returned legacy { detail: "name and persona are required" }
+```
+
+- [x] **Step 3: Implement schema-backed parsing**
+
+Changes:
+
+```text
+AgentCreateRequestSchema added to server/api/schemas.ts
+/api/agents POST now uses parseJsonBody
+ApiRequestError is converted with apiRequestErrorResponse
+name and persona are non-empty trimmed strings
+background, domain_id, speaking_style preserve existing optional default behavior
+hobbies must be a string array when provided
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/app/api/agents/route.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted /api/agents tests: 1 file, 2 tests passed
+eslint: passed
+Vitest: 54 files, 355 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/app/api/agents/route.ts ui/src/app/api/agents/route.test.ts ui/src/server/api/schemas.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: validate agent create requests"
+```
+
 ## Verification Gates
 
 After every segment:
