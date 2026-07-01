@@ -7,7 +7,11 @@ import { getErrorMessage } from "@/lib/utils/error";
 
 type CreationMode = "ai" | "manual";
 
-export function useCreationFlow() {
+interface UseCreationFlowOptions {
+  userId: string;
+}
+
+export function useCreationFlow(options: UseCreationFlowOptions) {
   const [overlay, setOverlay] = useState<CreationOverlayState>({
     active: false,
     mode: "ai",
@@ -67,6 +71,7 @@ export function useCreationFlow() {
         const seedResult = await debugAgentMemorySeed(agentId, {
           dry_run: false,
           force_reextract: false,
+          user_id: options.userId,
         });
         seededCount = Math.max(seedResult.persisted_count, seedResult.candidate_count);
         setOverlay((prev) => ({
@@ -95,7 +100,7 @@ export function useCreationFlow() {
         pushLog(`[System] infra-check degraded: ${getErrorMessage(error)}`);
       }
     },
-    [pushLog],
+    [options.userId, pushLog],
   );
 
   const completeFlow = useCallback(async (signature: string, nextMessage: string) => {

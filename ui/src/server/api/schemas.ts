@@ -90,7 +90,7 @@ export type FeedGenerateRequest = z.infer<typeof FeedGenerateRequestSchema>;
 export const AgentMemorySeedDebugRequestSchema = z.object({
   dry_run: z.boolean().optional(),
   force_reextract: z.boolean().optional(),
-  user_id: z.string().trim().optional(),
+  user_id: RequiredString,
   domain_id: z.string().trim().optional(),
 });
 

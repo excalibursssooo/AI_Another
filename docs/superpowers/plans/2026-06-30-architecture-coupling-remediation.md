@@ -2593,6 +2593,86 @@ git add ui/src/app/api/agents/ai-create/route.ts ui/src/app/api/agents/ai-create
 git commit -m "refactor: scope ai agent creation by request user"
 ```
 
+## Segment 34: Require User Scope for Memory Seed Debug
+
+**Files:**
+- Add: `ui/src/app/api/agents/[agentId]/memory-seed/debug/route.test.ts`
+- Modify: `ui/src/app/api/agents/[agentId]/memory-seed/debug/route.ts`
+- Modify: `ui/src/server/api/schemas.ts`
+- Modify: `ui/src/lib/api/types_api.ts`
+- Modify: `ui/src/features/chat/hooks/useCreationFlow.ts`
+- Modify: `ui/src/features/chat/hooks/useAgentCreation.ts`
+
+- [x] **Step 1: Investigate memory seed user scope coupling**
+
+The memory seed debug route still used:
+
+```text
+body.user_id || process.env.DEV_USER_ID || "u001"
+```
+
+This kept a user-scope fallback in a route that writes memory seed records.
+
+- [x] **Step 2: Write failing tests**
+
+Added a route test that omits `user_id` and asserts:
+
+```text
+status is 400 invalid_request
+getDatabase is not called
+```
+
+Observed RED:
+
+```text
+expected status 400
+received status 404
+```
+
+The route had accepted the body, opened the database, and reached agent lookup.
+
+- [x] **Step 3: Implement required user scope**
+
+Changes:
+
+```text
+AgentMemorySeedDebugRequestSchema now requires user_id
+memory-seed/debug route uses body.user_id directly
+AgentMemorySeedDebugRequestDto now requires user_id
+useCreationFlow accepts userId and sends it to debugAgentMemorySeed
+useAgentCreation passes its userId into useCreationFlow
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/app/api/agents/[agentId]/memory-seed/debug/route.test.ts src/app/api/optional-body-validation.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted memory seed tests: 2 files, 5 tests passed
+eslint: passed
+Vitest: 75 files, 408 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/app/api/agents/[agentId]/memory-seed/debug/route.ts ui/src/app/api/agents/[agentId]/memory-seed/debug/route.test.ts ui/src/server/api/schemas.ts ui/src/lib/api/types_api.ts ui/src/features/chat/hooks/useCreationFlow.ts ui/src/features/chat/hooks/useAgentCreation.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: require user scope for memory seed"
+```
+
 ## Verification Gates
 
 After every segment:

@@ -23,7 +23,7 @@ export async function POST(req: Request, context: { params: Promise<{ agentId: s
   if (!agent) {
     return Response.json({ detail: "agent not found" }, { status: 404 });
   }
-  const userId = body.user_id || process.env.DEV_USER_ID || "u001";
+  const userId = body.user_id;
   const worldId = body.domain_id || agent.worldId || "default";
   const memories = new MemoryRepository(db);
   const existing = memories.list({ userId, agentId, worldId, status: "active" });

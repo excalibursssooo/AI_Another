@@ -165,7 +165,9 @@ export function useAgentCreation(options: UseAgentCreationOptions) {
     active: false,
     name: "角色构建中...",
   });
-  const { overlay, startFlow, setRestructuringPhase, runSeedAndInfraStages, pushLog, completeFlow, failFlow } = useCreationFlow();
+  const { overlay, startFlow, setRestructuringPhase, runSeedAndInfraStages, pushLog, completeFlow, failFlow } = useCreationFlow({
+    userId: options.userId,
+  });
 
   const createAgentHandle = useCallback(async () => {
     await createManualAgentAction({

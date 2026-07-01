@@ -101,6 +101,7 @@ export interface InfraDebugDto {
 export interface AgentMemorySeedDebugRequestDto {
   readonly dry_run?: boolean;
   readonly force_reextract?: boolean;
+  readonly user_id: string;
 }
 
 export interface AgentMemorySeedDebugResponseDto {
