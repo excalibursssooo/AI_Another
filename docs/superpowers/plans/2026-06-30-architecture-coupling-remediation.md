@@ -3333,6 +3333,78 @@ git add ui/src/app/api/user-scope-validation.test.ts ui/src/app/api/agents/[agen
 git commit -m "refactor: require user scope for feed routes"
 ```
 
+## Segment 44: Centralize Demo User Configuration
+
+**Files:**
+- Add: `ui/src/config/constants.test.ts`
+- Modify: `ui/src/config/constants.ts`
+- Modify: `ui/src/features/chat/chat-app.tsx`
+
+- [x] **Step 1: Investigate remaining demo user defaults**
+
+After server routes stopped defaulting to `"u001"`, the remaining non-test default was inside `ChatApp`:
+
+```text
+NEXT_PUBLIC_DEMO_USER_ID?.trim() || "u001"
+```
+
+This was client demo configuration rather than server-side scope bypass, but it still left the demo user as an inline magic string in a large component.
+
+- [x] **Step 2: Write failing config test**
+
+Added `constants.test.ts` for:
+
+```text
+resolveDemoUserId trims env user id
+blank or missing env value falls back to DEMO_USER_ID
+```
+
+Observed RED:
+
+```text
+TypeError: resolveDemoUserId is not a function
+```
+
+- [x] **Step 3: Centralize the default**
+
+Changes:
+
+```text
+Added DEMO_USER_ID to config/constants.ts
+Added resolveDemoUserId(value)
+ChatApp now imports resolveDemoUserId instead of defining getEnvUserId locally
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/config/constants.test.ts src/features/chat/hooks/useFeedActions.test.ts src/features/chat/hooks/useAgentCreation.test.ts src/features/chat/hooks/useChatSending.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Config/chat hook tests: 4 files, 12 tests passed
+eslint: passed
+Vitest: 79 files, 424 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/config/constants.test.ts ui/src/config/constants.ts ui/src/features/chat/chat-app.tsx docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: centralize demo user id"
+```
+
 ## Verification Gates
 
 After every segment:

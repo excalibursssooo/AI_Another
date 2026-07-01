@@ -19,13 +19,9 @@ import { mapAgentFromApi } from "@/features/chat/utils/agentMapping";
 import { formatAgo, formatTimeFromIso, nowTime, uid } from "@/features/chat/utils/chatFormatting";
 import { useChatStore } from "@/stores/useChatStore";
 import { useWorldStore } from "@/stores/useWorldStore";
+import { resolveDemoUserId } from "@/config/constants";
 
-function getEnvUserId(): string {
-  const userId = process.env.NEXT_PUBLIC_DEMO_USER_ID?.trim();
-  return userId || "u001";
-}
-
-const USER_ID = getEnvUserId();
+const USER_ID = resolveDemoUserId(process.env.NEXT_PUBLIC_DEMO_USER_ID);
 const APP_MODE = "live";
 const EMPTY_MESSAGES: ChatMessage[] = [];
 

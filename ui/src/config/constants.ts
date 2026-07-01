@@ -15,6 +15,13 @@ export const DEFAULT_VITALS = {
   MOOD: 35,
 } as const;
 
+export const DEMO_USER_ID = "u001";
+
+export function resolveDemoUserId(value: string | undefined): string {
+  const userId = value?.trim();
+  return userId || DEMO_USER_ID;
+}
+
 export const ANIMATION_DELAYS = {
   BIOMETRIC_JITTER_MS: 900,
   CREATION_COMPLETE: 620,
