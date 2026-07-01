@@ -1,4 +1,6 @@
 import { toMemoryResponseDto } from "@/server/api/dto";
+import { apiRequestErrorResponse, ApiRequestError, parseJsonBody } from "@/server/api/request";
+import { MemoryScopeRequestSchema } from "@/server/api/schemas";
 import { getDatabase } from "@/server/db/client";
 import { MemoryRepository } from "@/server/domain/memory/memory-repository";
 
@@ -6,10 +8,16 @@ export const runtime = "nodejs";
 
 export async function POST(req: Request, context: { params: Promise<{ memoryId: string }> }): Promise<Response> {
   const { memoryId } = await context.params;
-  const body = (await req.json()) as { user_id?: string; agent_id?: string; domain_id?: string };
-  if (!body.user_id || !body.agent_id) {
-    return Response.json({ detail: "user_id and agent_id are required" }, { status: 400 });
+  let body;
+  try {
+    body = await parseJsonBody(req, MemoryScopeRequestSchema);
+  } catch (error) {
+    if (error instanceof ApiRequestError) {
+      return apiRequestErrorResponse(error);
+    }
+    throw error;
   }
+
   const memory = new MemoryRepository(getDatabase()).setStatus({
     userId: body.user_id,
     agentId: body.agent_id,

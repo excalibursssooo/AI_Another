@@ -53,3 +53,11 @@ export const WorldUpsertRequestSchema = z.object({
 });
 
 export type WorldUpsertRequest = z.infer<typeof WorldUpsertRequestSchema>;
+
+export const MemoryScopeRequestSchema = z.object({
+  user_id: RequiredString,
+  agent_id: RequiredString,
+  domain_id: OptionalString,
+});
+
+export type MemoryScopeRequest = z.infer<typeof MemoryScopeRequestSchema>;

@@ -1252,6 +1252,86 @@ git add ui/src/app/api/agents/[agentId]/route.ts ui/src/app/api/agents/[agentId]
 git commit -m "refactor: validate agent update requests"
 ```
 
+## Segment 17: Validate Memory Scope Request Bodies
+
+**Files:**
+- Add: `ui/src/app/api/memories/[memoryId]/memory-scope-validation.test.ts`
+- Modify: `ui/src/app/api/memories/[memoryId]/route.ts`
+- Modify: `ui/src/app/api/memories/[memoryId]/freeze/route.ts`
+- Modify: `ui/src/app/api/memories/[memoryId]/activate/route.ts`
+- Modify: `ui/src/server/api/schemas.ts`
+
+- [x] **Step 1: Investigate memory item operation routes**
+
+The delete, freeze, and activate memory routes all parsed the same scope body directly:
+
+```text
+user_id
+agent_id
+domain_id
+```
+
+They returned legacy `{ detail: "user_id and agent_id are required" }` for missing fields and threw on invalid JSON.
+
+- [x] **Step 2: Write failing tests**
+
+Added one shared route validation test file covering:
+
+```text
+DELETE invalid JSON returns { error: "invalid_json" } before opening the database
+freeze blank user_id returns { error: "invalid_request" } before opening the database
+activate blank agent_id returns { error: "invalid_request" } before opening the database
+```
+
+Observed RED:
+
+```text
+invalid JSON threw SyntaxError
+blank values reached MemoryRepository.setStatus and failed against the mocked db
+```
+
+- [x] **Step 3: Implement schema-backed parsing**
+
+Changes:
+
+```text
+MemoryScopeRequestSchema added to server/api/schemas.ts
+delete/freeze/activate routes now use parseJsonBody
+user_id and agent_id are non-empty trimmed strings
+domain_id remains optional and still defaults to default
+ApiRequestError is converted with apiRequestErrorResponse
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- 'src/app/api/memories/[memoryId]/memory-scope-validation.test.ts'
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted memory scope tests: 1 file, 3 tests passed
+eslint: passed
+Vitest: 58 files, 364 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/app/api/memories/[memoryId]/route.ts ui/src/app/api/memories/[memoryId]/freeze/route.ts ui/src/app/api/memories/[memoryId]/activate/route.ts ui/src/app/api/memories/[memoryId]/memory-scope-validation.test.ts ui/src/server/api/schemas.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: validate memory scope requests"
+```
+
 ## Verification Gates
 
 After every segment:
