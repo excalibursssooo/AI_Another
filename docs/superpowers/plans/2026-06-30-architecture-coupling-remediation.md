@@ -1821,6 +1821,82 @@ git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/utils/agentMappin
 git commit -m "refactor: extract agent api mapper"
 ```
 
+## Segment 24: Extract Chat Formatting Utilities
+
+**Files:**
+- Add: `ui/src/features/chat/utils/chatFormatting.ts`
+- Add: `ui/src/features/chat/utils/chatFormatting.test.ts`
+- Modify: `ui/src/features/chat/chat-app.tsx`
+
+- [x] **Step 1: Investigate formatting coupling**
+
+`ChatApp` still declared pure utility functions used by hooks and child components:
+
+```text
+nowTime
+formatTimeFromIso
+uid
+formatAgo
+```
+
+These functions do not depend on React state and should not live inside the main component module.
+
+- [x] **Step 2: Write failing tests**
+
+Added `chatFormatting.test.ts` to preserve current behavior:
+
+```text
+HH:mm current time formatting
+ISO timestamp formatting with invalid-date fallback
+relative labels for seconds, minutes, hours, invalid timestamps, and future timestamps
+timestamped id generation with random suffix
+```
+
+Observed RED:
+
+```text
+Cannot find module './chatFormatting'
+```
+
+- [x] **Step 3: Implement utilities and integrate**
+
+Changes:
+
+```text
+Moved nowTime, formatTimeFromIso, formatAgo, and uid to utils/chatFormatting.ts
+ChatApp imports the utilities and keeps existing call sites unchanged
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/features/chat/utils/chatFormatting.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted chat formatting tests: 1 file, 4 tests passed
+eslint: passed
+Vitest: 66 files, 387 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/utils/chatFormatting.ts ui/src/features/chat/utils/chatFormatting.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: extract chat formatting utilities"
+```
+
 ## Verification Gates
 
 After every segment:

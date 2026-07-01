@@ -27,6 +27,7 @@ import { useFeedPolling } from "@/features/chat/hooks/useFeedPolling";
 import { useLiveState } from "@/features/chat/hooks/useLiveState";
 import { useWorldSettings } from "@/features/chat/hooks/useWorldSettings";
 import { mapAgentFromApi } from "@/features/chat/utils/agentMapping";
+import { formatAgo, formatTimeFromIso, nowTime, uid } from "@/features/chat/utils/chatFormatting";
 import { createLiveStateFromChatDone } from "@/features/chat/utils/liveState";
 import { createOptimisticChatExchange } from "@/features/chat/utils/optimisticMessages";
 import { appendAssistantDelta, finishAssistantStreaming } from "@/features/chat/utils/streamingMessages";
@@ -43,40 +44,6 @@ const APP_MODE = "live";
 const EMPTY_MESSAGES: ChatMessage[] = [];
 
 type CreationPhase = "idle" | "parsing" | "restructuring" | "memory" | "diagnose" | "complete" | "error";
-
-function nowTime(): string {
-  const date = new Date();
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
-}
-
-function formatTimeFromIso(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return nowTime();
-  }
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
-}
-
-function uid(prefix: string): string {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
-function formatAgo(iso: string): string {
-  const ts = new Date(iso).getTime();
-  if (Number.isNaN(ts)) {
-    return "刚刚";
-  }
-  const seconds = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-  if (seconds < 60) {
-    return `${seconds}秒前`;
-  }
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) {
-    return `${minutes}分钟前`;
-  }
-  const hours = Math.floor(minutes / 60);
-  return `${hours}小时前`;
-}
 
 function creationLabel(phase: CreationPhase): string {
   const map: Record<CreationPhase, string> = {
