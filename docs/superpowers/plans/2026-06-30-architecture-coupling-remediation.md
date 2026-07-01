@@ -1587,6 +1587,82 @@ git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/utils/liveState.t
 git commit -m "refactor: extract live state derivation"
 ```
 
+## Segment 21: Extract Streaming Message Updates
+
+**Files:**
+- Add: `ui/src/features/chat/utils/streamingMessages.ts`
+- Add: `ui/src/features/chat/utils/streamingMessages.test.ts`
+- Modify: `ui/src/features/chat/chat-app.tsx`
+
+- [x] **Step 1: Investigate stream callback coupling**
+
+`ChatApp` still performed message-array transformations inside `streamChat` callbacks:
+
+```text
+onDelta: find assistant placeholder, append delta content, keep streaming true
+onDone: find assistant placeholder, mark streaming false
+```
+
+These operations are pure transformations and do not need to live in the component callback body.
+
+- [x] **Step 2: Write failing test**
+
+Added `streamingMessages.test.ts` covering:
+
+```text
+appendAssistantDelta appends to target assistant content
+finishAssistantStreaming marks the target assistant message as not streaming
+missing target leaves rows semantically unchanged
+```
+
+Observed RED:
+
+```text
+Cannot find module './streamingMessages'
+```
+
+- [x] **Step 3: Implement helper and integrate**
+
+Changes:
+
+```text
+appendAssistantDelta added under chat utils
+finishAssistantStreaming added under chat utils
+ChatApp.onDelta delegates to appendAssistantDelta
+ChatApp.onDone delegates to finishAssistantStreaming
+network flow, store writes, and live state derivation remain unchanged
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/features/chat/utils/streamingMessages.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted streaming message tests: 1 file, 3 tests passed
+eslint: passed
+Vitest: 63 files, 377 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/utils/streamingMessages.ts ui/src/features/chat/utils/streamingMessages.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: extract streaming message updates"
+```
+
 ## Verification Gates
 
 After every segment:

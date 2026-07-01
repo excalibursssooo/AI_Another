@@ -27,6 +27,7 @@ import { useLiveState } from "@/features/chat/hooks/useLiveState";
 import { useWorldSettings } from "@/features/chat/hooks/useWorldSettings";
 import { createLiveStateFromChatDone } from "@/features/chat/utils/liveState";
 import { createOptimisticChatExchange } from "@/features/chat/utils/optimisticMessages";
+import { appendAssistantDelta, finishAssistantStreaming } from "@/features/chat/utils/streamingMessages";
 import { useChatStore } from "@/stores/useChatStore";
 import { useWorldStore } from "@/stores/useWorldStore";
 
@@ -444,19 +445,11 @@ export function ChatApp() {
         {
           onDelta: (content) => {
             const rows = useChatStore.getState().messagesByAgent[selectedAgentId] ?? [];
-            const target = rows.find((msg) => msg.id === assistantMessageId);
-            const nextContent = `${target?.content ?? ""}${content}`;
-            upsertMessages(
-              selectedAgentId,
-              rows.map((msg) => (msg.id === assistantMessageId ? { ...msg, content: nextContent, isStreaming: true } : msg)),
-            );
+            upsertMessages(selectedAgentId, appendAssistantDelta(rows, assistantMessageId, content));
           },
           onDone: (event) => {
             const rows = useChatStore.getState().messagesByAgent[selectedAgentId] ?? [];
-            upsertMessages(
-              selectedAgentId,
-              rows.map((msg) => (msg.id === assistantMessageId ? { ...msg, isStreaming: false } : msg)),
-            );
+            upsertMessages(selectedAgentId, finishAssistantStreaming(rows, assistantMessageId));
 
             const previous = useChatStore.getState().liveStateByAgent[selectedAgentId];
             setLiveState(
