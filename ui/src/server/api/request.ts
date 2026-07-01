@@ -25,6 +25,26 @@ export async function parseJsonBody<T>(req: Request, schema: z.ZodType<T>): Prom
   return parsed.data;
 }
 
+export async function parseOptionalJsonBody<T>(req: Request, schema: z.ZodType<T>): Promise<T> {
+  let raw: unknown;
+  const text = await req.text();
+  if (!text.trim()) {
+    raw = {};
+  } else {
+    try {
+      raw = JSON.parse(text) as unknown;
+    } catch {
+      throw new ApiRequestError(400, "invalid_json");
+    }
+  }
+
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) {
+    throw new ApiRequestError(400, "invalid_request", parsed.error.flatten());
+  }
+  return parsed.data;
+}
+
 export function apiRequestErrorResponse(error: ApiRequestError): Response {
   return Response.json(
     {

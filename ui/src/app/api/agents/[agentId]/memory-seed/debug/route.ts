@@ -1,3 +1,5 @@
+import { apiRequestErrorResponse, ApiRequestError, parseOptionalJsonBody } from "@/server/api/request";
+import { AgentMemorySeedDebugRequestSchema } from "@/server/api/schemas";
 import { getDatabase } from "@/server/db/client";
 import { AgentRepository } from "@/server/domain/agent/agent-repository";
 import { MemoryRepository } from "@/server/domain/memory/memory-repository";
@@ -6,7 +8,16 @@ export const runtime = "nodejs";
 
 export async function POST(req: Request, context: { params: Promise<{ agentId: string }> }): Promise<Response> {
   const { agentId } = await context.params;
-  const body = (await req.json().catch(() => ({}))) as { dry_run?: boolean; force_reextract?: boolean; user_id?: string; domain_id?: string };
+  let body;
+  try {
+    body = await parseOptionalJsonBody(req, AgentMemorySeedDebugRequestSchema);
+  } catch (error) {
+    if (error instanceof ApiRequestError) {
+      return apiRequestErrorResponse(error);
+    }
+    throw error;
+  }
+
   const db = getDatabase();
   const agent = new AgentRepository(db).get(agentId);
   if (!agent) {

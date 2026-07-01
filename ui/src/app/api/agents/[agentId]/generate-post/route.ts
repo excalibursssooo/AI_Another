@@ -1,4 +1,6 @@
 import { toPostItemDto } from "@/server/api/dto";
+import { apiRequestErrorResponse, ApiRequestError, parseOptionalJsonBody } from "@/server/api/request";
+import { FeedGenerateRequestSchema } from "@/server/api/schemas";
 import { getDatabase } from "@/server/db/client";
 import { createFeedGenerateFlow } from "@/server/flow/feed-flow";
 
@@ -6,11 +8,16 @@ export const runtime = "nodejs";
 
 export async function POST(req: Request, context: { params: Promise<{ agentId: string }> }): Promise<Response> {
   const { agentId } = await context.params;
-  const body = (await req.json().catch(() => ({}))) as {
-    user_id?: string;
-    domain_id?: string;
-    source_task_id?: string | null;
-  };
+  let body;
+  try {
+    body = await parseOptionalJsonBody(req, FeedGenerateRequestSchema);
+  } catch (error) {
+    if (error instanceof ApiRequestError) {
+      return apiRequestErrorResponse(error);
+    }
+    throw error;
+  }
+
   const result = await createFeedGenerateFlow({ db: getDatabase() }).run({
     userId: body.user_id || "u001",
     agentId,

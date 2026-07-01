@@ -1332,6 +1332,97 @@ git add ui/src/app/api/memories/[memoryId]/route.ts ui/src/app/api/memories/[mem
 git commit -m "refactor: validate memory scope requests"
 ```
 
+## Segment 18: Validate Optional JSON Request Bodies
+
+**Files:**
+- Add: `ui/src/server/api/request.test.ts`
+- Add: `ui/src/app/api/optional-body-validation.test.ts`
+- Modify: `ui/src/server/api/request.ts`
+- Modify: `ui/src/server/api/schemas.ts`
+- Modify: `ui/src/app/api/agents/ai-create/route.ts`
+- Modify: `ui/src/app/api/worlds/ai-create/route.ts`
+- Modify: `ui/src/app/api/agents/[agentId]/generate-post/route.ts`
+- Modify: `ui/src/app/api/agents/[agentId]/memory-seed/debug/route.ts`
+
+- [x] **Step 1: Investigate optional-body routes**
+
+The remaining direct JSON parsers were all optional-body routes:
+
+```text
+/api/agents/ai-create
+/api/worlds/ai-create
+/api/agents/[agentId]/generate-post
+/api/agents/[agentId]/memory-seed/debug
+```
+
+They used `req.json().catch(() => ({}))`, which made empty body convenient but also silently treated malformed JSON as `{}`.
+
+- [x] **Step 2: Write failing tests**
+
+Added tests for:
+
+```text
+parseOptionalJsonBody treats empty body as {}
+parseOptionalJsonBody rejects malformed JSON with invalid_json
+all 4 optional-body routes reject malformed JSON before opening db / creating flows
+```
+
+Observed RED:
+
+```text
+parseOptionalJsonBody was not exported
+malformed JSON was swallowed and routes continued into flow/repository code
+```
+
+- [x] **Step 3: Implement optional parser and schemas**
+
+Changes:
+
+```text
+parseOptionalJsonBody reads req.text()
+blank/whitespace body becomes {}
+non-empty malformed JSON throws ApiRequestError invalid_json
+schema parse failures throw invalid_request
+AgentAiCreateRequestSchema
+WorldAiCreateRequestSchema
+FeedGenerateRequestSchema
+AgentMemorySeedDebugRequestSchema
+```
+
+The four routes now share the same optional-body parsing behavior through `parseOptionalJsonBody` and `apiRequestErrorResponse`.
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/server/api/request.test.ts src/app/api/optional-body-validation.test.ts
+rg "\.json\(\)" ui/src/app/api -g 'route.ts'
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted optional body tests: 2 files, 6 tests passed
+No direct request.json() remains under ui/src/app/api route.ts files
+eslint: passed
+Vitest: 60 files, 370 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/server/api/request.ts ui/src/server/api/request.test.ts ui/src/server/api/schemas.ts ui/src/app/api/optional-body-validation.test.ts ui/src/app/api/agents/ai-create/route.ts ui/src/app/api/worlds/ai-create/route.ts ui/src/app/api/agents/[agentId]/generate-post/route.ts ui/src/app/api/agents/[agentId]/memory-seed/debug/route.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: validate optional json bodies"
+```
+
 ## Verification Gates
 
 After every segment:

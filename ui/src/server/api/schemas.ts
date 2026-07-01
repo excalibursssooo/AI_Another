@@ -61,3 +61,35 @@ export const MemoryScopeRequestSchema = z.object({
 });
 
 export type MemoryScopeRequest = z.infer<typeof MemoryScopeRequestSchema>;
+
+export const AgentAiCreateRequestSchema = z.object({
+  prompt: z.string().trim().nullable().optional(),
+  domain_id: z.string().trim().optional(),
+});
+
+export type AgentAiCreateRequest = z.infer<typeof AgentAiCreateRequestSchema>;
+
+export const WorldAiCreateRequestSchema = z.object({
+  prompt: z.string().trim().optional(),
+  world_id: z.string().trim().optional(),
+  base_domain_id: z.string().trim().optional(),
+});
+
+export type WorldAiCreateRequest = z.infer<typeof WorldAiCreateRequestSchema>;
+
+export const FeedGenerateRequestSchema = z.object({
+  user_id: z.string().trim().optional(),
+  domain_id: z.string().trim().optional(),
+  source_task_id: z.string().trim().nullable().optional(),
+});
+
+export type FeedGenerateRequest = z.infer<typeof FeedGenerateRequestSchema>;
+
+export const AgentMemorySeedDebugRequestSchema = z.object({
+  dry_run: z.boolean().optional(),
+  force_reextract: z.boolean().optional(),
+  user_id: z.string().trim().optional(),
+  domain_id: z.string().trim().optional(),
+});
+
+export type AgentMemorySeedDebugRequest = z.infer<typeof AgentMemorySeedDebugRequestSchema>;
