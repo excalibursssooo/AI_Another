@@ -2954,6 +2954,75 @@ git add ui/src/server/ai/ai-boundaries.test.ts ui/src/server/ai/generators/memor
 git commit -m "refactor: extract memory extraction ai generator"
 ```
 
+## Segment 39: Extract Chat Reply AI Generator
+
+**Files:**
+- Add: `ui/src/server/ai/generators/chat-reply.ts`
+- Modify: `ui/src/server/ai/ai-boundaries.test.ts`
+- Replace: `ui/src/server/ai/chat.ts`
+
+- [x] **Step 1: Identify compatibility module boundary**
+
+After extracting feed, world, agent, and memory generators, `ai/chat.ts` still owned the actual chat reply and streaming implementations. This kept the compatibility module coupled to the AI SDK runtime imports, structured-output helper, schemas, provider selection, and tool registry types.
+
+- [x] **Step 2: Write failing boundary test**
+
+Extended `ai-boundaries.test.ts` to assert `chat.ts` no longer owns:
+
+```text
+from "ai"
+async function generateChatReply
+async function streamChatReply
+```
+
+Observed RED:
+
+```text
+expected chat.ts not to contain from "ai"
+```
+
+- [x] **Step 3: Extract chat reply and streaming generator**
+
+Changes:
+
+```text
+Created ai/generators/chat-reply.ts
+Moved ChatGenerationInput, GenerateChatReply, generateChatReply
+Moved StreamChatReplyResult, streamChatReply, stream fallback helpers
+Moved chat fallback logging local to chat-reply.ts
+Replaced ai/chat.ts with a pure compatibility barrel
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/server/ai/ai-boundaries.test.ts src/server/ai/chat.test.ts src/server/ai/chat-stream.test.ts src/server/flow/chat-flow.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted AI/chat tests: 4 files, 59 tests passed
+eslint: passed
+Vitest: 76 files, 413 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/server/ai/ai-boundaries.test.ts ui/src/server/ai/generators/chat-reply.ts ui/src/server/ai/chat.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: extract chat reply ai generator"
+```
+
 ## Verification Gates
 
 After every segment:

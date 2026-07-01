@@ -31,4 +31,12 @@ describe("AI module boundaries", () => {
     expect(source).not.toContain("const MEMORY_SYSTEM_PROMPT");
     expect(source).not.toContain("async function generateMemoryExtraction");
   });
+
+  it("keeps chat generation implementation outside the chat compatibility module", () => {
+    const source = readFileSync(join(process.cwd(), "src/server/ai/chat.ts"), "utf8");
+
+    expect(source).not.toContain('from "ai"');
+    expect(source).not.toContain("async function generateChatReply");
+    expect(source).not.toContain("async function streamChatReply");
+  });
 });
