@@ -10,4 +10,11 @@ describe("AI module boundaries", () => {
     expect(source).not.toContain("const FEED_SYSTEM_PROMPT");
     expect(source).not.toContain("async function generateFeedPostDraft");
   });
+
+  it("keeps world draft generation outside the chat compatibility module", () => {
+    const source = readFileSync(join(process.cwd(), "src/server/ai/chat.ts"), "utf8");
+
+    expect(source).not.toContain("const WORLD_SYSTEM_PROMPT");
+    expect(source).not.toContain("async function generateWorldDraft");
+  });
 });

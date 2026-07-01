@@ -2752,6 +2752,73 @@ git add ui/src/server/ai/ai-boundaries.test.ts ui/src/server/ai/generators/feed-
 git commit -m "refactor: extract feed post ai generator"
 ```
 
+## Segment 36: Extract World Draft AI Generator
+
+**Files:**
+- Add: `ui/src/server/ai/generators/world-draft.ts`
+- Modify: `ui/src/server/ai/ai-boundaries.test.ts`
+- Modify: `ui/src/server/ai/chat.ts`
+
+- [x] **Step 1: Identify low-risk extraction target**
+
+`generateWorldDraft` was still owned by `ai/chat.ts` even though it belongs to the world creation flow. Existing production callers import through `@/server/ai/chat`, so this segment preserves the compatibility export and moves only implementation ownership.
+
+- [x] **Step 2: Write failing boundary test**
+
+Extended `ai-boundaries.test.ts` to assert `chat.ts` no longer owns:
+
+```text
+const WORLD_SYSTEM_PROMPT
+async function generateWorldDraft
+```
+
+Observed RED:
+
+```text
+expected chat.ts not to contain const WORLD_SYSTEM_PROMPT
+```
+
+- [x] **Step 3: Extract world generator with compatibility re-export**
+
+Changes:
+
+```text
+Created ai/generators/world-draft.ts
+Moved WorldDraftGenerationInput, GenerateWorldDraft, WORLD_SYSTEM_PROMPT, generateWorldDraft
+Moved worldCreator fallback logging local to world-draft.ts
+ai/chat.ts re-exports generateWorldDraft and its types for existing callers
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/server/ai/ai-boundaries.test.ts src/server/ai/chat.test.ts src/server/flow/world-flow.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted AI/world tests: 3 files, 50 tests passed
+eslint: passed
+Vitest: 76 files, 410 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/server/ai/ai-boundaries.test.ts ui/src/server/ai/generators/world-draft.ts ui/src/server/ai/chat.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: extract world draft ai generator"
+```
+
 ## Verification Gates
 
 After every segment:
