@@ -2513,6 +2513,86 @@ git add ui/src/app/api/agents/route.ts ui/src/app/api/agents/route.test.ts ui/sr
 git commit -m "refactor: scope agent creation by request user"
 ```
 
+## Segment 33: Scope AI Agent Creation by Request User
+
+**Files:**
+- Add: `ui/src/app/api/agents/ai-create/route.test.ts`
+- Modify: `ui/src/app/api/agents/ai-create/route.ts`
+- Modify: `ui/src/server/api/schemas.ts`
+- Modify: `ui/src/lib/api/companion.ts`
+- Modify: `ui/src/features/chat/hooks/useAgentCreation.ts`
+- Modify: `ui/src/features/chat/hooks/useAgentCreation.test.ts`
+
+- [x] **Step 1: Investigate AI create user scope coupling**
+
+After manual agent creation was scoped by request user, `/api/agents/ai-create` still used:
+
+```text
+userId: process.env.DEV_USER_ID || "u001"
+```
+
+The route already used `parseOptionalJsonBody(req, AgentAiCreateRequestSchema)`, so the boundary fix was to require and propagate `user_id`.
+
+- [x] **Step 2: Write failing tests**
+
+Added `agents/ai-create/route.test.ts` asserting a request with `user_id: "u-custom"` reaches `createAgentCreateFlow().run()` as:
+
+```text
+mode: "ai"
+userId: "u-custom"
+worldId: "world-1"
+prompt: "生成一个朋友"
+```
+
+Observed RED:
+
+```text
+expected userId "u-custom"
+received userId "u001"
+```
+
+- [x] **Step 3: Implement schema-backed AI create user scope**
+
+Changes:
+
+```text
+AgentAiCreateRequestSchema now requires user_id
+/api/agents/ai-create passes body.user_id into createAgentCreateFlow
+createAgentByAi(userId, prompt, domainId) sends user_id to the API
+useAgentCreation passes its userId into createAgentByAi
+useAgentCreation tests assert the AI create userId contract
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/app/api/agents/ai-create/route.test.ts src/features/chat/hooks/useAgentCreation.test.ts src/app/api/optional-body-validation.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted AI create tests: 3 files, 8 tests passed
+eslint: passed
+Vitest: 74 files, 407 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/app/api/agents/ai-create/route.ts ui/src/app/api/agents/ai-create/route.test.ts ui/src/server/api/schemas.ts ui/src/lib/api/companion.ts ui/src/features/chat/hooks/useAgentCreation.ts ui/src/features/chat/hooks/useAgentCreation.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: scope ai agent creation by request user"
+```
+
 ## Verification Gates
 
 After every segment:

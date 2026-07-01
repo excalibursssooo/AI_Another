@@ -39,8 +39,9 @@ export async function createAgent(payload: AgentCreateRequestDto): Promise<Agent
   return httpPost<AgentCreateRequestDto, AgentResponseDto>("/agents", payload);
 }
 
-export async function createAgentByAi(prompt?: string, domainId = "default"): Promise<AgentAICreateResponseDto> {
-  return httpPost<{ prompt: string | null; domain_id: string }, AgentAICreateResponseDto>("/agents/ai-create", {
+export async function createAgentByAi(userId: string, prompt?: string, domainId = "default"): Promise<AgentAICreateResponseDto> {
+  return httpPost<{ user_id: string; prompt: string | null; domain_id: string }, AgentAICreateResponseDto>("/agents/ai-create", {
+    user_id: userId,
     prompt: prompt?.trim() || null,
     domain_id: domainId,
   });

@@ -45,7 +45,7 @@ interface CreateManualAgentActionOptions extends CreationActionBase {
 }
 
 interface CreateAiAgentActionOptions extends CreationActionBase {
-  createAgentByAi: (prompt?: string, domainId?: string) => Promise<AgentAICreateResponseDto>;
+  createAgentByAi: (userId: string, prompt?: string, domainId?: string) => Promise<AgentAICreateResponseDto>;
   setRestructuringPhase: (message: string) => void;
 }
 
@@ -133,7 +133,7 @@ export async function createAiAgentAction(options: CreateAiAgentActionOptions): 
   try {
     options.setRestructuringPhase("几何人格体重组中...");
     options.pushLog("[Kernel] Reassembling persona lattice...");
-    const created = await options.createAgentByAi(undefined, options.selectedDomainId);
+    const created = await options.createAgentByAi(options.userId, undefined, options.selectedDomainId);
     await options.runSeedAndInfraStages(created.agent.id, "ai");
     await waitForMinimumDuration({
       startedAt: flowStart,

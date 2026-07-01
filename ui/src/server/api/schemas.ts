@@ -64,6 +64,7 @@ export const MemoryScopeRequestSchema = z.object({
 export type MemoryScopeRequest = z.infer<typeof MemoryScopeRequestSchema>;
 
 export const AgentAiCreateRequestSchema = z.object({
+  user_id: RequiredString,
   prompt: z.string().trim().nullable().optional(),
   domain_id: z.string().trim().optional(),
 });

@@ -141,15 +141,16 @@ describe("agent creation actions", () => {
     const placeholders: Array<{ active: boolean; name: string }> = [];
     const reports: Array<{ message: string; page: string; source: string; user_id: string }> = [];
     const notices: string[] = [];
+    const createAgentByAi = vi.fn(async () => {
+      throw new Error("model down");
+    });
 
     await createAiAgentAction({
       selectedDomainId: "world-1",
       agentsCount: 3,
       userId: "u001",
       page: "/chat",
-      createAgentByAi: vi.fn(async () => {
-        throw new Error("model down");
-      }),
+      createAgentByAi,
       mapAgentFromApi: vi.fn(),
       prependAgentWithGreeting: vi.fn(),
       runSeedAndInfraStages: vi.fn(),
@@ -174,6 +175,7 @@ describe("agent creation actions", () => {
       { active: true, name: "数字人格孵化中..." },
       { active: false, name: "角色构建中..." },
     ]);
+    expect(createAgentByAi).toHaveBeenCalledWith("u001", undefined, "world-1");
     expect(reports).toEqual([
       {
         message: "ai-create failed: model down",
