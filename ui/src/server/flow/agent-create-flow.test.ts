@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestDatabase } from "@/server/db/client";
 import { AgentRepository } from "@/server/domain/agent/agent-repository";
 import { MemoryRepository } from "@/server/domain/memory/memory-repository";
-import { GenerateAgentDraft } from "@/server/ai/chat";
+import { GenerateAgentDraft } from "@/server/ai/generators/agent-draft";
 import { createAgentCreateFlow } from "./agent-create-flow";
 
 describe("AgentCreateFlow", () => {

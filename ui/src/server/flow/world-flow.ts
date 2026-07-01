@@ -3,9 +3,9 @@ import { WorldRepository } from "@/server/domain/world/world-repository";
 import type { WorldRecord } from "@/server/domain/world/world-repository";
 import {
   generateWorldDraft as defaultGenerateWorldDraft,
-  getActiveProviderInfo,
   GenerateWorldDraft,
-} from "@/server/ai/chat";
+} from "@/server/ai/generators/world-draft";
+import { getActiveProviderInfo } from "@/server/ai/models";
 
 import { Flow } from "./runner";
 import { FlowNode } from "./types";

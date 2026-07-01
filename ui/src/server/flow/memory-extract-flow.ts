@@ -3,7 +3,7 @@ import { MemoryConsolidator } from "@/server/domain/chat/memory-consolidator";
 import {
   GenerateMemoryExtraction,
   generateMemoryExtraction as defaultGenerateMemoryExtraction,
-} from "@/server/ai/chat";
+} from "@/server/ai/generators/memory-extraction";
 import { MemoryCandidate } from "@/server/ai/schemas";
 import { shouldThrottle, type ThrottleReason } from "@/server/domain/chat/throttle-rules";
 import { MemoryOperationLogRepository } from "@/server/domain/chat/memory-operation-log-repository";

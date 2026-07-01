@@ -13,7 +13,7 @@ import { finalizeChatContext } from "@/server/domain/chat/chat-finalizer";
 import type { ChatDoneEventPayload } from "@/server/domain/chat/chat-finalizer";
 import { buildChatSystemPrompt, buildChatUserPrompt } from "@/server/domain/chat/chat-prompt-builder";
 import { assessChatRisk, HIGH_RISK_MOOD, HIGH_RISK_REPLY } from "@/server/domain/chat/chat-safety";
-import { GenerateChatReply, generateChatReply as defaultGenerateChatReply } from "@/server/ai/chat";
+import { GenerateChatReply, generateChatReply as defaultGenerateChatReply } from "@/server/ai/generators/chat-reply";
 import { createChatToolsForScope } from "@/server/tools/tool-policy";
 
 import { Flow } from "./runner";

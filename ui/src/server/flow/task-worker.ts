@@ -1,5 +1,5 @@
 import type { AppDatabase } from "@/server/db/client";
-import type { GenerateMemoryExtraction } from "@/server/ai/chat";
+import type { GenerateMemoryExtraction } from "@/server/ai/generators/memory-extraction";
 import { TaskRepository } from "@/server/domain/chat/task-repository";
 
 import { createMemoryExtractFlow } from "./memory-extract-flow";

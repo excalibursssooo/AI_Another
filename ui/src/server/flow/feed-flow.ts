@@ -12,7 +12,7 @@ import type { FeedPostRecord } from "@/server/domain/feed/feed-post-repository";
 import {
   GenerateFeedPostDraft,
   generateFeedPostDraft as defaultGenerateFeedPostDraft,
-} from "@/server/ai/chat";
+} from "@/server/ai/generators/feed-post";
 import { embedText as defaultEmbedText } from "@/server/ai/embeddings";
 import type { EmbedText } from "@/server/domain/chat/memory-consolidator";
 import { FeedTopicRepository, normalizeAgentId, TOPIC_RECENT_WINDOW_DAYS } from "@/server/domain/chat/feed-topic-repository";

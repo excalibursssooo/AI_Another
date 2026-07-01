@@ -5,9 +5,9 @@ import { WorldRepository } from "@/server/domain/world/world-repository";
 import { MemoryRepository } from "@/server/domain/memory/memory-repository";
 import {
   generateAgentDraft as defaultGenerateAgentDraft,
-  getActiveProviderInfo,
   GenerateAgentDraft,
-} from "@/server/ai/chat";
+} from "@/server/ai/generators/agent-draft";
+import { getActiveProviderInfo } from "@/server/ai/models";
 
 import { Flow } from "./runner";
 import { FlowNode } from "./types";

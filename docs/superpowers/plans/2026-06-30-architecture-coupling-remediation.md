@@ -3023,6 +3023,80 @@ git add ui/src/server/ai/ai-boundaries.test.ts ui/src/server/ai/generators/chat-
 git commit -m "refactor: extract chat reply ai generator"
 ```
 
+## Segment 40: Point Flows at Focused AI Generators
+
+**Files:**
+- Modify: `ui/src/server/ai/ai-boundaries.test.ts`
+- Modify: `ui/src/server/flow/agent-create-flow.ts`
+- Modify: `ui/src/server/flow/agent-create-flow.test.ts`
+- Modify: `ui/src/server/flow/chat-flow.ts`
+- Modify: `ui/src/server/flow/feed-flow.ts`
+- Modify: `ui/src/server/flow/memory-extract-flow.ts`
+- Modify: `ui/src/server/flow/task-worker.ts`
+- Modify: `ui/src/server/flow/world-flow.ts`
+- Modify: `ui/src/server/flow/world-flow.test.ts`
+
+- [x] **Step 1: Identify remaining compatibility imports**
+
+After `ai/chat.ts` became a pure compatibility barrel, production flow modules still imported generators and generator types from `@/server/ai/chat`. That kept business flows semantically coupled to the aggregate compatibility module instead of the focused generator modules.
+
+- [x] **Step 2: Write failing boundary test**
+
+Extended `ai-boundaries.test.ts` with a fixed production flow file list and asserted none imports:
+
+```text
+@/server/ai/chat
+```
+
+Observed RED:
+
+```text
+src/server/flow/agent-create-flow.ts: expected source not to contain @/server/ai/chat
+```
+
+- [x] **Step 3: Repoint flow imports**
+
+Changes:
+
+```text
+agent-create-flow imports generator from ai/generators/agent-draft and provider info from ai/models
+world-flow imports generator from ai/generators/world-draft and provider info from ai/models
+chat-flow imports generator from ai/generators/chat-reply
+feed-flow imports generator from ai/generators/feed-post
+memory-extract-flow and task-worker import memory generator types from ai/generators/memory-extraction
+flow tests import generator types from the focused generator modules
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/server/ai/ai-boundaries.test.ts src/server/flow/agent-create-flow.test.ts src/server/flow/world-flow.test.ts src/server/flow/feed-flow.test.ts src/server/flow/memory-extract-flow.test.ts src/server/flow/task-worker.test.ts src/server/flow/chat-flow.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted AI/flow boundary tests: 7 files, 44 tests passed
+eslint: passed
+Vitest: 76 files, 414 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/server/ai/ai-boundaries.test.ts ui/src/server/flow/agent-create-flow.ts ui/src/server/flow/agent-create-flow.test.ts ui/src/server/flow/chat-flow.ts ui/src/server/flow/feed-flow.ts ui/src/server/flow/memory-extract-flow.ts ui/src/server/flow/task-worker.ts ui/src/server/flow/world-flow.ts ui/src/server/flow/world-flow.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: point flows at ai generators"
+```
+
 ## Verification Gates
 
 After every segment:
