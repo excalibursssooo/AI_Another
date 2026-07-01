@@ -1,13 +1,8 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-import {
-  createAgent,
-  createAgentByAi,
-  deleteAgent,
-  streamChat,
-} from "@/lib/api/companion";
+import { createAgent, createAgentByAi, deleteAgent } from "@/lib/api/companion";
 import { reportFrontendError } from "@/lib/api/telemetry";
 import { getErrorMessage } from "@/lib/utils/error";
 import { ANIMATION_DELAYS } from "@/config/constants";
@@ -20,13 +15,11 @@ import { useAgents } from "@/features/chat/hooks/useAgents";
 import { useCreationFlow } from "@/features/chat/hooks/useCreationFlow";
 import { useChatTelemetry } from "@/features/chat/hooks/useChatTelemetry";
 import { useFeedActions } from "@/features/chat/hooks/useFeedActions";
+import { useChatSending } from "@/features/chat/hooks/useChatSending";
 import { useLiveState } from "@/features/chat/hooks/useLiveState";
 import { useWorldSettings } from "@/features/chat/hooks/useWorldSettings";
 import { mapAgentFromApi } from "@/features/chat/utils/agentMapping";
 import { formatAgo, formatTimeFromIso, nowTime, uid } from "@/features/chat/utils/chatFormatting";
-import { createLiveStateFromChatDone } from "@/features/chat/utils/liveState";
-import { createOptimisticChatExchange } from "@/features/chat/utils/optimisticMessages";
-import { appendAssistantDelta, finishAssistantStreaming } from "@/features/chat/utils/streamingMessages";
 import { useChatStore } from "@/stores/useChatStore";
 import { useWorldStore } from "@/stores/useWorldStore";
 
@@ -41,7 +34,6 @@ const EMPTY_MESSAGES: ChatMessage[] = [];
 
 export function ChatApp() {
   const [fatalError, setFatalError] = useState<string>("");
-  const [mounted, setMounted] = useState<boolean>(false);
   const [rightPanelTab, setRightPanelTab] = useState<"state" | "feed">("state");
   const [showAddFriendMenu, setShowAddFriendMenu] = useState<boolean>(false);
   const [showCustomCreateForm, setShowCustomCreateForm] = useState<boolean>(false);
@@ -52,7 +44,6 @@ export function ChatApp() {
     active: false,
     name: "角色构建中...",
   });
-  const [isSending, setIsSending] = useState<boolean>(false);
   const sessionId = useMemo(() => uid("session"), []);
   useChatTelemetry({ sessionId, mode: APP_MODE, userId: USER_ID });
   const { overlay, startFlow, setRestructuringPhase, runSeedAndInfraStages, pushLog, completeFlow, failFlow } = useCreationFlow();
@@ -105,9 +96,6 @@ export function ChatApp() {
     [vitalsContainerRef],
   );
 
-  const setLiveState = useChatStore((state) => state.setLiveState);
-  const upsertMessages = useChatStore((state) => state.upsertMessages);
-
   const { feedPosts, feedLoading, isGeneratingPost, onGeneratePost, onTriggerFromPost } = useFeedActions({
     userId: USER_ID,
     selectedDomainId: worldSelectedDomainId,
@@ -118,15 +106,22 @@ export function ChatApp() {
     onNotice: setNotice,
   });
 
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+  const { isSending, sendMessage } = useChatSending({
+    input,
+    selectedAgent,
+    selectedAgentId,
+    userId: USER_ID,
+    activeDomainId,
+    uid,
+    nowTime,
+    setInput,
+    setFatalError,
+    setNotice,
+  });
 
   useEffect(() => {
-    if (mounted) {
-      document.documentElement.setAttribute("data-theme", themeMode);
-    }
-  }, [themeMode, mounted]);
+    document.documentElement.setAttribute("data-theme", themeMode);
+  }, [themeMode]);
 
   useEffect(() => {
     void loadWorldDebug();
@@ -239,68 +234,6 @@ export function ChatApp() {
     },
     [removeAgentState, setNotice],
   );
-
-  const sendMessage = async (event: FormEvent) => {
-    event.preventDefault();
-    const text = input.trim();
-    if (!text || !selectedAgent || isSending) {
-      return;
-    }
-
-    setIsSending(true);
-
-    const existing = useChatStore.getState().messagesByAgent[selectedAgentId] ?? [];
-    const { clientActionId, assistantMessageId, messages } = createOptimisticChatExchange({
-      text,
-      existing,
-      uid,
-      now: nowTime,
-      createClientActionId: () => crypto.randomUUID(),
-    });
-    upsertMessages(selectedAgentId, messages);
-
-    setInput("");
-
-    try {
-      await streamChat(
-        {
-          user_id: USER_ID,
-          message: text,
-          conversation_id: selectedAgentId,
-          agent_id: selectedAgentId,
-          domain_id: activeDomainId,
-          client_action_id: clientActionId,
-        },
-        {
-          onDelta: (content) => {
-            const rows = useChatStore.getState().messagesByAgent[selectedAgentId] ?? [];
-            upsertMessages(selectedAgentId, appendAssistantDelta(rows, assistantMessageId, content));
-          },
-          onDone: (event) => {
-            const rows = useChatStore.getState().messagesByAgent[selectedAgentId] ?? [];
-            upsertMessages(selectedAgentId, finishAssistantStreaming(rows, assistantMessageId));
-
-            const previous = useChatStore.getState().liveStateByAgent[selectedAgentId];
-            setLiveState(
-              selectedAgentId,
-              createLiveStateFromChatDone({
-                event,
-                previous,
-                now: () => new Date().toISOString(),
-              }),
-            );
-          },
-        },
-      );
-    } catch (error) {
-      const message = `聊天请求失败: ${getErrorMessage(error)}`;
-      setFatalError(message);
-      setNotice(message);
-      throw error;
-    } finally {
-      setIsSending(false);
-    }
-  };
 
   const heartbeatDuration = `${Math.max(0.45, 60 / Math.max(1, displayHeartbeatBpm))}s`;
 

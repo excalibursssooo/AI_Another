@@ -2039,6 +2039,93 @@ git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/hooks/useFeedActi
 git commit -m "refactor: extract feed actions hook"
 ```
 
+## Segment 27: Extract Chat Sending Hook
+
+**Files:**
+- Add: `ui/src/features/chat/hooks/useChatSending.ts`
+- Add: `ui/src/features/chat/hooks/useChatSending.test.ts`
+- Modify: `ui/src/features/chat/chat-app.tsx`
+
+- [x] **Step 1: Investigate chat sending coupling**
+
+`ChatApp` still owned the full message-send flow:
+
+```text
+input validation and isSending state
+optimistic user/assistant message creation
+streamChat payload construction
+delta handling via appendAssistantDelta
+done handling via finishAssistantStreaming and createLiveStateFromChatDone
+fatal/notice error handling
+```
+
+The lower-level message helpers already existed, so the next boundary was a chat sending hook with a testable action executor.
+
+- [x] **Step 2: Write failing tests**
+
+Added `useChatSending.test.ts` for exported `sendChatMessageAction`:
+
+```text
+short-circuits when input cannot be sent
+writes optimistic messages, streams deltas, and updates live state on done
+reports and rethrows stream failures while clearing sending state
+```
+
+Observed RED:
+
+```text
+Cannot find module './useChatSending'
+```
+
+- [x] **Step 3: Implement hook and integrate**
+
+Changes:
+
+```text
+useChatSending owns isSending state and form submission handling
+sendChatMessageAction isolates streamChat orchestration for tests
+ChatApp no longer imports streamChat or chat message utility helpers directly
+ChatApp no longer reads/writes message and live-state stores inside sendMessage
+```
+
+While verifying, eslint exposed an existing local anti-pattern:
+
+```text
+react-hooks/set-state-in-effect flagged setMounted(true)
+```
+
+`mounted` only guarded `document.documentElement.setAttribute("data-theme", themeMode)`, so it was removed and the theme effect now synchronizes the DOM attribute directly.
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/features/chat/hooks/useChatSending.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted chat sending tests: 1 file, 3 tests passed
+eslint: passed
+Vitest: 69 files, 396 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/hooks/useChatSending.ts ui/src/features/chat/hooks/useChatSending.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: extract chat sending hook"
+```
+
 ## Verification Gates
 
 After every segment:
