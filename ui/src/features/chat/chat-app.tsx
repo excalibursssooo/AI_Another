@@ -15,7 +15,7 @@ import { PostItemDto } from "@/lib/api/types_api";
 import { reportFrontendError } from "@/lib/api/telemetry";
 import { getErrorMessage } from "@/lib/utils/error";
 import { ANIMATION_DELAYS } from "@/config/constants";
-import { AiAgent, ChatMessage } from "@/features/chat/types";
+import { ChatMessage } from "@/features/chat/types";
 import { ChatArea } from "@/features/chat/components/ChatArea";
 import { ChatSidebar } from "@/features/chat/components/ChatSidebar";
 import { CreationOverlay } from "@/features/chat/components/CreationOverlay";
@@ -26,6 +26,7 @@ import { useChatTelemetry } from "@/features/chat/hooks/useChatTelemetry";
 import { useFeedPolling } from "@/features/chat/hooks/useFeedPolling";
 import { useLiveState } from "@/features/chat/hooks/useLiveState";
 import { useWorldSettings } from "@/features/chat/hooks/useWorldSettings";
+import { mapAgentFromApi } from "@/features/chat/utils/agentMapping";
 import { createLiveStateFromChatDone } from "@/features/chat/utils/liveState";
 import { createOptimisticChatExchange } from "@/features/chat/utils/optimisticMessages";
 import { appendAssistantDelta, finishAssistantStreaming } from "@/features/chat/utils/streamingMessages";
@@ -39,7 +40,6 @@ function getEnvUserId(): string {
 
 const USER_ID = getEnvUserId();
 const APP_MODE = "live";
-const AGENT_COLORS = ["var(--agent-amber)", "var(--agent-coral)", "var(--agent-teal)", "var(--agent-rose)"];
 const EMPTY_MESSAGES: ChatMessage[] = [];
 
 type CreationPhase = "idle" | "parsing" | "restructuring" | "memory" | "diagnose" | "complete" | "error";
@@ -76,35 +76,6 @@ function formatAgo(iso: string): string {
   }
   const hours = Math.floor(minutes / 60);
   return `${hours}小时前`;
-}
-
-function mapAgentFromApi(item: {
-  id: string;
-  name: string;
-  display_name: string;
-  greeting: string;
-  persona: string;
-  background: string;
-  domain_id: string;
-  world_context: string;
-  hobbies: ReadonlyArray<string>;
-  speaking_style: string;
-  status: "active" | "inactive";
-}, index: number): AiAgent {
-  return {
-    id: item.id,
-    name: item.display_name || item.name,
-    greeting: item.greeting,
-    persona: item.persona,
-    background: item.background,
-    domainId: item.domain_id,
-    worldContext: item.world_context,
-    hobbies: item.hobbies,
-    speakingStyle: item.speaking_style,
-    status: item.status,
-    tagline: item.persona.slice(0, 28),
-    avatarColor: AGENT_COLORS[index % AGENT_COLORS.length],
-  };
 }
 
 function creationLabel(phase: CreationPhase): string {

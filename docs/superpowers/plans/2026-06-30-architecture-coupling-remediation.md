@@ -1741,6 +1741,86 @@ git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/hooks/useChatTele
 git commit -m "refactor: extract chat telemetry hook"
 ```
 
+## Segment 23: Extract Agent API Mapper
+
+**Files:**
+- Add: `ui/src/features/chat/utils/agentMapping.ts`
+- Add: `ui/src/features/chat/utils/agentMapping.test.ts`
+- Modify: `ui/src/features/chat/chat-app.tsx`
+
+- [x] **Step 1: Investigate API mapping coupling**
+
+`ChatApp` still owned the agent DTO adapter:
+
+```text
+AGENT_COLORS palette
+display_name fallback to name
+snake_case API fields mapped to the AiAgent camelCase model
+persona-derived tagline
+avatar color rotation
+```
+
+This is API boundary translation, not component rendering logic.
+
+- [x] **Step 2: Write failing tests**
+
+Added `agentMapping.test.ts` to lock the adapter contract:
+
+```text
+maps AgentResponseDto fields into AiAgent
+falls back from empty display_name to name
+preserves active/inactive status
+rotates avatar colors by index
+truncates tagline to 28 characters
+```
+
+Observed RED:
+
+```text
+Cannot find module './agentMapping'
+```
+
+- [x] **Step 3: Implement mapper and integrate**
+
+Changes:
+
+```text
+AGENT_COLORS moved to utils/agentMapping.ts
+mapAgentFromApi now accepts AgentResponseDto and returns AiAgent
+ChatApp imports mapAgentFromApi instead of declaring the adapter locally
+ChatApp no longer imports AiAgent only for the removed local mapper
+```
+
+- [x] **Step 4: Verify**
+
+Run:
+
+```bash
+cd ui
+npm run test:run -- src/features/chat/utils/agentMapping.test.ts
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+Targeted agent mapping tests: 1 file, 2 tests passed
+eslint: passed
+Vitest: 65 files, 383 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/features/chat/chat-app.tsx ui/src/features/chat/utils/agentMapping.ts ui/src/features/chat/utils/agentMapping.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: extract agent api mapper"
+```
+
 ## Verification Gates
 
 After every segment:
