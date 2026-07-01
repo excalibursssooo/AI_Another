@@ -1,14 +1,8 @@
-import { AppDatabase } from "@/server/db/client";
-import { AgentRepository } from "@/server/domain/agent/agent-repository";
+import type { AppDatabase } from "@/server/db/client";
 import type { AgentRecord } from "@/server/domain/agent/agent-repository";
-import { WorldRepository } from "@/server/domain/world/world-repository";
 import type { WorldRecord } from "@/server/domain/world/world-repository";
-import { ConversationRepository } from "@/server/domain/conversation/conversation-repository";
 import type { ConversationMessageRecord } from "@/server/domain/conversation/conversation-repository";
-import { MemoryRepository } from "@/server/domain/memory/memory-repository";
 import type { MemoryRecord } from "@/server/domain/memory/memory-repository";
-import { AgentLiveStateRepository } from "@/server/domain/live-state/agent-live-state-repository";
-import { TaskRepository } from "@/server/domain/chat/task-repository";
 import { finalizeChatContext } from "@/server/domain/chat/chat-finalizer";
 import type { ChatDoneEventPayload } from "@/server/domain/chat/chat-finalizer";
 import { buildChatSystemPrompt, buildChatUserPrompt } from "@/server/domain/chat/chat-prompt-builder";
@@ -16,6 +10,8 @@ import { assessChatRisk, HIGH_RISK_MOOD, HIGH_RISK_REPLY } from "@/server/domain
 import { GenerateChatReply, generateChatReply as defaultGenerateChatReply } from "@/server/ai/generators/chat-reply";
 import { createChatToolsForScope } from "@/server/tools/tool-policy";
 
+import { createChatFlowDependencies } from "./chat-flow-dependencies";
+import type { ChatFlowDependencies } from "./chat-flow-dependencies";
 import { Flow } from "./runner";
 import { FlowNode } from "./types";
 import type { VisibleActorDirective } from "@/server/domain/world/types";
@@ -42,17 +38,17 @@ export interface ChatContext {
   worldDirective?: VisibleActorDirective | null;
 }
 
-function loadWorldWithFallback(worlds: WorldRepository, worldId: string): WorldRecord | null {
+function loadWorldWithFallback(worlds: ChatFlowDependencies["worlds"], worldId: string): WorldRecord | null {
   return worlds.get(worldId) ?? worlds.get("default");
 }
 
-export function createChatFlow(options: { db: AppDatabase; generateChatReply?: GenerateChatReply }): Flow<ChatContext> {
-  const agents = new AgentRepository(options.db);
-  const worlds = new WorldRepository(options.db);
-  const conversations = new ConversationRepository(options.db);
-  const memories = new MemoryRepository(options.db);
-  const liveStates = new AgentLiveStateRepository(options.db);
-  const tasks = new TaskRepository(options.db);
+export function createChatFlow(options: {
+  db: AppDatabase;
+  generateChatReply?: GenerateChatReply;
+  dependencies?: ChatFlowDependencies;
+}): Flow<ChatContext> {
+  const { agents, worlds, conversations, memories, liveStates, tasks } =
+    options.dependencies ?? createChatFlowDependencies(options.db);
   const generateReply = options.generateChatReply ?? defaultGenerateChatReply;
 
   const nodes: FlowNode<ChatContext>[] = [

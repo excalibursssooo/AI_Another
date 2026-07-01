@@ -3561,6 +3561,90 @@ git add ui/src/app/api/chat/route.test.ts ui/src/features/chat/hooks/useChatSend
 git commit -m "refactor: remove chat conversation request id"
 ```
 
+## Segment 47: Extract Chat Flow Dependency Factory
+
+**Files:**
+- Modify: `ui/src/server/flow/chat-flow.ts`
+- Modify: `ui/src/server/flow/chat-flow-boundaries.test.ts`
+- Add: `ui/src/server/flow/chat-flow-dependencies.ts`
+
+- [x] **Step 1: Investigate remaining ChatFlow coupling**
+
+`Fix.md` identified `ChatFlow` as a high-coupling orchestration point. Current source still created six concrete persistence collaborators inside `createChatFlow`:
+
+```text
+AgentRepository
+WorldRepository
+ConversationRepository
+MemoryRepository
+AgentLiveStateRepository
+TaskRepository
+```
+
+This made the flow definition own both workflow sequencing and infrastructure construction.
+
+- [x] **Step 2: Write failing boundary test**
+
+Added a boundary test that asserts `chat-flow.ts` does not directly construct the concrete repositories.
+
+Observed RED:
+
+```text
+src/server/flow/chat-flow-boundaries.test.ts
+AssertionError: expected source not to contain 'new AgentRepository'
+```
+
+- [x] **Step 3: Extract dependency factory**
+
+Changes:
+
+```text
+Added createChatFlowDependencies(db)
+Added ChatFlowDependencies interface
+Moved concrete repository construction into chat-flow-dependencies.ts
+Changed createChatFlow to consume injected/default dependencies
+Kept ChatFlow behavior and node sequence unchanged
+```
+
+- [x] **Step 4: Verify**
+
+Targeted verification already run:
+
+```bash
+cd ui
+npm run test:run -- src/server/flow/chat-flow-boundaries.test.ts src/server/flow/chat-flow.test.ts
+```
+
+Observed:
+
+```text
+2 files, 11 tests passed
+```
+
+```bash
+cd ui
+npm run lint
+npm run test:run
+npm run build
+```
+
+Observed:
+
+```text
+eslint: passed
+Vitest: 80 files, 428 tests passed
+Next build: passed
+```
+
+- [x] **Step 5: Commit segment**
+
+Run:
+
+```bash
+git add ui/src/server/flow/chat-flow.ts ui/src/server/flow/chat-flow-dependencies.ts ui/src/server/flow/chat-flow-boundaries.test.ts docs/superpowers/plans/2026-06-30-architecture-coupling-remediation.md
+git commit -m "refactor: extract chat flow dependencies"
+```
+
 ## Verification Gates
 
 After every segment:
